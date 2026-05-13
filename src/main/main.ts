@@ -41,7 +41,7 @@ function createWindow(): void {
     show: false,
     icon: getAppIconPath(),
     titleBarStyle: process.platform === "darwin" ? "hiddenInset" : "default",
-    trafficLightPosition: { x: 16, y: 16 },
+    trafficLightPosition: { x: 16, y: 12 },
     webPreferences: {
       preload: path.join(__dirname, "../preload/preload.mjs"),
       contextIsolation: true,
