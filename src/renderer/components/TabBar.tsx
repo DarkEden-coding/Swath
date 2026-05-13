@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from "react";
 import type { TabHealth, Workspace } from "../../main/sharedTypes";
 import { useAppStore } from "../state/appStore";
-import { IconChevronsLeft, IconClose, IconPlus, IconTerminal, IconGitBranch } from "./icons";
+import { IconChevronsLeft, IconClose, IconPlus, IconTerminal } from "./icons";
 
 interface TabBarProps {
   workspace: Workspace;
@@ -66,10 +66,6 @@ export function TabBar({ workspace, sidebarCollapsed, onToggleSidebar }: TabBarP
             <button className="tab-type-btn" onClick={() => { addTab(workspace.id, "terminal"); setShowTypeSelector(false); }}>
               <IconTerminal width={16} height={16} />
               <span>Terminal</span>
-            </button>
-            <button className="tab-type-btn" onClick={() => { addTab(workspace.id, "git"); setShowTypeSelector(false); }}>
-              <IconGitBranch width={16} height={16} />
-              <span>Git Browser</span>
             </button>
           </div>
         )}

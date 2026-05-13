@@ -41,11 +41,9 @@ export interface SplitNode {
   second: LayoutNode;
 }
 
-export type TabType = "terminal" | "git";
-
 export interface TerminalTab {
   id: string;
-  type?: TabType;
+  type?: "terminal";
   title: string;
   layout: LayoutNode;
   activePaneId: string;
@@ -136,3 +134,4 @@ export interface TerminalClipboardPayload {
 export interface TerminalPastePermissionStatus {
   accessibility: "granted" | "prompted" | "unavailable";
 }
+

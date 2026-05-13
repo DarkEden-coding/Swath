@@ -1,7 +1,6 @@
 import type { AppSettings, Workspace } from "../../main/sharedTypes";
 import { LayoutRenderer } from "./LayoutRenderer";
 import { TabBar } from "./TabBar";
-import { GitBrowser } from "./GitBrowser";
 import { useAppStore } from "../state/appStore";
 
 interface TerminalWorkspaceProps {
@@ -26,11 +25,7 @@ export function TerminalWorkspace({
 
       <div className="terminal-stage">
         {activeTab ? (
-          activeTab.type === "git" ? (
-            <GitBrowser workspace={workspace} />
-          ) : (
-            <LayoutRenderer workspace={workspace} tab={activeTab} settings={settings} node={activeTab.layout} />
-          )
+          <LayoutRenderer workspace={workspace} tab={activeTab} settings={settings} node={activeTab.layout} />
         ) : (
           <div className="empty-tab">
             <button className="primary-button" onClick={() => addTab(workspace.id)}>

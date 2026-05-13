@@ -35,6 +35,8 @@ function getAppIconPath(): string {
 
 app.setName("Swath");
 
+let isQuitting = false;
+
 function createWindow(): void {
   mainWindow = new BrowserWindow({
     width: 1320,
@@ -61,16 +63,25 @@ function createWindow(): void {
   });
 
   mainWindow.on("close", (event) => {
-    if (!ptyManager?.hasRunningSessions()) return;
-    const choice = dialog.showMessageBoxSync(mainWindow!, {
-      type: "warning",
-      buttons: ["Cancel", "Kill Terminals and Close"],
-      defaultId: 0,
-      cancelId: 0,
-      message: "Terminal sessions are still running.",
-      detail: "Closing the app will kill all running terminal processes.",
-    });
-    if (choice === 0) event.preventDefault();
+    if (isQuitting) return;
+
+    if (ptyManager?.hasRunningSessions()) {
+      const choice = dialog.showMessageBoxSync(mainWindow!, {
+        type: "warning",
+        buttons: ["Cancel", "Kill Terminals and Close"],
+        defaultId: 0,
+        cancelId: 0,
+        message: "Terminal sessions are still running.",
+        detail: "Closing the app will kill all running terminal processes.",
+      });
+      if (choice === 0) {
+        event.preventDefault();
+        return;
+      }
+    }
+    
+    isQuitting = true;
+    app.quit();
   });
 
   mainWindow.on("closed", () => {
@@ -273,11 +284,15 @@ app.whenReady().then(() => {
   createMenu();
   ensureTerminalPastePermissions();
 
+  app.on("before-quit", () => {
+    isQuitting = true;
+  });
+
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
 });
 
 app.on("window-all-closed", () => {
-  if (process.platform !== "darwin") app.quit();
+  app.quit();
 });

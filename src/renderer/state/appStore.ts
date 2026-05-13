@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { AppConfig, AppSettings, ShellProfile, SplitDirection, TerminalTab, Workspace, TabType } from "../../main/sharedTypes";
+import type { AppConfig, AppSettings, ShellProfile, SplitDirection, TerminalTab, Workspace } from "../../main/sharedTypes";
 import { createId } from "../utils/ids";
 import { closePane as closePaneNode, collectPaneIds, createPaneNode, findPane, splitPaneWithId, updateSplitRatio } from "../utils/layout";
 
@@ -19,7 +19,7 @@ interface AppState {
   renameWorkspace: (workspaceId: string, name: string) => void;
   selectWorkspace: (workspaceId: string) => void;
   moveWorkspace: (fromIndex: number, toIndex: number) => void;
-  addTab: (workspaceId?: string, type?: TabType) => void;
+  addTab: (workspaceId?: string) => void;
   closeTab: (workspaceId: string, tabId: string) => void;
   selectTab: (workspaceId: string, tabId: string) => void;
   renameTab: (workspaceId: string, tabId: string, title: string) => void;
@@ -49,11 +49,11 @@ async function anyBusyPane(paneIds: string[]): Promise<boolean> {
   return statuses.some(Boolean);
 }
 
-function newTab(title = "Terminal", cwd?: string, settings?: AppSettings, type: TabType = "terminal"): TerminalTab {
+function newTab(title = "Terminal", cwd?: string, settings?: AppSettings): TerminalTab {
   const pane = createPaneNode(undefined, settings ? paneMeta(settings, cwd) : {});
   return {
     id: createId("tab"),
-    type,
+    type: "terminal",
     title,
     layout: pane,
     activePaneId: pane.id
@@ -178,15 +178,15 @@ export const useAppStore = create<AppState>((set, get) => ({
     });
   },
 
-  addTab: (workspaceId, type = "terminal") => {
+  addTab: (workspaceId) => {
     mutateConfig(set, get, (draft) => {
       const workspace = workspaceId
         ? draft.workspaces.find((item) => item.id === workspaceId)
         : getActiveWorkspace(draft);
       if (!workspace) return;
 
-      const title = type === "git" ? "Git Browser" : `Terminal ${workspace.tabs.length + 1}`;
-      const terminalTab = newTab(title, workspace.path, draft.settings, type);
+      const title = `Terminal ${workspace.tabs.length + 1}`;
+      const terminalTab = newTab(title, workspace.path, draft.settings);
       workspace.tabs.push(terminalTab);
       workspace.activeTabId = terminalTab.id;
       workspace.updatedAt = Date.now();
