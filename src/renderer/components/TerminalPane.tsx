@@ -121,7 +121,16 @@ export function TerminalPane({ workspace, tab, paneId, settings }: TerminalPaneP
 
     const fitAndResize = (): void => {
       if (!termRef.current || !fitRef.current) return;
-      fitRef.current.fit();
+      const dimensions = fitRef.current.proposeDimensions();
+      if (!dimensions) return;
+
+      // Keep one extra cell of breathing room on the right. The terminal host is
+      // padded, but xterm's fit addon measures the border-box parent, which can
+      // otherwise place the final column under the clipped edge of the pane.
+      const cols = Math.max(2, dimensions.cols - 1);
+      if (terminal.cols !== cols || terminal.rows !== dimensions.rows) {
+        terminal.resize(cols, dimensions.rows);
+      }
       if (startedSessions.has(paneId)) window.tpm.pty.resize({ sessionId: paneId, cols: terminal.cols, rows: terminal.rows });
     };
 
@@ -129,7 +138,7 @@ export function TerminalPane({ workspace, tab, paneId, settings }: TerminalPaneP
     observer.observe(host);
 
     requestAnimationFrame(() => {
-      fit.fit();
+      fitAndResize();
       if (startedSessions.has(paneId)) {
         void window.tpm.terminalSession?.replay(paneId);
       } else {
@@ -140,26 +149,25 @@ export function TerminalPane({ workspace, tab, paneId, settings }: TerminalPaneP
       terminal.focus();
     });
 
-    const disposable = terminal.onKey(({ key, domEvent }) => {
+    const isDormantIgnoredInput = (data: string): boolean => {
+      // Do not start a shell for destructive/navigation keys while the pane only
+      // shows the placeholder prompt. Pasted text arrives through onData too, so
+      // printable multi-character input must be allowed to start the PTY.
+      return data === "\x7f" || data === "\x1b[3~";
+    };
+
+    const disposable = terminal.onData((data) => {
       if (startedSessions.has(paneId)) {
-        window.tpm.pty.write(paneId, key);
+        window.tpm.pty.write(paneId, data);
         return;
       }
 
-      // Check for backspace (8) or delete (46)
-      if (domEvent.keyCode === 8 || domEvent.keyCode === 46) {
-        return;
-      }
+      if (!data || isDormantIgnoredInput(data)) return;
 
-      // Check for other "dead" keys that shouldn't trigger PTY start (e.g. Meta, Ctrl, Alt, Shift alone)
-      if ([16, 17, 18, 91, 93].includes(domEvent.keyCode)) {
-        return;
-      }
-
-      // Clear the placeholder prompt before starting the real PTY
+      // Clear the placeholder prompt before starting the real PTY.
       terminal.write("\r\x1b[K");
       startPty();
-      window.tpm.pty.write(paneId, key);
+      window.tpm.pty.write(paneId, data);
     });
     const removeDataListener = window.tpm.pty.onData((sessionId, data) => {
       if (sessionId !== paneId) return;
@@ -195,8 +203,13 @@ export function TerminalPane({ workspace, tab, paneId, settings }: TerminalPaneP
     terminal.options.cursorBlink = settings.cursorBlink;
     terminal.options.cursorStyle = settings.cursorStyle;
     requestAnimationFrame(() => {
-      fitRef.current?.fit();
-      if (termRef.current && startedSessions.has(paneId)) {
+      const dimensions = fitRef.current?.proposeDimensions();
+      if (!termRef.current || !dimensions) return;
+      const cols = Math.max(2, dimensions.cols - 1);
+      if (termRef.current.cols !== cols || termRef.current.rows !== dimensions.rows) {
+        termRef.current.resize(cols, dimensions.rows);
+      }
+      if (startedSessions.has(paneId)) {
         window.tpm.pty.resize({ sessionId: paneId, cols: termRef.current.cols, rows: termRef.current.rows });
       }
     });
