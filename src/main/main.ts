@@ -1,4 +1,3 @@
-import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -103,15 +102,7 @@ function ensureTerminalPastePermissions(): TerminalPastePermissionStatus {
 }
 
 async function readClipboardForTerminal(): Promise<TerminalClipboardPayload> {
-  const text = clipboard.readText();
-  const image = clipboard.readImage();
-  if (text || image.isEmpty()) return { text, imagePath: null };
-
-  const pasteDir = path.join(app.getPath("temp"), "swath-paste");
-  await fs.mkdir(pasteDir, { recursive: true });
-  const imagePath = path.join(pasteDir, `clipboard-${Date.now()}.png`);
-  await fs.writeFile(imagePath, image.toPNG());
-  return { text: "", imagePath };
+  return { text: clipboard.readText(), imagePath: null };
 }
 
 function createMenu(): void {

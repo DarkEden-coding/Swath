@@ -896,7 +896,8 @@ p {
   background-color: transparent;
 }
 
-.xterm-viewport:hover::-webkit-scrollbar-thumb {
+.xterm-viewport:hover::-webkit-scrollbar-thumb,
+.terminal-host.is-scrolling .xterm-viewport::-webkit-scrollbar-thumb {
   background-color: var(--border-strong);
 }
 

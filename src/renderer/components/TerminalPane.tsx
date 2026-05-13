@@ -1,11 +1,10 @@
-import { useEffect, useRef, useState, type ClipboardEvent, type KeyboardEvent, type MouseEvent } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
 import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { Terminal } from "@xterm/xterm";
 import type { AppSettings, ShellProfile, TerminalTab, Workspace } from "../../main/sharedTypes";
 import { findPane } from "../utils/layout";
-import { formatPathPaste, getClipboardEventFilePaths, getClipboardEventText } from "../utils/terminalPaste";
 import { useAppStore } from "../state/appStore";
 import { IconClose, IconColumns, IconRows } from "./icons";
 
@@ -17,6 +16,7 @@ interface TerminalPaneProps {
 }
 
 const startedSessions = new Set<string>();
+const TERMINAL_COL_RESERVE = 2;
 
 function shellFor(settings: AppSettings): ShellProfile | null {
   return settings.shellProfiles.find((profile) => profile.id === settings.defaultShellProfileId) ?? settings.shellProfiles[0] ?? null;
@@ -35,6 +35,7 @@ export function TerminalPane({ workspace, tab, paneId, settings }: TerminalPaneP
   const searchRef = useRef<SearchAddon | null>(null);
   const bannerSentRef = useRef(false);
   const dormantInputRef = useRef("");
+  const scrollbarHideTimerRef = useRef<number | null>(null);
   const [exited, setExited] = useState(false);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
   const [searchOpen, setSearchOpen] = useState(false);
@@ -126,10 +127,11 @@ export function TerminalPane({ workspace, tab, paneId, settings }: TerminalPaneP
       const dimensions = fitRef.current.proposeDimensions();
       if (!dimensions) return;
 
-      // Keep one extra cell of breathing room on the right. The terminal host is
-      // padded, but xterm's fit addon measures the border-box parent, which can
-      // otherwise place the final column under the clipped edge of the pane.
-      const cols = Math.max(2, dimensions.cols - 1);
+      // Keep a small amount of breathing room on the right. xterm's fit addon
+      // can overestimate by a cell or two with fractional font metrics and the
+      // scrollbar gutter, which places the final prompt/status cells under the
+      // clipped edge of the pane.
+      const cols = Math.max(2, dimensions.cols - TERMINAL_COL_RESERVE);
       if (terminal.cols !== cols || terminal.rows !== dimensions.rows) {
         terminal.resize(cols, dimensions.rows);
       }
@@ -197,11 +199,25 @@ export function TerminalPane({ workspace, tab, paneId, settings }: TerminalPaneP
       terminal.write(message);
     });
 
+    const viewport = host.querySelector<HTMLElement>(".xterm-viewport");
+    const showScrollbar = (): void => {
+      host.classList.add("is-scrolling");
+      if (scrollbarHideTimerRef.current !== null) window.clearTimeout(scrollbarHideTimerRef.current);
+      scrollbarHideTimerRef.current = window.setTimeout(() => {
+        host.classList.remove("is-scrolling");
+        scrollbarHideTimerRef.current = null;
+      }, 800);
+    };
+    viewport?.addEventListener("scroll", showScrollbar, { passive: true });
+
     return () => {
       observer.disconnect();
       disposable.dispose();
       removeDataListener();
       removeExitListener();
+      viewport?.removeEventListener("scroll", showScrollbar);
+      if (scrollbarHideTimerRef.current !== null) window.clearTimeout(scrollbarHideTimerRef.current);
+      host.classList.remove("is-scrolling");
       terminal.dispose();
       termRef.current = null;
       fitRef.current = null;
@@ -221,7 +237,7 @@ export function TerminalPane({ workspace, tab, paneId, settings }: TerminalPaneP
     requestAnimationFrame(() => {
       const dimensions = fitRef.current?.proposeDimensions();
       if (!termRef.current || !dimensions) return;
-      const cols = Math.max(2, dimensions.cols - 1);
+      const cols = Math.max(2, dimensions.cols - TERMINAL_COL_RESERVE);
       if (termRef.current.cols !== cols || termRef.current.rows !== dimensions.rows) {
         termRef.current.resize(cols, dimensions.rows);
       }
@@ -250,26 +266,7 @@ export function TerminalPane({ workspace, tab, paneId, settings }: TerminalPaneP
   const paste = async (): Promise<void> => {
     await window.tpm.permissions.ensureTerminalPaste();
     const payload = await window.tpm.clipboard.readForTerminal();
-    pasteToTerminal(payload.text || (payload.imagePath ? formatPathPaste([payload.imagePath]) : ""));
-  };
-
-  const onPaste = async (event: ClipboardEvent<HTMLDivElement>): Promise<void> => {
-    event.preventDefault();
-    event.stopPropagation();
-
-    const text = getClipboardEventText(event);
-    if (text) {
-      pasteToTerminal(text);
-      return;
-    }
-
-    const filePaths = getClipboardEventFilePaths(event);
-    if (filePaths.length > 0) {
-      pasteToTerminal(formatPathPaste(filePaths));
-      return;
-    }
-
-    await paste();
+    pasteToTerminal(payload.text);
   };
 
   const restart = (): void => {
@@ -366,7 +363,7 @@ export function TerminalPane({ workspace, tab, paneId, settings }: TerminalPaneP
           </button>
         </div>
       </div>
-      <div ref={hostRef} className="terminal-host" onPasteCapture={(event: ClipboardEvent<HTMLDivElement>) => void onPaste(event)} />
+      <div ref={hostRef} className="terminal-host" />
       {searchOpen ? (
         <div className="terminal-search">
           <input autoFocus value={searchQuery} placeholder="Find" onChange={(event) => onSearch(event.target.value)} onKeyDown={(event) => {
