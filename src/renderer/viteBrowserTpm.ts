@@ -82,6 +82,12 @@ function createStubTpm(): TpmApi {
     dialog: {
       selectFolder: async () => ({ canceled: true, path: null, name: null })
     },
+    clipboard: {
+      readForTerminal: async () => ({ text: "", imagePath: null })
+    },
+    permissions: {
+      ensureTerminalPaste: async () => ({ accessibility: "unavailable" })
+    },
     pty: {
       create: () => {},
       write: () => {},

@@ -1,11 +1,14 @@
+import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   app,
   BrowserWindow,
+  clipboard,
   dialog,
   ipcMain,
   Menu,
+  systemPreferences,
   type MenuItemConstructorOptions,
 } from "electron";
 import { loadConfig, saveConfig } from "./configStore";
@@ -15,6 +18,8 @@ import type {
   FolderSelectResult,
   PtyCreateRequest,
   PtyResizeRequest,
+  TerminalClipboardPayload,
+  TerminalPastePermissionStatus,
   TerminalSessionAttachRequest,
 } from "./sharedTypes";
 
@@ -86,6 +91,29 @@ function sendCommand(command: string): void {
   mainWindow?.webContents.send("app:command", command);
 }
 
+function ensureTerminalPastePermissions(): TerminalPastePermissionStatus {
+  if (process.platform !== "darwin") return { accessibility: "unavailable" };
+
+  const granted = systemPreferences.isTrustedAccessibilityClient(false);
+  if (granted) return { accessibility: "granted" };
+
+  // Opens macOS System Settings to the Accessibility permission prompt/list.
+  systemPreferences.isTrustedAccessibilityClient(true);
+  return { accessibility: "prompted" };
+}
+
+async function readClipboardForTerminal(): Promise<TerminalClipboardPayload> {
+  const text = clipboard.readText();
+  const image = clipboard.readImage();
+  if (text || image.isEmpty()) return { text, imagePath: null };
+
+  const pasteDir = path.join(app.getPath("temp"), "swath-paste");
+  await fs.mkdir(pasteDir, { recursive: true });
+  const imagePath = path.join(pasteDir, `clipboard-${Date.now()}.png`);
+  await fs.writeFile(imagePath, image.toPNG());
+  return { text: "", imagePath };
+}
+
 function createMenu(): void {
   const template: MenuItemConstructorOptions[] = [
     ...(process.platform === "darwin"
@@ -106,6 +134,21 @@ function createMenu(): void {
           },
         ]
       : []),
+    {
+      label: "Edit",
+      submenu: [
+        { role: "undo" },
+        { role: "redo" },
+        { type: "separator" },
+        { role: "cut" },
+        { role: "copy" },
+        { role: "paste" },
+        { role: "pasteAndMatchStyle" },
+        { role: "delete" },
+        { type: "separator" },
+        { role: "selectAll" },
+      ],
+    },
     {
       label: "File",
       submenu: [
@@ -174,6 +217,9 @@ app.whenReady().then(() => {
   ipcMain.handle("config:save", async (_event, config: AppConfig) =>
     saveConfig(config),
   );
+  ipcMain.handle("clipboard:read-for-terminal", readClipboardForTerminal);
+  ipcMain.handle("permissions:ensure-terminal-paste", ensureTerminalPastePermissions);
+
   ipcMain.handle(
     "dialog:select-folder",
     async (): Promise<FolderSelectResult> => {
@@ -231,6 +277,7 @@ app.whenReady().then(() => {
 
   createWindow();
   createMenu();
+  ensureTerminalPastePermissions();
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();

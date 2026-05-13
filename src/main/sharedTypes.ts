@@ -124,3 +124,12 @@ export interface FolderSelectResult {
   path: string | null;
   name: string | null;
 }
+
+export interface TerminalClipboardPayload {
+  text: string;
+  imagePath: string | null;
+}
+
+export interface TerminalPastePermissionStatus {
+  accessibility: "granted" | "prompted" | "unavailable";
+}

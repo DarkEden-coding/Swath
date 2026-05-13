@@ -13,6 +13,7 @@
     "build": "electron-vite build",
     "prebuild": "npm run rebuild:native",
     "typecheck": "tsc --noEmit",
+    "test": "node --experimental-strip-types scripts/test-terminal-paste.mjs",
     "dist": "npm run build && electron-builder",
     "install:mac": "bash scripts/install-mac.sh",
     "install:win": "powershell -ExecutionPolicy Bypass -File scripts/install-windows.ps1",

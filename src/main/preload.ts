@@ -4,6 +4,8 @@ import type {
   FolderSelectResult,
   PtyCreateRequest,
   PtyResizeRequest,
+  TerminalClipboardPayload,
+  TerminalPastePermissionStatus,
   TerminalSessionAttachRequest,
   TerminalSessionStatus,
 } from "./sharedTypes";
@@ -16,6 +18,12 @@ const api = {
   },
   dialog: {
     selectFolder: (): Promise<FolderSelectResult> => ipcRenderer.invoke("dialog:select-folder")
+  },
+  clipboard: {
+    readForTerminal: (): Promise<TerminalClipboardPayload> => ipcRenderer.invoke("clipboard:read-for-terminal")
+  },
+  permissions: {
+    ensureTerminalPaste: (): Promise<TerminalPastePermissionStatus> => ipcRenderer.invoke("permissions:ensure-terminal-paste")
   },
   pty: {
     create: (request: PtyCreateRequest): void => ipcRenderer.send("pty:create", request),

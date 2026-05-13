@@ -5,6 +5,7 @@ import { WebLinksAddon } from "@xterm/addon-web-links";
 import { Terminal } from "@xterm/xterm";
 import type { AppSettings, ShellProfile, TerminalTab, Workspace } from "../../main/sharedTypes";
 import { findPane } from "../utils/layout";
+import { formatPathPaste, getClipboardEventFilePaths, getClipboardEventText } from "../utils/terminalPaste";
 import { useAppStore } from "../state/appStore";
 import { IconClose, IconColumns, IconRows } from "./icons";
 
@@ -225,9 +226,35 @@ export function TerminalPane({ workspace, tab, paneId, settings }: TerminalPaneP
     if (selection) await navigator.clipboard.writeText(selection);
   };
 
+  const pasteToTerminal = (data: string): void => {
+    if (!data) return;
+    termRef.current?.focus();
+    termRef.current?.paste(data);
+  };
+
   const paste = async (): Promise<void> => {
-    const text = await navigator.clipboard.readText();
-    if (text) termRef.current?.paste(text);
+    await window.tpm.permissions.ensureTerminalPaste();
+    const payload = await window.tpm.clipboard.readForTerminal();
+    pasteToTerminal(payload.text || (payload.imagePath ? formatPathPaste([payload.imagePath]) : ""));
+  };
+
+  const onPaste = async (event: ClipboardEvent<HTMLDivElement>): Promise<void> => {
+    event.preventDefault();
+    event.stopPropagation();
+
+    const text = getClipboardEventText(event);
+    if (text) {
+      pasteToTerminal(text);
+      return;
+    }
+
+    const filePaths = getClipboardEventFilePaths(event);
+    if (filePaths.length > 0) {
+      pasteToTerminal(formatPathPaste(filePaths));
+      return;
+    }
+
+    await paste();
   };
 
   const restart = (): void => {
@@ -324,7 +351,7 @@ export function TerminalPane({ workspace, tab, paneId, settings }: TerminalPaneP
           </button>
         </div>
       </div>
-      <div ref={hostRef} className="terminal-host" onPaste={(_: ClipboardEvent<HTMLDivElement>) => undefined} />
+      <div ref={hostRef} className="terminal-host" onPasteCapture={(event: ClipboardEvent<HTMLDivElement>) => void onPaste(event)} />
       {searchOpen ? (
         <div className="terminal-search">
           <input autoFocus value={searchQuery} placeholder="Find" onChange={(event) => onSearch(event.target.value)} onKeyDown={(event) => {
