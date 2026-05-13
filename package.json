@@ -1,0 +1,69 @@
+{
+  "name": "terminal-project-manager",
+  "version": "0.1.0",
+  "description": "A lightweight terminal-first project/workspace manager for coding agents.",
+  "main": "out/main/main.js",
+  "author": "Generated with ChatGPT",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "predev": "npm run rebuild:native",
+    "build": "electron-vite build",
+    "prebuild": "npm run rebuild:native",
+    "typecheck": "tsc --noEmit",
+    "dist": "npm run build && electron-builder",
+    "rebuild:native": "electron-builder install-app-deps",
+    "postinstall": "npm run rebuild:native"
+  },
+  "dependencies": {
+    "@xterm/addon-fit": "^0.10.0",
+    "@xterm/addon-search": "^0.15.0",
+    "@xterm/addon-web-links": "^0.11.0",
+    "@xterm/xterm": "^5.5.0",
+    "better-sqlite3": "^12.10.0",
+    "node-pty": "^1.0.0",
+    "zustand": "^5.0.3"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^22.10.2",
+    "@types/react": "^19.0.2",
+    "@types/react-dom": "^19.0.2",
+    "@vitejs/plugin-react": "^4.3.4",
+    "electron": "^33.2.1",
+    "electron-builder": "^25.1.8",
+    "electron-vite": "^2.3.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "typescript": "^5.7.2",
+    "vite": "^5.0.0"
+  },
+  "build": {
+    "appId": "dev.generated.terminalprojectmanager",
+    "productName": "Terminus",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "out/**/*",
+      "node_modules/**/*",
+      "package.json"
+    ],
+    "mac": {
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "category": "public.app-category.developer-tools"
+    },
+    "win": {
+      "target": [
+        "nsis",
+        "zip"
+      ]
+    },
+    "npmRebuild": true
+  }
+}

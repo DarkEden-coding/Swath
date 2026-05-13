@@ -1,0 +1,195 @@
+import fs from "node:fs";
+import os from "node:os";
+import { BrowserWindow } from "electron";
+import * as pty from "node-pty";
+import type { IPty } from "node-pty";
+import type {
+  PtyResizeRequest,
+  ShellProfile,
+  TerminalSessionAttachRequest,
+  TerminalSessionStartRequest,
+  TerminalSessionStatus,
+} from "./sharedTypes";
+import { defaultShellProfiles } from "./defaults";
+
+const MAX_REPLAY_BUFFER_BYTES = 8 * 1024 * 1024;
+
+interface TerminalSession {
+  id: string;
+  request: TerminalSessionStartRequest;
+  pty: IPty | null;
+  replayChunks: string[];
+  replayBytes: number;
+  cols: number;
+  rows: number;
+}
+
+export class TerminalSessionManager {
+  private sessions = new Map<string, TerminalSession>();
+
+  constructor(private readonly window: BrowserWindow) {}
+
+  attach(request: TerminalSessionAttachRequest): TerminalSessionStatus {
+    const session = this.ensureSession(request);
+    if (!session.pty) this.startSession(session);
+    if (request.replay !== false) this.sendReplay(session);
+    return { sessionId: request.sessionId, running: Boolean(session.pty) };
+  }
+
+  create(request: TerminalSessionStartRequest): void {
+    void this.attach({ ...request, replay: false });
+  }
+
+  replay(sessionId: string): TerminalSessionStatus {
+    const session = this.sessions.get(sessionId);
+    if (!session) return { sessionId, running: false };
+    this.sendReplay(session);
+    return { sessionId, running: Boolean(session.pty) };
+  }
+
+  restart(sessionId: string): TerminalSessionStatus {
+    const session = this.sessions.get(sessionId);
+    if (!session) return { sessionId, running: false };
+    this.killPty(session);
+    session.replayChunks = [];
+    session.replayBytes = 0;
+    this.startSession(session);
+    return { sessionId, running: Boolean(session.pty) };
+  }
+
+  isRunning(sessionId: string): boolean {
+    return Boolean(this.sessions.get(sessionId)?.pty);
+  }
+
+  hasRunningSessions(): boolean {
+    return [...this.sessions.values()].some((session) => Boolean(session.pty));
+  }
+
+  write(sessionId: string, data: string): void {
+    this.sessions.get(sessionId)?.pty?.write(data);
+  }
+
+  resize(request: PtyResizeRequest): void {
+    const session = this.sessions.get(request.sessionId);
+    if (!session) return;
+
+    const cols = Math.max(2, Math.floor(request.cols));
+    const rows = Math.max(1, Math.floor(request.rows));
+    session.cols = cols;
+    session.rows = rows;
+    session.pty?.resize(cols, rows);
+  }
+
+  kill(sessionId: string): void {
+    const session = this.sessions.get(sessionId);
+    if (!session) return;
+    this.killPty(session);
+    this.sessions.delete(sessionId);
+  }
+
+  killAll(): void {
+    for (const sessionId of [...this.sessions.keys()]) this.kill(sessionId);
+  }
+
+  private ensureSession(request: TerminalSessionStartRequest): TerminalSession {
+    const existing = this.sessions.get(request.sessionId);
+    if (existing) {
+      existing.request = { ...existing.request, ...request };
+      existing.cols = Math.max(2, Math.floor(request.cols || existing.cols));
+      existing.rows = Math.max(1, Math.floor(request.rows || existing.rows));
+      return existing;
+    }
+
+    const session: TerminalSession = {
+      id: request.sessionId,
+      request,
+      pty: null,
+      replayChunks: [],
+      replayBytes: 0,
+      cols: Math.max(2, Math.floor(request.cols || 120)),
+      rows: Math.max(1, Math.floor(request.rows || 30)),
+    };
+    this.sessions.set(request.sessionId, session);
+    return session;
+  }
+
+  private startSession(session: TerminalSession): void {
+    if (session.pty) return;
+
+    const cwd = fs.existsSync(session.request.cwd) ? session.request.cwd : os.homedir();
+    const shell = this.resolveShell(session.request.shellProfile ?? null);
+    const env = {
+      ...process.env,
+      ...shell.env,
+      ...session.request.env,
+      TERM_PROGRAM: "terminal-project-manager",
+      COLORTERM: "truecolor",
+    } as NodeJS.ProcessEnv;
+
+    const ptyProcess = pty.spawn(shell.command, shell.args, {
+      name: "xterm-256color",
+      cols: session.cols,
+      rows: session.rows,
+      cwd,
+      env,
+    });
+
+    session.pty = ptyProcess;
+
+    ptyProcess.onData((data) => {
+      this.appendReplay(session, data);
+      this.send("pty:data", session.id, data);
+      this.send("terminal-session:data", session.id, data);
+    });
+
+    ptyProcess.onExit(({ exitCode, signal }) => {
+      session.pty = null;
+      this.send("pty:exit", session.id, { exitCode, signal });
+      this.send("terminal-session:exit", session.id, { exitCode, signal });
+    });
+  }
+
+  private appendReplay(session: TerminalSession, data: string): void {
+    if (data.includes("\x1bc") || data.includes("\x1b[2J") || data.includes("\x1b[3J")) {
+      session.replayChunks = [];
+      session.replayBytes = 0;
+    }
+    session.replayChunks.push(data);
+    session.replayBytes += Buffer.byteLength(data);
+    while (session.replayBytes > MAX_REPLAY_BUFFER_BYTES && session.replayChunks.length > 0) {
+      const removed = session.replayChunks.shift() ?? "";
+      session.replayBytes -= Buffer.byteLength(removed);
+    }
+  }
+
+  private sendReplay(session: TerminalSession): void {
+    if (session.replayChunks.length > 0) {
+      this.send("pty:data", session.id, session.replayChunks.join(""));
+      this.send("terminal-session:data", session.id, session.replayChunks.join(""));
+    }
+  }
+
+  private killPty(session: TerminalSession): void {
+    try {
+      session.pty?.kill();
+    } finally {
+      session.pty = null;
+    }
+  }
+
+  private send(channel: string, ...args: unknown[]): void {
+    if (!this.window.isDestroyed()) this.window.webContents.send(channel, ...args);
+  }
+
+  private resolveShell(profile: ShellProfile | null): ShellProfile {
+    if (profile?.command) return profile;
+    return defaultShellProfiles()[0] ?? {
+      id: "system",
+      name: "System shell",
+      command: process.platform === "win32" ? "powershell.exe" : process.env.SHELL || "/bin/sh",
+      args: process.platform === "win32" ? ["-NoLogo"] : ["-l"],
+    };
+  }
+}
+
+export class PtyManager extends TerminalSessionManager {}
