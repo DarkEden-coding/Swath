@@ -63,7 +63,7 @@ export function TabBar({ workspace, sidebarCollapsed, onToggleSidebar }: TabBarP
         </button>
         {showTypeSelector && (
           <div className="tab-type-selector">
-            <button className="tab-type-btn" onClick={() => { addTab(workspace.id, "terminal"); setShowTypeSelector(false); }}>
+            <button className="tab-type-btn" onClick={() => { addTab(workspace.id); setShowTypeSelector(false); }}>
               <IconTerminal width={16} height={16} />
               <span>Terminal</span>
             </button>
