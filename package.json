@@ -14,6 +14,8 @@
     "prebuild": "npm run rebuild:native",
     "typecheck": "tsc --noEmit",
     "dist": "npm run build && electron-builder",
+    "install:mac": "bash scripts/install-mac.sh",
+    "install:win": "powershell -ExecutionPolicy Bypass -File scripts/install-windows.ps1",
     "rebuild:native": "electron-builder install-app-deps",
     "postinstall": "npm run rebuild:native"
   },
