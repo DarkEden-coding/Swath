@@ -34,6 +34,7 @@ export function TerminalPane({ workspace, tab, paneId, settings }: TerminalPaneP
   const fitRef = useRef<FitAddon | null>(null);
   const searchRef = useRef<SearchAddon | null>(null);
   const bannerSentRef = useRef(false);
+  const dormantInputRef = useRef("");
   const [exited, setExited] = useState(false);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
   const [searchOpen, setSearchOpen] = useState(false);
@@ -157,7 +158,7 @@ export function TerminalPane({ workspace, tab, paneId, settings }: TerminalPaneP
       return data === "\x1b[3~";
     };
 
-    const dormantInputRef = useRef("");
+    dormantInputRef.current = "";
 
     const disposable = terminal.onData((data) => {
       if (startedSessions.has(paneId)) {
