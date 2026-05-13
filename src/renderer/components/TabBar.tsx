@@ -1,7 +1,7 @@
-import { useState } from "react";
+import { useState, useRef, useEffect } from "react";
 import type { TabHealth, Workspace } from "../../main/sharedTypes";
 import { useAppStore } from "../state/appStore";
-import { IconChevronsLeft, IconClose, IconPlus } from "./icons";
+import { IconChevronsLeft, IconClose, IconPlus, IconTerminal, IconGitBranch } from "./icons";
 
 interface TabBarProps {
   workspace: Workspace;
@@ -20,6 +20,18 @@ export function TabBar({ workspace, sidebarCollapsed, onToggleSidebar }: TabBarP
   const closeTab = useAppStore((state) => state.closeTab);
   const renameTab = useAppStore((state) => state.renameTab);
   const addTab = useAppStore((state) => state.addTab);
+  const [showTypeSelector, setShowTypeSelector] = useState(false);
+  const selectorRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    function handleClickOutside(event: MouseEvent) {
+      if (selectorRef.current && !selectorRef.current.contains(event.target as Node)) {
+        setShowTypeSelector(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
 
   return (
     <div className="tabbar">
@@ -45,9 +57,23 @@ export function TabBar({ workspace, sidebarCollapsed, onToggleSidebar }: TabBarP
           />
         ))}
       </div>
-      <button className="tab-add" type="button" onClick={() => addTab(workspace.id)} title="New tab">
-        <IconPlus width={16} height={16} />
-      </button>
+      <div className="tab-add-container" ref={selectorRef}>
+        <button className="tab-add" type="button" onClick={() => addTab(workspace.id)} title="New tab" onContextMenu={(e) => { e.preventDefault(); setShowTypeSelector(!showTypeSelector); }}>
+          <IconPlus width={16} height={16} />
+        </button>
+        {showTypeSelector && (
+          <div className="tab-type-selector">
+            <button className="tab-type-btn" onClick={() => { addTab(workspace.id, "terminal"); setShowTypeSelector(false); }}>
+              <IconTerminal width={16} height={16} />
+              <span>Terminal</span>
+            </button>
+            <button className="tab-type-btn" onClick={() => { addTab(workspace.id, "git"); setShowTypeSelector(false); }}>
+              <IconGitBranch width={16} height={16} />
+              <span>Git Browser</span>
+            </button>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

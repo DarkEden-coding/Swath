@@ -96,6 +96,18 @@ function createStubTpm(): TpmApi {
       onData: () => () => {},
       onExit: () => () => {}
     },
+    terminalSession: {
+      attach: async () => ({ sessionId: "", running: false }),
+      restart: async () => ({ sessionId: "", running: false }),
+      replay: async () => ({ sessionId: "", running: false }),
+      isRunning: async () => false,
+      isBusy: async () => false,
+      write: () => {},
+      resize: () => {},
+      kill: () => {},
+      onData: () => () => {},
+      onExit: () => () => {}
+    },
     app: {
       onCommand: () => () => {}
     }

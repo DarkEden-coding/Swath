@@ -219,6 +219,7 @@ export function TerminalPane({ workspace, tab, paneId, settings }: TerminalPaneP
       if (scrollbarHideTimerRef.current !== null) window.clearTimeout(scrollbarHideTimerRef.current);
       host.classList.remove("is-scrolling");
       terminal.dispose();
+      startedSessions.delete(paneId);
       termRef.current = null;
       fitRef.current = null;
       searchRef.current = null;
@@ -277,9 +278,6 @@ export function TerminalPane({ workspace, tab, paneId, settings }: TerminalPaneP
   };
 
   const close = (): void => {
-    if (startedSessions.has(paneId) && !window.confirm("Close this running terminal?")) return;
-    window.tpm.pty.kill(paneId);
-    startedSessions.delete(paneId);
     closePane(workspace.id, tab.id, paneId);
   };
 

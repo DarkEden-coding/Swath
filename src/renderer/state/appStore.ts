@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { AppConfig, AppSettings, ShellProfile, SplitDirection, TerminalTab, Workspace } from "../../main/sharedTypes";
+import type { AppConfig, AppSettings, ShellProfile, SplitDirection, TerminalTab, Workspace, TabType } from "../../main/sharedTypes";
 import { createId } from "../utils/ids";
 import { closePane as closePaneNode, collectPaneIds, createPaneNode, findPane, splitPaneWithId, updateSplitRatio } from "../utils/layout";
 
@@ -19,7 +19,7 @@ interface AppState {
   renameWorkspace: (workspaceId: string, name: string) => void;
   selectWorkspace: (workspaceId: string) => void;
   moveWorkspace: (fromIndex: number, toIndex: number) => void;
-  addTab: (workspaceId?: string) => void;
+  addTab: (workspaceId?: string, type?: TabType) => void;
   closeTab: (workspaceId: string, tabId: string) => void;
   selectTab: (workspaceId: string, tabId: string) => void;
   renameTab: (workspaceId: string, tabId: string, title: string) => void;
@@ -44,10 +44,16 @@ function paneMeta(settings: AppSettings, cwd?: string) {
   return { cwd, shellProfile, env: { ...(settings.globalEnv ?? {}) }, metadata: { cwd, shellProfileId: shellProfile?.id, shellProfile, env: { ...(settings.globalEnv ?? {}) } } };
 }
 
-function newTab(title = "Terminal", cwd?: string, settings?: AppSettings): TerminalTab {
+async function anyBusyPane(paneIds: string[]): Promise<boolean> {
+  const statuses = await Promise.all(paneIds.map((paneId) => window.tpm.terminalSession?.isBusy(paneId) ?? Promise.resolve(false)));
+  return statuses.some(Boolean);
+}
+
+function newTab(title = "Terminal", cwd?: string, settings?: AppSettings, type: TabType = "terminal"): TerminalTab {
   const pane = createPaneNode(undefined, settings ? paneMeta(settings, cwd) : {});
   return {
     id: createId("tab"),
+    type,
     title,
     layout: pane,
     activePaneId: pane.id
@@ -172,14 +178,15 @@ export const useAppStore = create<AppState>((set, get) => ({
     });
   },
 
-  addTab: (workspaceId) => {
+  addTab: (workspaceId, type = "terminal") => {
     mutateConfig(set, get, (draft) => {
       const workspace = workspaceId
         ? draft.workspaces.find((item) => item.id === workspaceId)
         : getActiveWorkspace(draft);
       if (!workspace) return;
 
-      const terminalTab = newTab(`Terminal ${workspace.tabs.length + 1}`, workspace.path, draft.settings);
+      const title = type === "git" ? "Git Browser" : `Terminal ${workspace.tabs.length + 1}`;
+      const terminalTab = newTab(title, workspace.path, draft.settings, type);
       workspace.tabs.push(terminalTab);
       workspace.activeTabId = terminalTab.id;
       workspace.updatedAt = Date.now();
@@ -188,24 +195,29 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   closeTab: (workspaceId, tabId) => {
-    const existingWorkspace = get().config?.workspaces.find((item) => item.id === workspaceId);
-    const existingTab = existingWorkspace?.tabs.find((item) => item.id === tabId);
-    const paneIds = existingTab ? collectPaneIds(existingTab.layout) : [];
-    if (paneIds.length > 0 && !window.confirm("Close this tab and kill its terminal sessions?")) return;
-    paneIds.forEach((paneId) => window.tpm.pty.kill(paneId));
-    mutateConfig(set, get, (draft) => {
-      const workspace = draft.workspaces.find((item) => item.id === workspaceId);
-      if (!workspace || workspace.tabs.length <= 1) return;
-      const index = workspace.tabs.findIndex((tab) => tab.id === tabId);
-      if (index === -1) return;
-      workspace.tabs.splice(index, 1);
-      if (workspace.activeTabId === tabId) {
-        workspace.activeTabId = workspace.tabs[Math.max(0, index - 1)]?.id ?? workspace.tabs[0].id;
+    void (async () => {
+      const existingWorkspace = get().config?.workspaces.find((item) => item.id === workspaceId);
+      const existingTab = existingWorkspace?.tabs.find((item) => item.id === tabId);
+      const paneIds = existingTab ? collectPaneIds(existingTab.layout) : [];
+      const confirmBeforeClosing = Boolean(get().config?.settings.confirmBeforeClosingPane);
+      if (confirmBeforeClosing && paneIds.length > 0 && (await anyBusyPane(paneIds))) {
+        if (!window.confirm("Close this tab and kill its running terminal sessions?")) return;
       }
-      const activeTab = workspace.tabs.find((tab) => tab.id === workspace.activeTabId) ?? workspace.tabs[0];
-      set({ activePaneId: activeTab.activePaneId });
-      workspace.updatedAt = Date.now();
-    });
+      paneIds.forEach((paneId) => window.tpm.pty.kill(paneId));
+      mutateConfig(set, get, (draft) => {
+        const workspace = draft.workspaces.find((item) => item.id === workspaceId);
+        if (!workspace || workspace.tabs.length <= 1) return;
+        const index = workspace.tabs.findIndex((tab) => tab.id === tabId);
+        if (index === -1) return;
+        workspace.tabs.splice(index, 1);
+        if (workspace.activeTabId === tabId) {
+          workspace.activeTabId = workspace.tabs[Math.max(0, index - 1)]?.id ?? workspace.tabs[0].id;
+        }
+        const activeTab = workspace.tabs.find((tab) => tab.id === workspace.activeTabId) ?? workspace.tabs[0];
+        set({ activePaneId: activeTab.activePaneId });
+        workspace.updatedAt = Date.now();
+      });
+    })();
   },
 
   selectTab: (workspaceId, tabId) => {
@@ -244,19 +256,25 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   closePane: (workspaceId, tabId, paneId) => {
-    window.tpm.pty.kill(paneId);
-    mutateConfig(set, get, (draft) => {
-      const workspace = draft.workspaces.find((item) => item.id === workspaceId);
-      const tab = workspace?.tabs.find((item) => item.id === tabId);
-      if (!tab) return;
-      const paneCount = collectPaneIds(tab.layout).length;
-      if (paneCount <= 1) return;
-      tab.layout = closePaneNode(tab.layout, paneId);
-      const paneIds = collectPaneIds(tab.layout);
-      tab.activePaneId = paneIds.includes(tab.activePaneId) ? tab.activePaneId : paneIds[0];
-      workspace!.updatedAt = Date.now();
-      set({ activePaneId: tab.activePaneId });
-    });
+    void (async () => {
+      const confirmBeforeClosing = Boolean(get().config?.settings.confirmBeforeClosingPane);
+      if (confirmBeforeClosing && (await (window.tpm.terminalSession?.isBusy(paneId) ?? Promise.resolve(false)))) {
+        if (!window.confirm("Close this running terminal?")) return;
+      }
+      window.tpm.pty.kill(paneId);
+      mutateConfig(set, get, (draft) => {
+        const workspace = draft.workspaces.find((item) => item.id === workspaceId);
+        const tab = workspace?.tabs.find((item) => item.id === tabId);
+        if (!tab) return;
+        const paneCount = collectPaneIds(tab.layout).length;
+        if (paneCount <= 1) return;
+        tab.layout = closePaneNode(tab.layout, paneId);
+        const paneIds = collectPaneIds(tab.layout);
+        tab.activePaneId = paneIds.includes(tab.activePaneId) ? tab.activePaneId : paneIds[0];
+        workspace!.updatedAt = Date.now();
+        set({ activePaneId: tab.activePaneId });
+      });
+    })();
   },
 
   setActivePane: (workspaceId, tabId, paneId) => {

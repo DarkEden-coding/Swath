@@ -60,6 +60,8 @@ const api = {
       ipcRenderer.invoke("terminal-session:replay", sessionId),
     isRunning: (sessionId: string): Promise<boolean> =>
       ipcRenderer.invoke("terminal-session:is-running", sessionId),
+    isBusy: (sessionId: string): Promise<boolean> =>
+      ipcRenderer.invoke("terminal-session:is-busy", sessionId),
     write: (sessionId: string, data: string): void =>
       ipcRenderer.send("terminal-session:write", sessionId, data),
     resize: (request: PtyResizeRequest): void =>

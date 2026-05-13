@@ -41,8 +41,11 @@ export interface SplitNode {
   second: LayoutNode;
 }
 
+export type TabType = "terminal" | "git";
+
 export interface TerminalTab {
   id: string;
+  type?: TabType;
   title: string;
   layout: LayoutNode;
   activePaneId: string;

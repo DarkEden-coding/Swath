@@ -256,6 +256,9 @@ app.whenReady().then(() => {
   ipcMain.handle("terminal-session:is-running", (_event, sessionId: string) =>
     ptyManager?.isRunning(sessionId) ?? false,
   );
+  ipcMain.handle("terminal-session:is-busy", (_event, sessionId: string) =>
+    ptyManager?.isBusy(sessionId) ?? false,
+  );
   ipcMain.on("terminal-session:write", (_event, sessionId: string, data: string) =>
     ptyManager?.write(sessionId, data),
   );
