@@ -84,7 +84,8 @@ button > svg,
 .pane-icon-btn svg,
 .add-project-plus svg,
 .workspace-folder svg,
-.sidebar-logo svg {
+.sidebar-logo svg,
+.sidebar-logo img {
   display: block;
 }
 
@@ -172,15 +173,21 @@ button > svg,
 }
 
 .sidebar-logo {
-  font-family: "JetBrains Mono", Menlo, monospace;
-  font-size: 13px;
-  font-weight: 700;
-  color: var(--accent);
-  background: #0d1117;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 4px 6px;
-  line-height: 1;
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  overflow: visible;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+}
+
+.sidebar-logo img {
+  width: 28px;
+  height: 28px;
+  object-fit: contain;
+  filter: drop-shadow(0 8px 16px rgba(0, 0, 0, 0.28));
 }
 
 .eyebrow {

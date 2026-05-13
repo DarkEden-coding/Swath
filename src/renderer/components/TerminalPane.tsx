@@ -134,14 +134,32 @@ export function TerminalPane({ workspace, tab, paneId, settings }: TerminalPaneP
         void window.tpm.terminalSession?.replay(paneId);
       } else {
         // Show current working directory as a placeholder
-        terminal.write(`\x1b[2m${currentCwd}\x1b[0m\r\n`);
+        const prompt = `${currentCwd} % `;
+        terminal.write(prompt);
       }
       terminal.focus();
     });
 
-    const disposable = terminal.onData((data) => {
+    const disposable = terminal.onKey(({ key, domEvent }) => {
+      if (startedSessions.has(paneId)) {
+        window.tpm.pty.write(paneId, key);
+        return;
+      }
+
+      // Check for backspace (8) or delete (46)
+      if (domEvent.keyCode === 8 || domEvent.keyCode === 46) {
+        return;
+      }
+
+      // Check for other "dead" keys that shouldn't trigger PTY start (e.g. Meta, Ctrl, Alt, Shift alone)
+      if ([16, 17, 18, 91, 93].includes(domEvent.keyCode)) {
+        return;
+      }
+
+      // Clear the placeholder prompt before starting the real PTY
+      terminal.write("\r\x1b[K");
       startPty();
-      window.tpm.pty.write(paneId, data);
+      window.tpm.pty.write(paneId, key);
     });
     const removeDataListener = window.tpm.pty.onData((sessionId, data) => {
       if (sessionId !== paneId) return;
@@ -252,7 +270,7 @@ export function TerminalPane({ workspace, tab, paneId, settings }: TerminalPaneP
 
   useEffect(() => {
     if (!contextMenu) return;
-    const onKeyDown = (event: KeyboardEvent): void => {
+    const onKeyDown = (event: globalThis.KeyboardEvent): void => {
       if (event.key === "Escape") setContextMenu(null);
     };
     const onClick = (): void => {

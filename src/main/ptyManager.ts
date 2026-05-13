@@ -122,7 +122,7 @@ export class TerminalSessionManager {
       ...process.env,
       ...shell.env,
       ...session.request.env,
-      TERM_PROGRAM: "terminal-project-manager",
+      TERM_PROGRAM: "swath",
       COLORTERM: "truecolor",
     } as NodeJS.ProcessEnv;
 

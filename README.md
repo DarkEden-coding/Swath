@@ -1,4 +1,4 @@
-# Terminal Project Manager
+# Swath
 
 A lightweight Electron desktop app for managing coding-agent terminal workspaces.
 

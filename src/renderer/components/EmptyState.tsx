@@ -21,7 +21,7 @@ export function EmptyState({ sidebarCollapsed, onToggleSidebar }: EmptyStateProp
       ) : null}
       <div className="empty-state">
       <div className="empty-card">
-        <div className="empty-kicker">Terminus</div>
+        <div className="empty-kicker">Swath</div>
         <h1>Add a project</h1>
         <p>
           Projects map to local folders. Tabs, splits, and shell sessions are tracked per project. Pick a folder to get

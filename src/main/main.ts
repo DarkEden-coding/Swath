@@ -23,6 +23,14 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 let mainWindow: BrowserWindow | null = null;
 let ptyManager: TerminalSessionManager | null = null;
 
+function getAppIconPath(): string {
+  return app.isPackaged
+    ? path.join(process.resourcesPath, "icon.png")
+    : path.join(process.cwd(), "icon.png");
+}
+
+app.setName("Swath");
+
 function createWindow(): void {
   mainWindow = new BrowserWindow({
     width: 1320,
@@ -31,6 +39,7 @@ function createWindow(): void {
     minHeight: 560,
     backgroundColor: "#0d1117",
     show: false,
+    icon: getAppIconPath(),
     titleBarStyle: process.platform === "darwin" ? "hiddenInset" : "default",
     trafficLightPosition: { x: 16, y: 16 },
     webPreferences: {
@@ -159,6 +168,8 @@ function createMenu(): void {
 }
 
 app.whenReady().then(() => {
+  if (process.platform === "darwin") app.dock?.setIcon(getAppIconPath());
+
   ipcMain.handle("config:load", async () => loadConfig());
   ipcMain.handle("config:save", async (_event, config: AppConfig) =>
     saveConfig(config),

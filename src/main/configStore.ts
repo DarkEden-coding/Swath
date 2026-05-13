@@ -5,7 +5,7 @@ import { app } from "electron";
 import { createDefaultConfig } from "./defaults";
 import type { AppConfig, Workspace } from "./sharedTypes";
 
-const DB_FILE = "terminal-project-manager.sqlite3";
+const DB_FILE = "swath.sqlite3";
 
 let db: Database.Database | null = null;
 

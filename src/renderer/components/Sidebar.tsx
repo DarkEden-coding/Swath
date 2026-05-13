@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
 import type { Workspace } from "../../main/sharedTypes";
 import { useAppStore } from "../state/appStore";
+import appIcon from "../../../icon.png";
 import {
   IconChevronsRight,
   IconFolder,
   IconMoreVertical,
-  IconPlus,
-  IconTerminal
+  IconPlus
 } from "./icons";
 
 interface SidebarProps {
@@ -32,7 +32,7 @@ export function Sidebar({ onToggleCollapse }: SidebarProps): JSX.Element {
       <header className="sidebar-header">
         <div className="sidebar-brand">
           <span className="sidebar-logo" aria-hidden>
-            <IconTerminal width={16} height={16} />
+            <img src={appIcon} alt="" />
           </span>
           <div>
             <div className="eyebrow">Projects</div>
