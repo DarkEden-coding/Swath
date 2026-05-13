@@ -1,24 +1,51 @@
 # Swath
 
-A lightweight Electron desktop app for managing coding-agent terminal workspaces.
+Swath is a fast, terminal-first desktop workspace manager for developers and coding agents. It keeps your projects, terminal tabs, split panes, shell profiles, and local environment setup in one sharp Electron app so you can jump between work without rebuilding your terminal layout every time.
 
-## What it does
+<img src="docs/screenshots/swath-workspace.png" alt="Swath workspace view" width="760">
 
-- Cross-platform desktop app for macOS and Windows.
-- Workspaces are local folders listed in the left sidebar.
-- Each workspace stores terminal tabs and split layouts.
-- Terminal panes start in the workspace folder.
-- Terminal sessions are **not restored** after app restart; only the layout is restored.
-- Ghostty-inspired dark terminal UI.
-- Workspace add/remove/rename/reorder.
-- Workspace search/filter.
+## Why Swath
+
+Swath is built for people who live in terminals all day and want their project context to stay organized.
+
+- Keep every project in a dedicated workspace.
+- Start terminals directly inside each workspace folder.
+- Use tabs for separate flows like app server, tests, database, and agents.
+- Split panes horizontally or vertically when one terminal is not enough.
+- Resize panes and keep your preferred layout between launches.
+- Tune fonts, cursor behavior, shell profiles, and global environment variables.
+- Move fast with a quiet, dark, Ghostty-inspired interface.
+
+## Screenshots
+
+### Workspace
+
+Projects live in the sidebar, terminal tabs stay across the top, and the active pane has quick controls for splitting and closing.
+
+<img src="docs/screenshots/swath-workspace.png" alt="Swath workspace with a clean terminal pane" width="760">
+
+### Split Panes
+
+Split panes keep related terminal sessions visible side by side without leaving the workspace.
+
+<img src="docs/screenshots/swath-split-panes.png" alt="Swath split terminal panes" width="760">
+
+## Features
+
+- Cross-platform Electron app for macOS, Windows, and Linux packaging.
+- Local project/workspace list with add, remove, rename, and drag-to-reorder.
 - Multiple terminal tabs per workspace.
 - Horizontal and vertical split panes.
-- Resizable split panes.
-- Local JSON persistence.
-- Configurable font and shell profiles.
+- Resizable split ratios that persist across app launches.
+- xterm.js terminal rendering with fit, search, and web-link addons.
+- Real PTY-backed shells through `node-pty`.
+- Configurable terminal font, font size, line height, cursor style, and cursor blink.
+- Shell profiles for `zsh`, `bash`, PowerShell, Command Prompt, or custom commands.
+- Global environment variables applied to newly spawned panes.
+- Optional confirmation before closing panes.
+- SQLite-backed local config storage.
 
-## Tech stack
+## Tech Stack
 
 - Electron
 - React
@@ -26,76 +53,98 @@ A lightweight Electron desktop app for managing coding-agent terminal workspaces
 - Vite / electron-vite
 - xterm.js
 - node-pty
+- better-sqlite3
 - Zustand
+- electron-builder
 
-## Install
+## Getting Started
+
+Install dependencies:
 
 ```bash
 npm install
 ```
 
-`node-pty` is a native dependency. The `postinstall` script runs `electron-builder install-app-deps` so the module is rebuilt for Electron.
-
-## Development
+Start the development app:
 
 ```bash
 npm run dev
 ```
 
-## Type check
+`node-pty` is a native dependency. The `postinstall`, `predev`, and `prebuild` scripts run `electron-builder install-app-deps` so native modules are rebuilt for Electron.
 
-```bash
-npm run typecheck
-```
+## Useful Commands
 
-## Build unpacked app assets
+| Command | What it does |
+| --- | --- |
+| `npm run dev` | Starts Swath in development mode. |
+| `npm run typecheck` | Runs TypeScript without emitting files. |
+| `npm test` | Runs the terminal paste test script. |
+| `npm run build` | Builds app assets into `out/`. |
+| `npm run dist` | Builds packaged installers into `release/`. |
+| `npm run install:mac` | Builds and installs Swath to `/Applications` on macOS. |
+| `npm run install:win` | Builds Swath and creates a Windows Start Menu shortcut. |
 
-```bash
-npm run build
-```
-
-## Package installers
-
-```bash
-npm run dist
-```
-
-Outputs are written to `release/`.
-
-## Shortcuts
+## Keyboard Shortcuts
 
 | Shortcut | Action |
-|---|---|
+| --- | --- |
 | `Cmd/Ctrl + Shift + O` | Add workspace |
 | `Cmd/Ctrl + T` | New terminal tab |
 | `Cmd/Ctrl + W` | Close terminal tab |
 | `Cmd/Ctrl + \` | Split active pane right |
 | `Cmd/Ctrl + Shift + \` | Split active pane down |
 | `Cmd/Ctrl + Shift + W` | Close active pane |
-| `Cmd/Ctrl + ,` | Settings |
+| `Cmd/Ctrl + ,` | Open settings |
 
 ## Persistence
 
-Config is stored in Electron's user-data directory as `workspaces.json`.
+Swath stores app configuration locally in Electron's user data directory as `swath.sqlite3`.
 
-Stored:
+Saved between launches:
 
-- workspace list
-- workspace order
-- active workspace
-- terminal tab layout
-- split ratios
-- active tab/pane
-- terminal settings
-- shell profiles
+- Workspace list and order
+- Active workspace
+- Terminal tabs
+- Split layouts and split ratios
+- Active tab and active pane
+- Terminal appearance settings
+- Shell profiles
+- Global environment variables
 
-Not stored:
+Not restored after restart:
 
-- running terminal processes
-- terminal scrollback
-- process state
-- environment state after shell startup
+- Running terminal processes
+- Terminal scrollback
+- Process state
+- Shell environment changes made after startup
 
-## Notes on performance
+Swath intentionally restores the workspace shape, not the running process tree. That keeps startup predictable while preserving the layout you care about.
 
-This implementation avoids heavy component libraries and spawns PTY processes only for panes currently mounted in the active tab. Electron still has a baseline memory cost. For substantially lower idle RAM, a future version could use Tauri + a Rust PTY backend, but Electron + node-pty is the more reliable starting point for cross-platform terminal behavior.
+## Packaging
+
+Build distributable packages with:
+
+```bash
+npm run dist
+```
+
+Artifacts are written to `release/`. The current `electron-builder` config targets:
+
+- macOS: DMG and ZIP
+- Windows: NSIS and ZIP
+- Linux: AppImage and tar.gz
+
+## Project Structure
+
+```text
+src/main/        Electron main process, PTY management, config storage
+src/renderer/    React UI, terminal workspace, components, state
+scripts/         Install helpers and tests
+docs/screenshots README screenshots
+public/          Static renderer assets
+```
+
+## Notes
+
+Swath keeps the implementation intentionally focused: no heavy component framework, no remote service requirement, and no account system. It is a local desktop tool for getting into the right terminal context quickly.
