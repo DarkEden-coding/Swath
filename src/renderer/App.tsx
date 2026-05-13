@@ -1,9 +1,11 @@
-import { useEffect, useState } from "react";
+import { Suspense, lazy, useEffect, useState } from "react";
 import { EmptyState } from "./components/EmptyState";
 import { SettingsModal } from "./components/SettingsModal";
 import { Sidebar } from "./components/Sidebar";
 import { StatusBar } from "./components/StatusBar";
-import { TerminalWorkspace } from "./components/TerminalWorkspace";
+const TerminalWorkspace = lazy(() =>
+  import("./components/TerminalWorkspace").then((module) => ({ default: module.TerminalWorkspace }))
+);
 import { useAppStore } from "./state/appStore";
 
 export function App(): JSX.Element {
@@ -86,12 +88,14 @@ export function App(): JSX.Element {
           }`}
         >
           {activeWorkspace ? (
-            <TerminalWorkspace
-              workspace={activeWorkspace}
-              settings={config.settings}
-              sidebarCollapsed={sidebarCollapsed}
-              onToggleSidebar={toggleSidebar}
-            />
+            <Suspense fallback={<div className="boot-screen">Loading terminal…</div>}>
+              <TerminalWorkspace
+                workspace={activeWorkspace}
+                settings={config.settings}
+                sidebarCollapsed={sidebarCollapsed}
+                onToggleSidebar={toggleSidebar}
+              />
+            </Suspense>
           ) : (
             <EmptyState sidebarCollapsed={sidebarCollapsed} onToggleSidebar={toggleSidebar} />
           )}

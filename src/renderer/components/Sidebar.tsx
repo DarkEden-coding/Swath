@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type { Workspace } from "../../main/sharedTypes";
 import { useAppStore } from "../state/appStore";
-import appIcon from "../../../icon.png";
+import appIcon from "../assets/app-icon-64.png";
 import {
   IconChevronsRight,
   IconFolder,

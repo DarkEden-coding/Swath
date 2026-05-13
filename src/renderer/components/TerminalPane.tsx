@@ -154,8 +154,10 @@ export function TerminalPane({ workspace, tab, paneId, settings }: TerminalPaneP
       // Do not start a shell for destructive/navigation keys while the pane only
       // shows the placeholder prompt. Pasted text arrives through onData too, so
       // printable multi-character input must be allowed to start the PTY.
-      return data === "\x7f" || data === "\x1b[3~";
+      return data === "\x1b[3~";
     };
+
+    const dormantInputRef = useRef("");
 
     const disposable = terminal.onData((data) => {
       if (startedSessions.has(paneId)) {
@@ -165,10 +167,22 @@ export function TerminalPane({ workspace, tab, paneId, settings }: TerminalPaneP
 
       if (!data || isDormantIgnoredInput(data)) return;
 
-      // Clear the placeholder prompt before starting the real PTY.
-      terminal.write("\r\x1b[K");
-      startPty();
-      window.tpm.pty.write(paneId, data);
+      if (data === "\r") {
+        // Clear the placeholder prompt before starting the real PTY.
+        terminal.write("\r\x1b[K");
+        startPty();
+        window.tpm.pty.write(paneId, dormantInputRef.current + "\r");
+        dormantInputRef.current = "";
+      } else if (data === "\x7f") {
+        // Handle backspace for the placeholder input
+        if (dormantInputRef.current.length > 0) {
+          dormantInputRef.current = dormantInputRef.current.slice(0, -1);
+          terminal.write("\b \b");
+        }
+      } else {
+        dormantInputRef.current += data;
+        terminal.write(data);
+      }
     });
     const removeDataListener = window.tpm.pty.onData((sessionId, data) => {
       if (sessionId !== paneId) return;
