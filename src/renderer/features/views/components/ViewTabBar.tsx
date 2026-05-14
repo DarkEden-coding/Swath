@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import type { ViewHealth, Workspace } from "../../../../shared/types";
+import type { PaneKind, ViewHealth, Workspace } from "../../../../shared/types";
 import * as appActions from "../../../app/appActions";
-import { IconChevronsLeft, IconClose, IconPlus, IconTerminal } from "../../shell/icons";
+import { IconChevronsLeft, IconClose, IconGitBranch, IconPlus, IconTerminal } from "../../shell/icons";
 import { getTabTypes } from "../../tabTypes/registry";
 
 interface ViewTabBarProps {
@@ -15,6 +15,11 @@ function healthClass(health: ViewHealth | undefined): string {
   if (health === "warning") return `${base} bg-swath-warn shadow-[0_0_8px_rgba(210,153,34,0.45)]`;
   if (health === "idle") return `${base} bg-swath-muted-2`;
   return `${base} bg-swath-good shadow-[0_0_8px_rgba(63,185,80,0.45)]`;
+}
+
+function tabTypeIcon(kind: PaneKind): JSX.Element {
+  if (kind === "gitManager") return <IconGitBranch width={16} height={16} className="block shrink-0 text-swath-accent" />;
+  return <IconTerminal width={16} height={16} className="block shrink-0 text-swath-accent" />;
 }
 
 export function ViewTabBar({ workspace, sidebarCollapsed, onToggleSidebar }: ViewTabBarProps): JSX.Element {
@@ -69,8 +74,15 @@ export function ViewTabBar({ workspace, sidebarCollapsed, onToggleSidebar }: Vie
         <button
           className="grid h-full w-9 min-h-0 cursor-pointer place-items-center border-0 border-l border-swath-border bg-swath-panel text-swath-accent-strong [-webkit-app-region:no-drag] [app-region:no-drag] hover:border-swath-border-strong hover:bg-[#161b22]"
           type="button"
-          onClick={() => appActions.createView(workspace.id)}
-          title="New tab"
+          onClick={(event) => {
+            if (event.shiftKey) {
+              event.preventDefault();
+              setShowTypeSelector((open) => !open);
+              return;
+            }
+            appActions.createView(workspace.id);
+          }}
+          title="New tab (Shift+click to pick type; right-click for menu)"
           onContextMenu={(e) => {
             e.preventDefault();
             setShowTypeSelector(!showTypeSelector);
@@ -90,7 +102,7 @@ export function ViewTabBar({ workspace, sidebarCollapsed, onToggleSidebar }: Vie
                   setShowTypeSelector(false);
                 }}
               >
-                <IconTerminal width={16} height={16} className="block" />
+                {tabTypeIcon(tabType.kind)}
                 <span>{tabType.label}</span>
               </button>
             ))}

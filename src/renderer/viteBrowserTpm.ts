@@ -1,5 +1,6 @@
 /// <reference types="vite/client" />
 import type { AppConfig } from "../shared/types";
+import type { GitRpcRequest } from "../shared/ipc/gitRpc";
 import type { SwathApi } from "../main/preload";
 
 const browserDevConfig: AppConfig = {
@@ -103,6 +104,76 @@ function createStubSwath(): SwathApi {
     },
     app: {
       onCommand: () => () => {},
+    },
+    git: {
+      rpc: async (request: GitRpcRequest) => {
+        if (request.op === "getStatus") {
+          return {
+            ok: true,
+            branch: "main",
+            staged: [
+              { path: "src/utils/format.ts", status: "M" },
+              { path: "package.json", status: "A" },
+            ],
+            unstaged: [
+              { path: "src/App.tsx", status: "M" },
+              { path: "src/styles.css", status: "M" },
+            ],
+            untracked: [],
+            stderr: "",
+          };
+        }
+        if (request.op === "getLog") {
+          return {
+            ok: true,
+            commits: [
+              {
+                graph: "* ",
+                hash: `${"a".repeat(39)}1`,
+                parents: [`${"c".repeat(39)}3`],
+                short: "a1b2c3d",
+                subject: "Add user settings page",
+                author: "Alex Kim",
+                date: "2 hours ago",
+                refs: "HEAD -> main, origin/main",
+              },
+              {
+                graph: "| * ",
+                hash: `${"b".repeat(39)}2`,
+                parents: [`${"c".repeat(39)}3`],
+                short: "b2c3d4e",
+                subject: "Implement auth flow",
+                author: "Alex Kim",
+                date: "1 day ago",
+                refs: "feature/auth",
+              },
+              {
+                graph: "|/  ",
+                hash: `${"c".repeat(39)}3`,
+                parents: [`${"b".repeat(39)}2`, `${"d".repeat(39)}4`],
+                short: "c3d4e5f",
+                subject: "Merge branch feature/auth",
+                author: "Alex Kim",
+                date: "3 days ago",
+                refs: "",
+              },
+            ],
+          };
+        }
+        if (request.op === "listBranches") {
+          return { ok: true, branches: ["feature/auth", "main", "origin/main"] };
+        }
+        if (request.op === "checkoutBranch") {
+          return { exitCode: 0, stdout: "", stderr: "" };
+        }
+        if (request.op === "stagePaths" || request.op === "unstagePaths" || request.op === "discardPaths") {
+          return { exitCode: 0, stdout: "", stderr: "" };
+        }
+        if (request.op === "commit" || request.op === "pull" || request.op === "push" || request.op === "sync") {
+          return { exitCode: 0, stdout: "", stderr: "" };
+        }
+        return { exitCode: 1, stdout: "", stderr: "Unavailable" };
+      },
     },
   };
 }

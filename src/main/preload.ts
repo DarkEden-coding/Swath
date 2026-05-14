@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from "electron";
-import { IpcChannels } from "../shared/ipc";
+import { IpcChannels, type GitRpcRequest } from "../shared/ipc";
 import type {
   AppConfig,
   FolderSelectResult,
@@ -55,6 +55,9 @@ const swath = {
       ipcRenderer.on(IpcChannels.terminalExit, listener);
       return () => ipcRenderer.removeListener(IpcChannels.terminalExit, listener);
     },
+  },
+  git: {
+    rpc: (request: GitRpcRequest): Promise<unknown> => ipcRenderer.invoke(IpcChannels.gitRpc, request),
   },
   app: {
     onCommand: (callback: (command: string) => void): (() => void) => {

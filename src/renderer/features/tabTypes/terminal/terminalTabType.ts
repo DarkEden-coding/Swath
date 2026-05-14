@@ -11,9 +11,15 @@ function shellFor(settings: AppSettings): ShellProfile | null {
   return settings.shellProfiles.find((profile) => profile.id === settings.defaultShellProfileId) ?? settings.shellProfiles[0] ?? null;
 }
 
-export function createTerminalPaneMeta(settings: AppSettings, cwd?: string): Partial<Omit<PaneLeaf, "type" | "id" | "kind">> {
+export function createTerminalPaneMeta(settings: AppSettings, cwd?: string): Partial<Omit<PaneLeaf, "type" | "id">> {
   const shellProfile = shellFor(settings);
-  return { cwd, shellProfile, env: { ...(settings.globalEnv ?? {}) }, metadata: { cwd, shellProfileId: shellProfile?.id, shellProfile, env: { ...(settings.globalEnv ?? {}) } } };
+  return {
+    kind: "terminal",
+    cwd,
+    shellProfile,
+    env: { ...(settings.globalEnv ?? {}) },
+    metadata: { cwd, shellProfileId: shellProfile?.id, shellProfile, env: { ...(settings.globalEnv ?? {}) } }
+  };
 }
 
 export function createTerminalView(title = "Terminal", cwd?: string, settings?: AppSettings): WorkspaceView {

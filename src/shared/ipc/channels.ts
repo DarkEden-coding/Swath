@@ -14,7 +14,8 @@ export const IpcChannels = {
   terminalIsBusy: "terminal:is-busy",
   terminalData: "terminal:data",
   terminalExit: "terminal:exit",
-  appCommand: "app:command"
+  appCommand: "app:command",
+  gitRpc: "git:rpc"
 } as const;
 
 export type IpcChannel = (typeof IpcChannels)[keyof typeof IpcChannels];

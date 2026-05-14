@@ -1,6 +1,6 @@
 import type { AppConfig, AppSettings, PaneKind, WorkspaceView } from "../../../shared/types";
 import { collectPaneIds, collectPanes } from "../layout/layoutTree";
-import { createTabTypeView } from "../../features/tabTypes/registry";
+import { createTabTypeView, getTabType } from "../../features/tabTypes/registry";
 
 const fallbackSettings: AppSettings = {
   fontFamily: "",
@@ -24,7 +24,8 @@ export function addView(config: AppConfig, workspaceId?: string, kind: PaneKind 
   if (!targetWorkspaceId) return { config, activePaneId };
   const workspaces = config.workspaces.map((workspace) => {
     if (workspace.id !== targetWorkspaceId) return workspace;
-    const view = createWorkspaceView(`Terminal ${workspace.views.length + 1}`, workspace.path, config.settings, kind);
+    const tabLabel = getTabType(kind).label;
+    const view = createWorkspaceView(`${tabLabel} ${workspace.views.length + 1}`, workspace.path, config.settings, kind);
     activePaneId = view.activePaneId;
     return { ...workspace, views: [...workspace.views, view], activeViewId: view.id, updatedAt: Date.now() };
   });

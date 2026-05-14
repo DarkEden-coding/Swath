@@ -4,9 +4,10 @@ import { createId } from "../../utils/ids";
 export function createPaneLeaf(
   kind: PaneKind = "terminal",
   id = createId("pane"),
-  meta: Partial<Omit<PaneNode, "type" | "id" | "kind">> = {}
+  meta: Partial<Omit<PaneNode, "type" | "id">> = {}
 ): PaneNode {
-  return { type: "pane", id, kind, ...meta };
+  const { kind: _ignoredKind, ...rest } = meta;
+  return { type: "pane", id, kind, ...rest };
 }
 
 export function createPaneNode(id = createId("pane"), meta: Partial<Omit<PaneNode, "type" | "id">> = {}): PaneNode {
@@ -39,7 +40,7 @@ export function splitPaneWithId(
   direction: SplitDirection,
   newPaneId: string,
   kind?: PaneKind,
-  meta?: Partial<Omit<PaneNode, "type" | "id" | "kind">>
+  meta?: Partial<Omit<PaneNode, "type" | "id">>
 ): LayoutNode {
   if (node.type === "pane") {
     if (node.id !== paneId) return node;

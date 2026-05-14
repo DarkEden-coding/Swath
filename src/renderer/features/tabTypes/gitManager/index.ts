@@ -1,0 +1,1 @@
+export { gitManagerTabType } from "./gitManagerTabType";

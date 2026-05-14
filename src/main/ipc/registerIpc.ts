@@ -2,6 +2,7 @@ import type { BrowserWindow } from "electron";
 import { registerClipboardIpc } from "./clipboardIpc";
 import { registerConfigIpc } from "./configIpc";
 import { registerDialogIpc } from "./dialogIpc";
+import { registerGitIpc } from "./gitIpc";
 import { registerPermissionsIpc } from "./permissionsIpc";
 import { registerTerminalIpc } from "./terminalIpc";
 import type { TerminalSessionManager } from "../ptyManager";
@@ -16,5 +17,6 @@ export function registerIpc({ getMainWindow, getTerminalManager }: RegisterIpcOp
   registerClipboardIpc();
   registerPermissionsIpc();
   registerDialogIpc({ getMainWindow });
+  registerGitIpc();
   registerTerminalIpc({ getTerminalManager });
 }
