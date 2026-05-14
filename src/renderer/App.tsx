@@ -1,4 +1,4 @@
-import { Suspense, lazy, useEffect } from "react";
+import { Suspense, lazy, useEffect, type PointerEvent as ReactPointerEvent } from "react";
 import * as appActions from "./app/appActions";
 import { runAppCommand } from "./app/commandRegistry";
 import { useAppBootstrap } from "./app/useAppBootstrap";
@@ -21,7 +21,27 @@ export function App(): JSX.Element {
   const loaded = useConfigStore((state) => state.loaded);
   const activePaneId = useUiStore((state) => state.activePaneId);
   const sidebarCollapsed = useUiStore((state) => state.sidebarCollapsed);
+  const sidebarWidthPx = useUiStore((state) => state.sidebarWidthPx);
   const toggleSidebarCollapsed = useUiStore((state) => state.toggleSidebarCollapsed);
+
+  const beginSidebarResize = (event: ReactPointerEvent<HTMLDivElement>): void => {
+    event.preventDefault();
+    const startX = event.clientX;
+    const startW = useUiStore.getState().sidebarWidthPx;
+    const setSidebarWidthPx = useUiStore.getState().setSidebarWidthPx;
+
+    const onMove = (moveEvent: PointerEvent): void => {
+      setSidebarWidthPx(startW + (moveEvent.clientX - startX));
+    };
+
+    const onUp = (): void => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+    };
+
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp, { once: true });
+  };
 
   useAppBootstrap();
 
@@ -31,6 +51,14 @@ export function App(): JSX.Element {
 
   useEffect(() => {
     document.documentElement.classList.add(`platform-${window.swath.platform}`);
+  }, []);
+
+  useEffect(() => {
+    const onResize = (): void => {
+      useUiStore.getState().setSidebarWidthPx(useUiStore.getState().sidebarWidthPx);
+    };
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
   }, []);
 
   useEffect(() => {
@@ -70,16 +98,28 @@ export function App(): JSX.Element {
     return <div className={bootScreenClass}>Loading…</div>;
   }
 
+  const gridTemplateColumns = sidebarCollapsed ? "minmax(0,0px) minmax(0,1fr)" : `${sidebarWidthPx}px minmax(0,1fr)`;
+
   return (
-    <main
-      className={`grid h-full min-h-0 w-full bg-swath-bg ${
-        sidebarCollapsed ? "grid-cols-[minmax(0,0px)_minmax(0,1fr)]" : "grid-cols-[268px_1fr] max-[980px]:grid-cols-[220px_1fr]"
-      }`}
-    >
+    <main className="grid h-full min-h-0 w-full bg-swath-bg" style={{ gridTemplateColumns }}>
       {sidebarCollapsed ? (
         <div className="pointer-events-none min-w-0 w-0 overflow-hidden" aria-hidden="true" />
       ) : (
-        <Sidebar onToggleCollapse={() => useUiStore.getState().setSidebarCollapsed(true)} />
+        <div className="relative h-full min-h-0 min-w-0">
+          <Sidebar onToggleCollapse={() => useUiStore.getState().setSidebarCollapsed(true)} />
+          <div
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="Resize projects sidebar"
+            className="group absolute inset-y-0 -right-[5px] z-[3] flex w-5 cursor-col-resize touch-none items-center justify-center [-webkit-app-region:no-drag] [app-region:no-drag] hover:bg-[rgba(56,139,253,0.08)]"
+            onPointerDown={beginSidebarResize}
+          >
+            <span
+              className="pointer-events-none h-[18px] w-1 rounded-full bg-[rgba(56,139,253,0.55)] opacity-0 transition-opacity duration-100 ease-out group-hover:opacity-100"
+              aria-hidden
+            />
+          </div>
+        </div>
       )}
       <div className="grid min-h-0 min-w-0 grid-rows-[1fr_auto]">
         <section

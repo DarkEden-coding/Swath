@@ -18,7 +18,7 @@ export function Sidebar({ onToggleCollapse }: SidebarProps): JSX.Element {
   const indexOf = (workspace: Workspace): number => config.workspaces.findIndex((item) => item.id === workspace.id);
 
   return (
-    <aside className="z-[2] flex min-w-0 flex-col border-r border-swath-border bg-swath-panel">
+    <aside className="z-[2] flex h-full min-h-0 min-w-0 flex-col border-r border-swath-border bg-swath-panel">
       <div className="h-9 shrink-0 [-webkit-app-region:drag] [app-region:drag]" />
       <header className="flex items-center justify-between gap-3 px-3.5 pb-2 pt-2.5 [-webkit-app-region:drag] [app-region:drag]">
         <div className="flex min-w-0 items-center gap-2.5">
