@@ -18,6 +18,17 @@ interface TerminalPaneProps {
 const startedSessions = new Set<string>();
 const TERMINAL_COL_RESERVE = 2;
 
+interface TerminalCacheEntry {
+  terminal: Terminal;
+  fit: FitAddon;
+  search: SearchAddon;
+  dispose: () => void;
+  disposeTimer: number | null;
+}
+
+const terminalCache = new Map<string, TerminalCacheEntry>();
+const exitStateSetters = new Map<string, (exited: boolean) => void>();
+
 function shellFor(settings: AppSettings): ShellProfile | null {
   return settings.shellProfiles.find((profile) => profile.id === settings.defaultShellProfileId) ?? settings.shellProfiles[0] ?? null;
 }
@@ -62,7 +73,15 @@ export function TerminalPane({ workspace, tab, paneId, settings }: TerminalPaneP
     const host = hostRef.current;
     if (!host) return;
 
-    const terminal = new Terminal({
+    exitStateSetters.set(paneId, setExited);
+
+    const cachedEntry = terminalCache.get(paneId);
+    if (cachedEntry && cachedEntry.disposeTimer !== null) {
+      window.clearTimeout(cachedEntry.disposeTimer);
+      cachedEntry.disposeTimer = null;
+    }
+
+    const terminal = cachedEntry?.terminal ?? new Terminal({
       allowProposedApi: false,
       convertEol: true,
       cursorBlink: initialSettingsRef.current.cursorBlink,
@@ -95,12 +114,17 @@ export function TerminalPane({ workspace, tab, paneId, settings }: TerminalPaneP
       }
     });
 
-    const fit = new FitAddon();
-    const search = new SearchAddon();
-    terminal.loadAddon(fit);
-    terminal.loadAddon(search);
-    terminal.loadAddon(new WebLinksAddon());
-    terminal.open(host);
+    const fit = cachedEntry?.fit ?? new FitAddon();
+    const search = cachedEntry?.search ?? new SearchAddon();
+    if (cachedEntry) {
+      const terminalElement = terminal.element;
+      if (terminalElement && terminalElement.parentElement !== host) host.appendChild(terminalElement);
+    } else {
+      terminal.loadAddon(fit);
+      terminal.loadAddon(search);
+      terminal.loadAddon(new WebLinksAddon());
+      terminal.open(host);
+    }
 
     termRef.current = terminal;
     fitRef.current = fit;
@@ -111,7 +135,7 @@ export function TerminalPane({ workspace, tab, paneId, settings }: TerminalPaneP
     const startPty = (): void => {
       if (startedSessions.has(paneId) || !termRef.current) return;
       startedSessions.add(paneId);
-      setExited(false);
+      exitStateSetters.get(paneId)?.(false);
       window.tpm.pty.create({
         sessionId: paneId,
         cwd: currentCwd,
@@ -143,14 +167,16 @@ export function TerminalPane({ workspace, tab, paneId, settings }: TerminalPaneP
 
     requestAnimationFrame(() => {
       fitAndResize();
-      if (startedSessions.has(paneId)) {
+      if (cachedEntry) {
+        terminal.focus();
+      } else if (startedSessions.has(paneId)) {
         void window.tpm.terminalSession?.replay(paneId);
       } else {
         // Show current working directory as a placeholder
         const prompt = `${currentCwd} % `;
         terminal.write(prompt);
+        terminal.focus();
       }
-      terminal.focus();
     });
 
     const isDormantIgnoredInput = (data: string): boolean => {
@@ -162,7 +188,7 @@ export function TerminalPane({ workspace, tab, paneId, settings }: TerminalPaneP
 
     dormantInputRef.current = "";
 
-    const disposable = terminal.onData((data) => {
+    const disposable = cachedEntry ? null : terminal.onData((data) => {
       if (startedSessions.has(paneId)) {
         window.tpm.pty.write(paneId, data);
         return;
@@ -187,17 +213,33 @@ export function TerminalPane({ workspace, tab, paneId, settings }: TerminalPaneP
         terminal.write(data);
       }
     });
-    const removeDataListener = window.tpm.pty.onData((sessionId, data) => {
+    const removeDataListener = cachedEntry ? null : window.tpm.pty.onData((sessionId, data) => {
       if (sessionId !== paneId) return;
       terminal.write(data);
     });
-    const removeExitListener = window.tpm.pty.onExit((sessionId) => {
+    const removeExitListener = cachedEntry ? null : window.tpm.pty.onExit((sessionId) => {
       if (sessionId !== paneId) return;
       startedSessions.delete(sessionId);
-      setExited(true);
+      exitStateSetters.get(paneId)?.(true);
       const message = "\r\n\x1b[2m[process exited — close, restart, or split a new terminal]\x1b[0m\r\n";
       terminal.write(message);
     });
+
+    if (!cachedEntry) {
+      terminalCache.set(paneId, {
+        terminal,
+        fit,
+        search,
+        dispose: () => {
+          disposable?.dispose();
+          removeDataListener?.();
+          removeExitListener?.();
+          terminal.dispose();
+          startedSessions.delete(paneId);
+        },
+        disposeTimer: null
+      });
+    }
 
     const viewport = host.querySelector<HTMLElement>(".xterm-viewport");
     const showScrollbar = (): void => {
@@ -212,14 +254,19 @@ export function TerminalPane({ workspace, tab, paneId, settings }: TerminalPaneP
 
     return () => {
       observer.disconnect();
-      disposable.dispose();
-      removeDataListener();
-      removeExitListener();
       viewport?.removeEventListener("scroll", showScrollbar);
       if (scrollbarHideTimerRef.current !== null) window.clearTimeout(scrollbarHideTimerRef.current);
       host.classList.remove("is-scrolling");
-      terminal.dispose();
-      startedSessions.delete(paneId);
+      const entry = terminalCache.get(paneId);
+      if (entry) {
+        entry.disposeTimer = window.setTimeout(() => {
+          const currentEntry = terminalCache.get(paneId);
+          if (currentEntry !== entry) return;
+          currentEntry.dispose();
+          terminalCache.delete(paneId);
+          if (exitStateSetters.get(paneId) === setExited) exitStateSetters.delete(paneId);
+        }, 0);
+      }
       termRef.current = null;
       fitRef.current = null;
       searchRef.current = null;
