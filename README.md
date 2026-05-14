@@ -138,12 +138,15 @@ Artifacts are written to `release/`. The current `electron-builder` config targe
 ## Project Structure
 
 ```text
-src/main/        Electron main process, PTY management, config storage
-src/renderer/    React UI, terminal workspace, components, state
+src/shared/      Cross-process domain types and typed IPC contracts
+src/main/        Electron main process, IPC handlers, services, app lifecycle
+src/renderer/    React UI split into app, state, services, domain, and features
 scripts/         Install helpers and tests
 docs/screenshots README screenshots
 public/          Static renderer assets
 ```
+
+The core persisted model is generic: a `Workspace` owns named `WorkspaceView` records, each view owns a split `LayoutNode` tree, and each leaf is a `PaneLeaf` with a `PaneKind` such as `terminal`. Terminal processes remain runtime-only and are attached to persisted pane IDs when a pane is started.
 
 ## Notes
 

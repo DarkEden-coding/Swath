@@ -1,7 +1,5 @@
 import fs from "node:fs";
 import os from "node:os";
-import path from "node:path";
-import { spawnSync } from "node:child_process";
 import { BrowserWindow } from "electron";
 import * as pty from "node-pty";
 import type { IPty } from "node-pty";
@@ -11,44 +9,12 @@ import type {
   TerminalSessionAttachRequest,
   TerminalSessionStartRequest,
   TerminalSessionStatus,
-} from "./sharedTypes";
+} from "../shared/types";
+import { IpcChannels } from "../shared/ipc";
 import { defaultShellProfiles } from "./defaults";
+import { hasChildProcesses, matchesShellProcess } from "./services/terminalProcessInspector";
 
 const MAX_REPLAY_BUFFER_BYTES = 8 * 1024 * 1024;
-
-function normalizeProcessName(value: string | undefined | null): string {
-  return path
-    .basename((value ?? "").trim())
-    .replace(/^-/u, "")
-    .replace(/\.exe$/iu, "")
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "");
-}
-
-function matchesShellProcess(activeProcess: string | undefined | null, shellCommand: string): boolean {
-  const active = normalizeProcessName(activeProcess);
-  const shell = normalizeProcessName(shellCommand);
-  if (!active || !shell) return false;
-  return active === shell || active.includes(shell) || shell.includes(active);
-}
-
-function hasChildProcesses(pid: number): boolean {
-  try {
-    if (process.platform === "win32") {
-      const result = spawnSync(
-        "powershell.exe",
-        ["-NoProfile", "-Command", `@(Get-CimInstance Win32_Process -Filter \"ParentProcessId=${pid}\").Count`],
-        { encoding: "utf8" }
-      );
-      return Number((result.stdout ?? "").toString().trim()) > 0;
-    }
-
-    const result = spawnSync("ps", ["-o", "pid=", "--ppid", String(pid)], { encoding: "utf8" });
-    return Boolean((result.stdout ?? "").toString().trim());
-  } catch {
-    return false;
-  }
-}
 
 interface TerminalSession {
   id: string;
@@ -92,10 +58,6 @@ export class TerminalSessionManager {
     session.replayBytes = 0;
     this.startSession(session);
     return { sessionId, running: Boolean(session.pty) };
-  }
-
-  isRunning(sessionId: string): boolean {
-    return Boolean(this.sessions.get(sessionId)?.pty);
   }
 
   isBusy(sessionId: string): boolean {
@@ -185,14 +147,12 @@ export class TerminalSessionManager {
 
     ptyProcess.onData((data) => {
       this.appendReplay(session, data);
-      this.send("pty:data", session.id, data);
-      this.send("terminal-session:data", session.id, data);
+      this.send(IpcChannels.terminalData, session.id, data);
     });
 
     ptyProcess.onExit(({ exitCode, signal }) => {
       session.pty = null;
-      this.send("pty:exit", session.id, { exitCode, signal });
-      this.send("terminal-session:exit", session.id, { exitCode, signal });
+      this.send(IpcChannels.terminalExit, session.id, { exitCode, signal });
     });
   }
 
@@ -211,8 +171,7 @@ export class TerminalSessionManager {
 
   private sendReplay(session: TerminalSession): void {
     if (session.replayChunks.length > 0) {
-      this.send("pty:data", session.id, session.replayChunks.join(""));
-      this.send("terminal-session:data", session.id, session.replayChunks.join(""));
+      this.send(IpcChannels.terminalData, session.id, session.replayChunks.join(""));
     }
   }
 
@@ -238,5 +197,3 @@ export class TerminalSessionManager {
     };
   }
 }
-
-export class PtyManager extends TerminalSessionManager {}

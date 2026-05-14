@@ -1,55 +1,52 @@
-import { Suspense, lazy, useEffect, useState } from "react";
-import { EmptyState } from "./components/EmptyState";
-import { SettingsModal } from "./components/SettingsModal";
-import { Sidebar } from "./components/Sidebar";
-import { StatusBar } from "./components/StatusBar";
+import { Suspense, lazy, useEffect } from "react";
+import * as appActions from "./app/appActions";
+import { runAppCommand } from "./app/commandRegistry";
+import { useAppBootstrap } from "./app/useAppBootstrap";
+import { EmptyState } from "./features/shell/components/EmptyState";
+import { Sidebar } from "./features/shell/components/Sidebar";
+import { StatusBar } from "./features/shell/components/StatusBar";
+import { SettingsModal } from "./features/settings/components/SettingsModal";
+import { useConfigStore } from "./state/configStore";
+import { useUiStore } from "./state/uiStore";
+
 const TerminalWorkspace = lazy(() =>
-  import("./components/TerminalWorkspace").then((module) => ({ default: module.TerminalWorkspace }))
+  import("./features/shell/components/TerminalWorkspace").then((module) => ({ default: module.TerminalWorkspace })),
 );
-import { useAppStore } from "./state/appStore";
 
 export function App(): JSX.Element {
-  const config = useAppStore((state) => state.config);
-  const loaded = useAppStore((state) => state.loaded);
-  const hydrate = useAppStore((state) => state.hydrate);
-  const addWorkspaceFromFolder = useAppStore((state) => state.addWorkspaceFromFolder);
-  const addTab = useAppStore((state) => state.addTab);
-  const closeTab = useAppStore((state) => state.closeTab);
-  const splitPane = useAppStore((state) => state.splitPane);
-  const closePane = useAppStore((state) => state.closePane);
-  const openSettings = useAppStore((state) => state.openSettings);
-  const activePaneId = useAppStore((state) => state.activePaneId);
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const config = useConfigStore((state) => state.config);
+  const loaded = useConfigStore((state) => state.loaded);
+  const activePaneId = useUiStore((state) => state.activePaneId);
+  const sidebarCollapsed = useUiStore((state) => state.sidebarCollapsed);
+  const toggleSidebarCollapsed = useUiStore((state) => state.toggleSidebarCollapsed);
+
+  useAppBootstrap();
 
   const activeWorkspace = config?.workspaces.find((workspace) => workspace.id === config.activeWorkspaceId) ?? null;
-  const activeTab = activeWorkspace?.tabs.find((tab) => tab.id === activeWorkspace.activeTabId) ?? activeWorkspace?.tabs[0] ?? null;
+  const activeView =
+    activeWorkspace?.views.find((tab) => tab.id === activeWorkspace.activeViewId) ?? activeWorkspace?.views[0] ?? null;
 
   useEffect(() => {
-    void hydrate();
-  }, [hydrate]);
-
-  useEffect(() => {
-    document.documentElement.classList.add(`platform-${window.tpm.platform}`);
+    document.documentElement.classList.add(`platform-${window.swath.platform}`);
   }, []);
 
   useEffect(() => {
-    const offCommand = window.tpm.app.onCommand((command) => {
-      if (command === "workspace:add") void addWorkspaceFromFolder();
-      if (command === "tab:new") addTab();
-      if (command === "tab:close" && activeWorkspace && activeTab) closeTab(activeWorkspace.id, activeTab.id);
-      if (command === "pane:split-right" && activeWorkspace && activeTab && activePaneId) {
-        splitPane(activeWorkspace.id, activeTab.id, activePaneId, "vertical");
-      }
-      if (command === "pane:split-down" && activeWorkspace && activeTab && activePaneId) {
-        splitPane(activeWorkspace.id, activeTab.id, activePaneId, "horizontal");
-      }
-      if (command === "pane:close" && activeWorkspace && activeTab && activePaneId) {
-        closePane(activeWorkspace.id, activeTab.id, activePaneId);
-      }
+    const offCommand = window.swath.app.onCommand((command) => {
+      runAppCommand(command, {
+        activeWorkspace,
+        activeView,
+        activePaneId,
+        addWorkspaceFromFolder: appActions.addWorkspaceFromFolder,
+        addTab: appActions.addTab,
+        closeTab: appActions.closeTab,
+        splitPane: appActions.splitPane,
+        closePane: appActions.closePane,
+        openSettings: appActions.openSettings,
+      });
     });
 
     return offCommand;
-  }, [activePaneId, activeTab, activeWorkspace, addTab, addWorkspaceFromFolder, closePane, closeTab, splitPane]);
+  }, [activePaneId, activeView, activeWorkspace]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent): void => {
@@ -58,28 +55,24 @@ export function App(): JSX.Element {
 
       if (event.key === ",") {
         event.preventDefault();
-        openSettings();
+        appActions.openSettings();
       }
     };
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [openSettings]);
+  }, []);
 
   if (!loaded || !config) {
     return <div className="boot-screen">Loading…</div>;
   }
-
-  const toggleSidebar = (): void => {
-    setSidebarCollapsed((value) => !value);
-  };
 
   return (
     <main className={`app-shell ${sidebarCollapsed ? "app-shell-collapsed" : ""}`}>
       {sidebarCollapsed ? (
         <div className="sidebar-hidden-sentinel" aria-hidden="true" />
       ) : (
-        <Sidebar onToggleCollapse={() => setSidebarCollapsed(true)} />
+        <Sidebar onToggleCollapse={() => useUiStore.getState().setSidebarCollapsed(true)} />
       )}
       <div className="workspace-column">
         <section
@@ -93,11 +86,11 @@ export function App(): JSX.Element {
                 workspace={activeWorkspace}
                 settings={config.settings}
                 sidebarCollapsed={sidebarCollapsed}
-                onToggleSidebar={toggleSidebar}
+                onToggleSidebar={() => toggleSidebarCollapsed()}
               />
             </Suspense>
           ) : (
-            <EmptyState sidebarCollapsed={sidebarCollapsed} onToggleSidebar={toggleSidebar} />
+            <EmptyState sidebarCollapsed={sidebarCollapsed} onToggleSidebar={() => toggleSidebarCollapsed()} />
           )}
         </section>
         <StatusBar />

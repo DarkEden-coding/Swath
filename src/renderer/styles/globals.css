@@ -1,0 +1,25 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+  --swath-bg: #0d1117;
+  --swath-panel: #161b22;
+  --swath-border: #30363d;
+  --swath-text: #c9d1d9;
+  --swath-muted: #8b949e;
+  --swath-accent: #58a6ff;
+}
+
+html,
+body,
+#root {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--swath-bg);
+  color: var(--swath-text);
+}

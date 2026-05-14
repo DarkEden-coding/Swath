@@ -1,9 +1,9 @@
 /// <reference types="vite/client" />
-import type { AppConfig } from "../main/sharedTypes";
-import type { TpmApi } from "../main/preload";
+import type { AppConfig } from "../shared/types";
+import type { SwathApi } from "../main/preload";
 
 const browserDevConfig: AppConfig = {
-  version: 1,
+  version: 2,
   activeWorkspaceId: "browser-ws-1",
   workspaces: [
     {
@@ -12,8 +12,8 @@ const browserDevConfig: AppConfig = {
       path: "/",
       createdAt: 0,
       updatedAt: 0,
-      activeTabId: "browser-tab-1",
-      tabs: [
+      activeViewId: "browser-tab-1",
+      views: [
         {
           id: "browser-tab-1",
           title: "Backend API Dev",
@@ -21,18 +21,19 @@ const browserDevConfig: AppConfig = {
           activePaneId: "browser-pane-1",
           layout: {
             type: "pane",
+            kind: "terminal",
             id: "browser-pane-1",
-            promptLabel: "api@acme-platform: ~/projects/api"
-          }
+            promptLabel: "api@acme-platform: ~/projects/api",
+          },
         },
         {
           id: "browser-tab-2",
           title: "Database Console",
           health: "warning",
           activePaneId: "browser-pane-2",
-          layout: { type: "pane", id: "browser-pane-2", promptLabel: "postgres@acme-platform: ~" }
-        }
-      ]
+          layout: { type: "pane", kind: "terminal", id: "browser-pane-2", promptLabel: "postgres@acme-platform: ~" },
+        },
+      ],
     },
     {
       id: "browser-ws-2",
@@ -40,17 +41,17 @@ const browserDevConfig: AppConfig = {
       path: "/",
       createdAt: 0,
       updatedAt: 0,
-      activeTabId: "browser-tab-3",
-      tabs: [
+      activeViewId: "browser-tab-3",
+      views: [
         {
           id: "browser-tab-3",
           title: "Terminal",
           health: "idle",
           activePaneId: "browser-pane-3",
-          layout: { type: "pane", id: "browser-pane-3" }
-        }
-      ]
-    }
+          layout: { type: "pane", kind: "terminal", id: "browser-pane-3" },
+        },
+      ],
+    },
   ],
   settings: {
     fontFamily: "'JetBrains Mono', 'Fira Code', Menlo, monospace",
@@ -61,14 +62,14 @@ const browserDevConfig: AppConfig = {
     defaultShellProfileId: "zsh",
     shellProfiles: [
       { id: "zsh", name: "zsh", command: "/bin/zsh", args: ["-l"] },
-      { id: "bash", name: "bash", command: "/bin/bash", args: ["-l"] }
+      { id: "bash", name: "bash", command: "/bin/bash", args: ["-l"] },
     ],
     globalEnv: {},
-    confirmBeforeClosingPane: false
-  }
+    confirmBeforeClosingPane: false,
+  },
 };
 
-function createStubTpm(): TpmApi {
+function createStubSwath(): SwathApi {
   let saved: AppConfig = structuredClone(browserDevConfig);
 
   return {
@@ -77,47 +78,39 @@ function createStubTpm(): TpmApi {
       load: async () => structuredClone(saved),
       save: async (config: AppConfig) => {
         saved = structuredClone(config);
-      }
+      },
     },
     dialog: {
-      selectFolder: async () => ({ canceled: true, path: null, name: null })
+      selectFolder: async () => ({ canceled: true, path: null, name: null }),
     },
     clipboard: {
-      readForTerminal: async () => ({ text: "", imagePath: null })
+      readForTerminal: async () => ({ text: "", imagePath: null }),
     },
     permissions: {
-      ensureTerminalPaste: async () => ({ accessibility: "unavailable" })
+      ensureTerminalPaste: async () => ({ accessibility: "unavailable" }),
     },
-    pty: {
+    terminal: {
       create: () => {},
       write: () => {},
       resize: () => {},
       kill: () => {},
-      onData: () => () => {},
-      onExit: () => () => {}
-    },
-    terminalSession: {
       attach: async () => ({ sessionId: "", running: false }),
       restart: async () => ({ sessionId: "", running: false }),
       replay: async () => ({ sessionId: "", running: false }),
-      isRunning: async () => false,
       isBusy: async () => false,
-      write: () => {},
-      resize: () => {},
-      kill: () => {},
       onData: () => () => {},
-      onExit: () => () => {}
+      onExit: () => () => {},
     },
     app: {
-      onCommand: () => () => {}
-    }
+      onCommand: () => () => {},
+    },
   };
 }
 
 export function attachViteBrowserTpmIfMissing(): void {
   if (typeof window === "undefined") return;
   if (!import.meta.env.DEV) return;
-  if ("tpm" in window && window.tpm) return;
+  if ("swath" in window && window.swath) return;
 
-  (window as unknown as { tpm: TpmApi }).tpm = createStubTpm();
+  (window as unknown as { swath: SwathApi }).swath = createStubSwath();
 }

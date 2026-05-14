@@ -1,5 +1,5 @@
 import type { ReactElement } from "react";
-import type { TpmApi } from "../main/preload";
+import type { SwathApi } from "../main/preload";
 
 declare global {
   namespace JSX {
@@ -7,7 +7,7 @@ declare global {
   }
 
   interface Window {
-    tpm: TpmApi;
+    swath: SwathApi;
   }
 }
 

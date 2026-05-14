@@ -1,5 +1,5 @@
 import os from "node:os";
-import type { AppConfig, ShellProfile } from "./sharedTypes";
+import type { AppConfig, ShellProfile } from "../shared/types";
 
 export function defaultShellProfiles(): ShellProfile[] {
   if (process.platform === "win32") {
@@ -51,7 +51,7 @@ export function createDefaultConfig(): AppConfig {
   const shellProfiles = defaultShellProfiles();
 
   return {
-    version: 1,
+    version: 2,
     workspaces: [],
     activeWorkspaceId: null,
     settings: {

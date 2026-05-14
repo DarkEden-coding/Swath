@@ -1,102 +1,70 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from "electron";
+import { IpcChannels } from "../shared/ipc";
 import type {
   AppConfig,
   FolderSelectResult,
-  PtyCreateRequest,
   PtyResizeRequest,
   TerminalClipboardPayload,
   TerminalPastePermissionStatus,
   TerminalSessionAttachRequest,
+  TerminalSessionStartRequest,
   TerminalSessionStatus,
-} from "./sharedTypes";
+} from "../shared/types";
 
-const api = {
+const swath = {
   platform: process.platform,
   config: {
-    load: (): Promise<AppConfig> => ipcRenderer.invoke("config:load"),
-    save: (config: AppConfig): Promise<void> => ipcRenderer.invoke("config:save", config)
+    load: (): Promise<AppConfig> => ipcRenderer.invoke(IpcChannels.configLoad),
+    save: (config: AppConfig): Promise<void> => ipcRenderer.invoke(IpcChannels.configSave, config),
   },
   dialog: {
-    selectFolder: (): Promise<FolderSelectResult> => ipcRenderer.invoke("dialog:select-folder")
+    selectFolder: (): Promise<FolderSelectResult> => ipcRenderer.invoke(IpcChannels.dialogSelectFolder),
   },
   clipboard: {
-    readForTerminal: (): Promise<TerminalClipboardPayload> => ipcRenderer.invoke("clipboard:read-for-terminal")
+    readForTerminal: (): Promise<TerminalClipboardPayload> => ipcRenderer.invoke(IpcChannels.clipboardReadForTerminal),
   },
   permissions: {
-    ensureTerminalPaste: (): Promise<TerminalPastePermissionStatus> => ipcRenderer.invoke("permissions:ensure-terminal-paste")
+    ensureTerminalPaste: (): Promise<TerminalPastePermissionStatus> =>
+      ipcRenderer.invoke(IpcChannels.permissionsEnsureTerminalPaste),
   },
-  pty: {
-    create: (request: PtyCreateRequest): void => ipcRenderer.send("pty:create", request),
-    write: (sessionId: string, data: string): void => ipcRenderer.send("pty:write", sessionId, data),
-    resize: (request: PtyResizeRequest): void => ipcRenderer.send("pty:resize", request),
-    kill: (sessionId: string): void => ipcRenderer.send("pty:kill", sessionId),
+  terminal: {
+    create: (request: TerminalSessionStartRequest): void => ipcRenderer.send(IpcChannels.terminalCreate, request),
+    write: (sessionId: string, data: string): void => ipcRenderer.send(IpcChannels.terminalWrite, sessionId, data),
+    resize: (request: PtyResizeRequest): void => ipcRenderer.send(IpcChannels.terminalResize, request),
+    kill: (sessionId: string): void => ipcRenderer.send(IpcChannels.terminalKill, sessionId),
+    attach: (request: TerminalSessionAttachRequest): Promise<TerminalSessionStatus | undefined> =>
+      ipcRenderer.invoke(IpcChannels.terminalAttach, request),
+    restart: (sessionId: string): Promise<TerminalSessionStatus | undefined> =>
+      ipcRenderer.invoke(IpcChannels.terminalRestart, sessionId),
+    replay: (sessionId: string): Promise<TerminalSessionStatus | undefined> =>
+      ipcRenderer.invoke(IpcChannels.terminalReplay, sessionId),
+    isBusy: (sessionId: string): Promise<boolean> => ipcRenderer.invoke(IpcChannels.terminalIsBusy, sessionId),
     onData: (callback: (sessionId: string, data: string) => void): (() => void) => {
       const listener = (_event: IpcRendererEvent, sessionId: string, data: string): void => {
         callback(sessionId, data);
       };
-      ipcRenderer.on("pty:data", listener);
-      return () => ipcRenderer.removeListener("pty:data", listener);
+      ipcRenderer.on(IpcChannels.terminalData, listener);
+      return () => ipcRenderer.removeListener(IpcChannels.terminalData, listener);
     },
     onExit: (
-      callback: (sessionId: string, event: { exitCode: number; signal?: number }) => void
+      callback: (sessionId: string, event: { exitCode: number; signal?: number }) => void,
     ): (() => void) => {
-      const listener = (
-        _event: IpcRendererEvent,
-        sessionId: string,
-        event: { exitCode: number; signal?: number }
-      ): void => {
+      const listener = (_event: IpcRendererEvent, sessionId: string, event: { exitCode: number; signal?: number }): void => {
         callback(sessionId, event);
       };
-      ipcRenderer.on("pty:exit", listener);
-      return () => ipcRenderer.removeListener("pty:exit", listener);
-    }
-  },
-  terminalSession: {
-    attach: (request: TerminalSessionAttachRequest): Promise<TerminalSessionStatus | undefined> =>
-      ipcRenderer.invoke("terminal-session:attach", request),
-    restart: (sessionId: string): Promise<TerminalSessionStatus | undefined> =>
-      ipcRenderer.invoke("terminal-session:restart", sessionId),
-    replay: (sessionId: string): Promise<TerminalSessionStatus | undefined> =>
-      ipcRenderer.invoke("terminal-session:replay", sessionId),
-    isRunning: (sessionId: string): Promise<boolean> =>
-      ipcRenderer.invoke("terminal-session:is-running", sessionId),
-    isBusy: (sessionId: string): Promise<boolean> =>
-      ipcRenderer.invoke("terminal-session:is-busy", sessionId),
-    write: (sessionId: string, data: string): void =>
-      ipcRenderer.send("terminal-session:write", sessionId, data),
-    resize: (request: PtyResizeRequest): void =>
-      ipcRenderer.send("terminal-session:resize", request),
-    kill: (sessionId: string): void => ipcRenderer.send("terminal-session:kill", sessionId),
-    onData: (callback: (sessionId: string, data: string) => void): (() => void) => {
-      const listener = (_event: IpcRendererEvent, sessionId: string, data: string): void => {
-        callback(sessionId, data);
-      };
-      ipcRenderer.on("terminal-session:data", listener);
-      return () => ipcRenderer.removeListener("terminal-session:data", listener);
+      ipcRenderer.on(IpcChannels.terminalExit, listener);
+      return () => ipcRenderer.removeListener(IpcChannels.terminalExit, listener);
     },
-    onExit: (
-      callback: (sessionId: string, event: { exitCode: number; signal?: number }) => void
-    ): (() => void) => {
-      const listener = (
-        _event: IpcRendererEvent,
-        sessionId: string,
-        event: { exitCode: number; signal?: number }
-      ): void => callback(sessionId, event);
-      ipcRenderer.on("terminal-session:exit", listener);
-      return () => ipcRenderer.removeListener("terminal-session:exit", listener);
-    }
   },
   app: {
     onCommand: (callback: (command: string) => void): (() => void) => {
       const listener = (_event: IpcRendererEvent, command: string): void => callback(command);
-      ipcRenderer.on("app:command", listener);
-      return () => ipcRenderer.removeListener("app:command", listener);
-    }
-  }
-};
+      ipcRenderer.on(IpcChannels.appCommand, listener);
+      return () => ipcRenderer.removeListener(IpcChannels.appCommand, listener);
+    },
+  },
+} as const;
 
-contextBridge.exposeInMainWorld("tpm", api);
+contextBridge.exposeInMainWorld("swath", swath);
 
-export type TpmApi = Omit<typeof api, "terminalSession"> & {
-  terminalSession?: typeof api.terminalSession;
-};
+export type SwathApi = typeof swath;
