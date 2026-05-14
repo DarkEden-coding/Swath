@@ -29,27 +29,39 @@ export function StatusBar(): JSX.Element | null {
   const shell = shellLabel(config.settings);
 
   return (
-    <footer className="status-bar" role="contentinfo">
-      <div className="status-bar-left">
-        <span className="status-kv">
-          <span className="status-key">Project</span>
-          <span className="status-val">{workspace?.name ?? "—"}</span>
+    <footer
+      className="flex min-h-8 shrink-0 items-center justify-between gap-5 overflow-hidden border-t border-swath-border bg-swath-panel px-4 py-1.5 pl-4 text-xs text-swath-muted md:pr-5"
+      role="contentinfo"
+    >
+      <div className="flex min-w-0 flex-1 items-center gap-3.5 overflow-hidden">
+        <span className="inline-flex min-w-0 items-center gap-1.5">
+          <span className="text-[10px] font-bold uppercase tracking-wider text-swath-muted-2">Project</span>
+          <span className="max-w-[min(420px,52vw)] truncate font-semibold text-swath-text">{workspace?.name ?? "—"}</span>
         </span>
-        <span className="status-divider" aria-hidden />
-        <span className="status-kv">
-          <span className="status-key">View</span>
-          <span className="status-val">{view?.title ?? "—"}</span>
+        <span className="h-3.5 w-px shrink-0 bg-swath-border" aria-hidden />
+        <span className="inline-flex min-w-0 items-center gap-1.5">
+          <span className="text-[10px] font-bold uppercase tracking-wider text-swath-muted-2">View</span>
+          <span className="max-w-[min(420px,52vw)] truncate font-semibold text-swath-text">{view?.title ?? "—"}</span>
         </span>
       </div>
-      <div className="status-bar-right">
-        <span className="status-chip">{panes} panes</span>
-        <span className="status-chip mono">{shell}</span>
-        <span className="status-chip status-online">
-          <span className="status-dot-inline" aria-hidden />
+      <div className="flex min-w-0 items-center gap-2">
+        <span className="inline-flex items-center gap-1.5 rounded-full border border-swath-border bg-swath-bg px-2.5 py-0.5 text-[11px] leading-tight text-swath-muted">
+          {panes} panes
+        </span>
+        <span className="inline-flex items-center gap-1.5 rounded-full border border-swath-border bg-swath-bg px-2.5 py-0.5 font-mono text-[11px] leading-tight text-swath-muted">
+          {shell}
+        </span>
+        <span className="inline-flex items-center gap-1.5 rounded-full border border-[rgba(63,185,80,0.35)] bg-swath-bg px-2.5 py-0.5 text-[11px] leading-tight text-swath-good">
+          <span className="size-[7px] shrink-0 rounded-full bg-swath-good shadow-[0_0_8px_rgba(63,185,80,0.5)]" aria-hidden />
           Connected
         </span>
-        <button type="button" className="status-icon-btn" title="Settings" onClick={() => appActions.openSettings()}>
-          <IconSettings width={17} height={17} strokeWidth={1.35} />
+        <button
+          type="button"
+          className="grid size-[30px] shrink-0 cursor-pointer place-items-center rounded-md border-0 bg-transparent text-swath-muted-2 [-webkit-app-region:no-drag] [app-region:no-drag] hover:bg-swath-panel-2 hover:text-swath-text last-of-type:hover:text-swath-accent-strong"
+          title="Settings"
+          onClick={() => appActions.openSettings()}
+        >
+          <IconSettings width={17} height={17} strokeWidth={1.35} className="block" />
         </button>
       </div>
     </footer>

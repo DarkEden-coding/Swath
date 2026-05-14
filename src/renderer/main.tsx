@@ -2,7 +2,6 @@ import React from "react";
 import { createRoot } from "react-dom/client";
 import "@xterm/xterm/css/xterm.css";
 import "./styles/globals.css";
-import "./styles.css";
 import { attachViteBrowserTpmIfMissing } from "./viteBrowserTpm";
 import { App } from "./App";
 

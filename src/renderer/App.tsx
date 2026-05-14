@@ -13,6 +13,9 @@ const TerminalWorkspace = lazy(() =>
   import("./features/shell/components/TerminalWorkspace").then((module) => ({ default: module.TerminalWorkspace })),
 );
 
+const bootScreenClass =
+  "grid h-full w-full place-items-center bg-[radial-gradient(circle_at_50%_40%,#161b22,#0d1117_58%)] text-swath-muted [-webkit-app-region:no-drag] [app-region:no-drag]";
+
 export function App(): JSX.Element {
   const config = useConfigStore((state) => state.config);
   const loaded = useConfigStore((state) => state.loaded);
@@ -64,24 +67,30 @@ export function App(): JSX.Element {
   }, []);
 
   if (!loaded || !config) {
-    return <div className="boot-screen">Loading…</div>;
+    return <div className={bootScreenClass}>Loading…</div>;
   }
 
   return (
-    <main className={`app-shell ${sidebarCollapsed ? "app-shell-collapsed" : ""}`}>
+    <main
+      className={`grid h-full min-h-0 w-full bg-swath-bg ${
+        sidebarCollapsed ? "grid-cols-[minmax(0,0px)_minmax(0,1fr)]" : "grid-cols-[268px_1fr] max-[980px]:grid-cols-[220px_1fr]"
+      }`}
+    >
       {sidebarCollapsed ? (
-        <div className="sidebar-hidden-sentinel" aria-hidden="true" />
+        <div className="pointer-events-none min-w-0 w-0 overflow-hidden" aria-hidden="true" />
       ) : (
         <Sidebar onToggleCollapse={() => useUiStore.getState().setSidebarCollapsed(true)} />
       )}
-      <div className="workspace-column">
+      <div className="grid min-h-0 min-w-0 grid-rows-[1fr_auto]">
         <section
-          className={`workspace-shell ${activeWorkspace ? "" : "workspace-shell-empty"} ${
-            !activeWorkspace && sidebarCollapsed ? "workspace-shell-empty-sidebar-collapsed" : ""
+          className={`flex min-h-0 min-w-0 flex-col border-b border-swath-border ${
+            !activeWorkspace && !sidebarCollapsed
+              ? "before:block before:h-9 before:shrink-0 before:content-[''] before:[-webkit-app-region:drag] before:[app-region:drag]"
+              : ""
           }`}
         >
           {activeWorkspace ? (
-            <Suspense fallback={<div className="boot-screen">Loading terminal…</div>}>
+            <Suspense fallback={<div className={bootScreenClass}>Loading terminal…</div>}>
               <TerminalWorkspace
                 workspace={activeWorkspace}
                 settings={config.settings}

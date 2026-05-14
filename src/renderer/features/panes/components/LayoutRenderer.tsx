@@ -54,15 +54,23 @@ function SplitRenderer({ workspace, view, settings, node }: SplitRendererProps):
     window.addEventListener("pointerup", onUp, { once: true });
   };
 
+  const flexDir = vertical ? "flex-row" : "flex-col";
+
   return (
-    <div ref={hostRef} className={`split ${vertical ? "split-vertical" : "split-horizontal"}`}>
-      <div className="split-child" style={{ flexBasis: `${node.ratio * 100}%` }}>
+    <div ref={hostRef} className={`flex h-full min-h-0 min-w-0 w-full ${flexDir}`}>
+      <div className="flex min-h-20 min-w-24 overflow-hidden" style={{ flexBasis: `${node.ratio * 100}%` }}>
         <LayoutRenderer workspace={workspace} view={view} settings={settings} node={node.first} />
       </div>
-      <div className={`split-resizer ${vertical ? "vertical" : "horizontal"}`} onPointerDown={beginResize}>
-        <span className="split-resizer-grip" aria-hidden />
+      <div
+        className={`group relative z-[2] flex shrink-0 items-center justify-center bg-transparent [-webkit-app-region:no-drag] [app-region:no-drag] hover:bg-[rgba(56,139,253,0.08)] ${vertical ? "w-2.5 cursor-col-resize" : "h-2.5 cursor-row-resize"}`}
+        onPointerDown={beginResize}
+      >
+        <span
+          className={`pointer-events-none rounded-full bg-[rgba(56,139,253,0.55)] opacity-0 transition-opacity duration-100 ease-out group-hover:opacity-100 ${vertical ? "h-[18px] w-1" : "h-1 w-[18px]"}`}
+          aria-hidden
+        />
       </div>
-      <div className="split-child" style={{ flexBasis: `${(1 - node.ratio) * 100}%` }}>
+      <div className="flex min-h-20 min-w-24 overflow-hidden" style={{ flexBasis: `${(1 - node.ratio) * 100}%` }}>
         <LayoutRenderer workspace={workspace} view={view} settings={settings} node={node.second} />
       </div>
     </div>

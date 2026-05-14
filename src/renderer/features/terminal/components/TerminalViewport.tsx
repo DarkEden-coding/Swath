@@ -5,5 +5,5 @@ interface TerminalViewportProps {
 }
 
 export function TerminalViewport({ hostRef }: TerminalViewportProps): JSX.Element {
-  return <div ref={hostRef} className="terminal-host" />;
+  return <div ref={hostRef} className="terminal-host min-h-0 min-w-0 overflow-hidden px-2 pb-1.5 pt-2 [&_.xterm]:h-full" />;
 }

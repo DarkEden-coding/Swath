@@ -5,6 +5,17 @@ import { useConfigStore } from "../../../state/configStore";
 import { useUiStore } from "../../../state/uiStore";
 import { IconClose } from "../../shell/icons";
 
+const fieldLabel = "flex flex-col gap-[7px] text-xs font-semibold text-swath-muted";
+
+const fieldInput =
+  "w-full rounded-lg border border-swath-border bg-swath-bg px-2.5 py-2 text-swath-text outline-none [-webkit-app-region:no-drag] [app-region:no-drag] focus:border-swath-accent focus:shadow-[0_0_0_2px_rgba(56,139,253,0.15)]";
+
+const secondaryBtn =
+  "cursor-pointer rounded-lg border border-swath-border bg-swath-bg px-2.5 py-1.5 text-swath-accent-strong [-webkit-app-region:no-drag] [app-region:no-drag] hover:border-swath-border-strong hover:bg-[#161b22]";
+
+const shellRowBtn =
+  "cursor-pointer rounded-lg border border-swath-border bg-swath-bg px-2.5 py-1.5 text-sm text-swath-text [-webkit-app-region:no-drag] [app-region:no-drag] hover:border-swath-border-strong hover:bg-[#161b22]";
+
 export function SettingsModal(): JSX.Element | null {
   const open = useUiStore((state) => state.settingsOpen);
   const config = useConfigStore((state) => state.config);
@@ -58,27 +69,43 @@ export function SettingsModal(): JSX.Element | null {
   };
 
   return (
-    <div className="modal-backdrop" onMouseDown={() => appActions.closeSettings()}>
-      <section className="settings-modal" onMouseDown={(event) => event.stopPropagation()}>
-        <header className="settings-header">
+    <div
+      className="fixed inset-0 z-50 grid place-items-center bg-[rgba(5,7,10,0.64)] p-7 backdrop-blur-md [-webkit-app-region:no-drag] [app-region:no-drag]"
+      onMouseDown={() => appActions.closeSettings()}
+    >
+      <section
+        className="max-h-[min(760px,92vh)] w-[min(780px,96vw)] overflow-y-auto rounded-xl border border-swath-border-strong bg-swath-panel p-[18px] shadow-swath-modal [-webkit-app-region:no-drag] [app-region:no-drag]"
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <header className="mb-[18px] flex items-center justify-between gap-3 [-webkit-app-region:drag] [app-region:drag]">
           <div>
-            <div className="eyebrow">Local Settings</div>
-            <h2>Terminal preferences</h2>
+            <div className="text-[11px] font-bold uppercase leading-none tracking-[0.12em] text-swath-muted-2">Local Settings</div>
+            <h2 className="mt-1 text-lg leading-snug">Terminal preferences</h2>
           </div>
-          <button type="button" className="icon-button" onClick={() => appActions.closeSettings()} aria-label="Close settings">
-            <IconClose width={18} height={18} />
+          <button
+            type="button"
+            className="grid size-8 cursor-pointer place-items-center rounded-lg border border-swath-border bg-swath-bg text-lg text-swath-accent-strong [-webkit-app-region:no-drag] [app-region:no-drag] hover:border-swath-border-strong hover:bg-[#161b22]"
+            onClick={() => appActions.closeSettings()}
+            aria-label="Close settings"
+          >
+            <IconClose width={18} height={18} className="block" />
           </button>
         </header>
 
-        <div className="settings-grid">
-          <label>
+        <div className="grid grid-cols-2 gap-3 max-[980px]:grid-cols-1">
+          <label className={fieldLabel}>
             Font family
-            <input value={settings.fontFamily} onChange={(event) => appActions.updateSettings({ fontFamily: event.target.value })} />
+            <input
+              className={fieldInput}
+              value={settings.fontFamily}
+              onChange={(event) => appActions.updateSettings({ fontFamily: event.target.value })}
+            />
           </label>
 
-          <label>
+          <label className={fieldLabel}>
             Font size
             <input
+              className={fieldInput}
               type="number"
               min={9}
               max={28}
@@ -87,9 +114,10 @@ export function SettingsModal(): JSX.Element | null {
             />
           </label>
 
-          <label>
+          <label className={fieldLabel}>
             Line height
             <input
+              className={fieldInput}
               type="number"
               min={1}
               max={2}
@@ -99,9 +127,10 @@ export function SettingsModal(): JSX.Element | null {
             />
           </label>
 
-          <label>
+          <label className={fieldLabel}>
             Cursor style
             <select
+              className={fieldInput}
               value={settings.cursorStyle}
               onChange={(event) => appActions.updateSettings({ cursorStyle: event.target.value as "block" | "underline" | "bar" })}
             >
@@ -111,18 +140,20 @@ export function SettingsModal(): JSX.Element | null {
             </select>
           </label>
 
-          <label className="checkbox-row">
+          <label className="col-span-2 flex flex-row items-center gap-2 text-xs font-semibold text-swath-muted max-[980px]:col-span-1">
             <input
               type="checkbox"
+              className="w-auto [-webkit-app-region:no-drag] [app-region:no-drag]"
               checked={settings.cursorBlink}
               onChange={(event) => appActions.updateSettings({ cursorBlink: event.target.checked })}
             />
             Blinking cursor
           </label>
 
-          <label className="checkbox-row">
+          <label className="col-span-2 flex flex-row items-center gap-2 text-xs font-semibold text-swath-muted max-[980px]:col-span-1">
             <input
               type="checkbox"
+              className="w-auto [-webkit-app-region:no-drag] [app-region:no-drag]"
               checked={settings.confirmBeforeClosingPane}
               onChange={(event) => appActions.updateSettings({ confirmBeforeClosingPane: event.target.checked })}
             />
@@ -130,32 +161,47 @@ export function SettingsModal(): JSX.Element | null {
           </label>
         </div>
 
-        <section className="shell-section">
-          <h3>Global environment</h3>
-          <p>These key/value pairs are captured into new panes and passed to spawned shells.</p>
-          <div className="env-list">
+        <section className="mt-6 border-t border-swath-border pt-[18px]">
+          <h3 className="mb-1 text-[15px]">Global environment</h3>
+          <p className="mb-3 text-xs text-swath-muted-2">These key/value pairs are captured into new panes and passed to spawned shells.</p>
+          <div className="grid gap-2">
             {Object.entries(settings.globalEnv ?? {}).map(([key, value]) => (
-              <div className="env-row" key={key}>
-                <strong>{key}</strong>
-                <input value={value} onChange={(event) => setEnvVar(key, event.target.value)} />
-                <button onClick={() => setEnvVar(key, null)}>Remove</button>
+              <div
+                className="grid grid-cols-[minmax(120px,0.7fr)_minmax(160px,1fr)_auto] items-center gap-2 rounded-2xl border border-swath-border bg-swath-bg p-2.5 max-[980px]:grid-cols-1"
+                key={key}
+              >
+                <strong className="min-w-0 truncate text-[13px]">{key}</strong>
+                <input className={fieldInput} value={value} onChange={(event) => setEnvVar(key, event.target.value)} />
+                <button type="button" className={shellRowBtn} onClick={() => setEnvVar(key, null)}>
+                  Remove
+                </button>
               </div>
             ))}
           </div>
-          <div className="new-shell-grid">
-            <input placeholder="KEY" value={newEnvKey} onChange={(event) => setNewEnvKey(event.target.value)} />
-            <input placeholder="Value" value={newEnvValue} onChange={(event) => setNewEnvValue(event.target.value)} />
-            <button className="secondary-button" onClick={addEnvVar}>
+          <div className="mt-3 grid grid-cols-[1fr_1fr_auto] gap-2 max-[980px]:grid-cols-1">
+            <input
+              className={fieldInput}
+              placeholder="KEY"
+              value={newEnvKey}
+              onChange={(event) => setNewEnvKey(event.target.value)}
+            />
+            <input
+              className={fieldInput}
+              placeholder="Value"
+              value={newEnvValue}
+              onChange={(event) => setNewEnvValue(event.target.value)}
+            />
+            <button type="button" className={secondaryBtn} onClick={addEnvVar}>
               Add Variable
             </button>
           </div>
         </section>
 
-        <section className="shell-section">
-          <h3>Shell profiles</h3>
-          <p>Profiles are spawned from the selected workspace folder.</p>
+        <section className="mt-6 border-t border-swath-border pt-[18px]">
+          <h3 className="mb-1 text-[15px]">Shell profiles</h3>
+          <p className="mb-3 text-xs text-swath-muted-2">Profiles are spawned from the selected workspace folder.</p>
 
-          <div className="shell-list">
+          <div className="grid gap-2">
             {settings.shellProfiles.map((profile) => (
               <ShellProfileRow
                 key={profile.id}
@@ -168,11 +214,26 @@ export function SettingsModal(): JSX.Element | null {
             ))}
           </div>
 
-          <div className="new-shell-grid">
-            <input placeholder="Name" value={newProfileName} onChange={(event) => setNewProfileName(event.target.value)} />
-            <input placeholder="Command" value={newProfileCommand} onChange={(event) => setNewProfileCommand(event.target.value)} />
-            <input placeholder="Args, e.g. -l" value={newProfileArgs} onChange={(event) => setNewProfileArgs(event.target.value)} />
-            <button className="secondary-button" onClick={createProfile}>
+          <div className="mt-3 grid grid-cols-[1fr_1.2fr_1fr_auto] gap-2 max-[980px]:grid-cols-1">
+            <input
+              className={fieldInput}
+              placeholder="Name"
+              value={newProfileName}
+              onChange={(event) => setNewProfileName(event.target.value)}
+            />
+            <input
+              className={fieldInput}
+              placeholder="Command"
+              value={newProfileCommand}
+              onChange={(event) => setNewProfileCommand(event.target.value)}
+            />
+            <input
+              className={fieldInput}
+              placeholder="Args, e.g. -l"
+              value={newProfileArgs}
+              onChange={(event) => setNewProfileArgs(event.target.value)}
+            />
+            <button type="button" className={secondaryBtn} onClick={createProfile}>
               Add Shell
             </button>
           </div>
@@ -191,16 +252,26 @@ interface ShellProfileRowProps {
 }
 
 function ShellProfileRow({ profile, active, canRemove, onDefault, onRemove }: ShellProfileRowProps): JSX.Element {
+  const rowRing = active ? "border-swath-accent" : "border-swath-border";
+
   return (
-    <div className={`shell-row ${active ? "active" : ""}`}>
-      <div>
-        <strong>{profile.name}</strong>
-        <span>
+    <div
+      className={`grid grid-cols-[1fr_auto_auto] items-center gap-2 rounded-2xl border bg-swath-bg p-2.5 max-[980px]:grid-cols-1 ${rowRing}`}
+    >
+      <div className="flex min-w-0 flex-col gap-0.5">
+        <strong className="min-w-0 truncate text-[13px]">{profile.name}</strong>
+        <span className="truncate font-mono text-xs text-swath-muted-2">
           {profile.command} {profile.args.join(" ")}
         </span>
       </div>
-      <button onClick={onDefault}>{active ? "Default" : "Use"}</button>
-      {canRemove ? <button onClick={onRemove}>Remove</button> : null}
+      <button type="button" className={shellRowBtn} onClick={onDefault}>
+        {active ? "Default" : "Use"}
+      </button>
+      {canRemove ? (
+        <button type="button" className={shellRowBtn} onClick={onRemove}>
+          Remove
+        </button>
+      ) : null}
     </div>
   );
 }
