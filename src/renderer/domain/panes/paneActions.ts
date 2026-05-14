@@ -1,16 +1,22 @@
-import type { AppConfig, SplitDirection } from "../../../shared/types";
+import type { AppConfig, PaneKind, SplitDirection } from "../../../shared/types";
 import { createId } from "../../utils/ids";
+import { createTabTypePaneMeta } from "../../features/tabTypes/registry";
 import { closePane as closePaneNode, collectPaneIds, findPane, splitPaneWithId, updateSplitRatio } from "../layout/layoutTree";
 
-export function splitPane(config: AppConfig, workspaceId: string, viewId: string, paneId: string, direction: SplitDirection): { config: AppConfig; activePaneId: string | null } {
+export function splitPane(config: AppConfig, workspaceId: string, viewId: string, paneId: string, direction: SplitDirection, kind?: PaneKind): { config: AppConfig; activePaneId: string | null } {
   const newPaneId = createId("pane");
   return {
     activePaneId: newPaneId,
-    config: updateView(config, workspaceId, viewId, (view, workspace) => ({
-      ...view,
-      layout: splitPaneWithId(view.layout, paneId, direction, newPaneId, "terminal"),
-      activePaneId: newPaneId
-    }))
+    config: updateView(config, workspaceId, viewId, (view, workspace) => {
+      const sourcePane = findPane(view.layout, paneId);
+      const targetKind = kind ?? sourcePane?.kind;
+      const meta = kind && kind !== sourcePane?.kind ? createTabTypePaneMeta(kind, config.settings, workspace.path) : undefined;
+      return {
+        ...view,
+        layout: splitPaneWithId(view.layout, paneId, direction, newPaneId, targetKind, meta),
+        activePaneId: newPaneId
+      };
+    })
   };
 }
 

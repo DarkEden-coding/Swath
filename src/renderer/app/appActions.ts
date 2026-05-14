@@ -1,14 +1,14 @@
-import type { AppConfig, AppSettings, ShellProfile, SplitDirection } from "../../shared/types";
-import { collectPaneIds } from "../domain/layout/layoutTree";
+import type { AppConfig, AppSettings, PaneKind, ShellProfile, SplitDirection } from "../../shared/types";
+import { collectPanes, findPane } from "../domain/layout/layoutTree";
 import * as paneActions from "../domain/panes/paneActions";
 import * as settingsActions from "../domain/settings/settingsActions";
 import * as viewActions from "../domain/views/viewActions";
 import * as workspaceActions from "../domain/workspaces/workspaceActions";
 import { configClient } from "../services/configClient";
 import { dialogClient } from "../services/dialogClient";
-import { terminalClient } from "../services/terminalClient";
 import { useConfigStore } from "../state/configStore";
 import { useUiStore } from "../state/uiStore";
+import { getTabType } from "../features/tabTypes/registry";
 
 function commit(config: AppConfig, activePaneId?: string | null): void {
   useConfigStore.getState().setConfig(config);
@@ -24,14 +24,18 @@ function withConfig(mutator: (config: AppConfig) => { config: AppConfig; activeP
   else commit(result);
 }
 
-function paneIdsForWorkspace(config: AppConfig, workspaceId: string): string[] {
+function panesForWorkspace(config: AppConfig, workspaceId: string): ReturnType<typeof collectPanes> {
   const workspace = config.workspaces.find((item) => item.id === workspaceId);
-  return workspace?.views.flatMap((view) => collectPaneIds(view.layout)) ?? [];
+  return workspace?.views.flatMap((view) => collectPanes(view.layout)) ?? [];
 }
 
-async function anyBusyPane(paneIds: string[]): Promise<boolean> {
-  const statuses = await Promise.all(paneIds.map((paneId) => terminalClient.isBusy(paneId)));
+async function anyBusyRegisteredPane(panes: ReturnType<typeof viewActions.panesForView>): Promise<boolean> {
+  const statuses = await Promise.all(panes.map((pane) => getTabType(pane.kind).isBusy?.(pane.id) ?? Promise.resolve(false)));
   return statuses.some(Boolean);
+}
+
+function closeRegisteredPanes(panes: ReturnType<typeof viewActions.panesForView>): void {
+  panes.forEach((pane) => getTabType(pane.kind).closePane?.(pane.id));
 }
 
 export async function hydrateApp(): Promise<void> {
@@ -66,9 +70,9 @@ export async function addWorkspaceFromFolder(): Promise<void> {
 export function removeWorkspace(workspaceId: string): void {
   const config = useConfigStore.getState().config;
   if (!config) return;
-  const paneIds = paneIdsForWorkspace(config, workspaceId);
-  if (paneIds.length > 0 && !window.confirm("Remove this workspace and kill its terminal sessions?")) return;
-  paneIds.forEach((paneId) => terminalClient.kill(paneId));
+  const panes = panesForWorkspace(config, workspaceId);
+  if (panes.length > 0 && !window.confirm("Remove this workspace and close its panes?")) return;
+  closeRegisteredPanes(panes);
   const next = workspaceActions.removeWorkspace(config, workspaceId);
   commit(next, workspaceActions.getActivePaneIdForConfig(next));
 }
@@ -88,40 +92,44 @@ export function moveWorkspace(fromIndex: number, toIndex: number): void {
   withConfig((config) => workspaceActions.moveWorkspace(config, fromIndex, toIndex));
 }
 
-export function addTab(workspaceId?: string): void {
-  withConfig((config) => viewActions.addView(config, workspaceId));
+export function createView(workspaceId?: string, kind: PaneKind = "terminal"): void {
+  withConfig((config) => viewActions.addView(config, workspaceId, kind));
 }
 
-export function closeTab(workspaceId: string, viewId: string): void {
+export function closeView(workspaceId: string, viewId: string): void {
   void (async () => {
     const config = useConfigStore.getState().config;
     if (!config) return;
-    const paneIds = viewActions.paneIdsForView(config, workspaceId, viewId);
-    if (config.settings.confirmBeforeClosingPane && paneIds.length > 0 && (await anyBusyPane(paneIds)) && !window.confirm("Close this view and kill its running terminal sessions?")) return;
-    paneIds.forEach((paneId) => terminalClient.kill(paneId));
+    const panes = viewActions.panesForView(config, workspaceId, viewId);
+    if (config.settings.confirmBeforeClosingPane && panes.length > 0 && (await anyBusyRegisteredPane(panes)) && !window.confirm("Close this view and close its running panes?")) return;
+    closeRegisteredPanes(panes);
     const result = viewActions.closeView(config, workspaceId, viewId);
     commit(result.config, result.activePaneId);
   })();
 }
 
-export function selectTab(workspaceId: string, viewId: string): void {
+export function selectView(workspaceId: string, viewId: string): void {
   withConfig((config) => viewActions.selectView(config, workspaceId, viewId));
 }
 
-export function renameTab(workspaceId: string, viewId: string, title: string): void {
+export function renameView(workspaceId: string, viewId: string, title: string): void {
   withConfig((config) => viewActions.renameView(config, workspaceId, viewId, title));
 }
 
-export function splitPane(workspaceId: string, viewId: string, paneId: string, direction: SplitDirection): void {
-  withConfig((config) => paneActions.splitPane(config, workspaceId, viewId, paneId, direction));
+export function splitPane(workspaceId: string, viewId: string, paneId: string, direction: SplitDirection, kind?: PaneKind): void {
+  withConfig((config) => paneActions.splitPane(config, workspaceId, viewId, paneId, direction, kind));
 }
 
 export function closePane(workspaceId: string, viewId: string, paneId: string): void {
   void (async () => {
     const config = useConfigStore.getState().config;
     if (!config) return;
-    if (config.settings.confirmBeforeClosingPane && (await terminalClient.isBusy(paneId)) && !window.confirm("Close this running terminal?")) return;
-    terminalClient.kill(paneId);
+    const view = config.workspaces.find((workspace) => workspace.id === workspaceId)?.views.find((item) => item.id === viewId);
+    const pane = view ? findPane(view.layout, paneId) : null;
+    if (!pane) return;
+    const tabType = getTabType(pane.kind);
+    if (config.settings.confirmBeforeClosingPane && (await tabType.isBusy?.(paneId)) && !window.confirm("Close this running pane?")) return;
+    tabType.closePane?.(paneId);
     const result = paneActions.closePane(config, workspaceId, viewId, paneId);
     commit(result.config, result.activePaneId);
   })();

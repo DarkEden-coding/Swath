@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { ViewHealth, Workspace } from "../../../../shared/types";
 import * as appActions from "../../../app/appActions";
 import { IconChevronsLeft, IconClose, IconPlus, IconTerminal } from "../../shell/icons";
+import { getTabTypes } from "../../tabTypes/registry";
 
 interface ViewTabBarProps {
   workspace: Workspace;
@@ -58,9 +59,9 @@ export function ViewTabBar({ workspace, sidebarCollapsed, onToggleSidebar }: Vie
             health={tab.health}
             active={workspace.activeViewId === tab.id}
             canClose={workspace.views.length > 1}
-            onSelect={() => appActions.selectTab(workspace.id, tab.id)}
-            onClose={() => appActions.closeTab(workspace.id, tab.id)}
-            onRename={(nextTitle) => appActions.renameTab(workspace.id, tab.id, nextTitle)}
+            onSelect={() => appActions.selectView(workspace.id, tab.id)}
+            onClose={() => appActions.closeView(workspace.id, tab.id)}
+            onRename={(nextTitle) => appActions.renameView(workspace.id, tab.id, nextTitle)}
           />
         ))}
       </div>
@@ -68,7 +69,7 @@ export function ViewTabBar({ workspace, sidebarCollapsed, onToggleSidebar }: Vie
         <button
           className="grid h-full w-9 min-h-0 cursor-pointer place-items-center border-0 border-l border-swath-border bg-swath-panel text-swath-accent-strong [-webkit-app-region:no-drag] [app-region:no-drag] hover:border-swath-border-strong hover:bg-[#161b22]"
           type="button"
-          onClick={() => appActions.addTab(workspace.id)}
+          onClick={() => appActions.createView(workspace.id)}
           title="New tab"
           onContextMenu={(e) => {
             e.preventDefault();
@@ -79,17 +80,20 @@ export function ViewTabBar({ workspace, sidebarCollapsed, onToggleSidebar }: Vie
         </button>
         {showTypeSelector && (
           <div className="absolute right-0 top-full z-[100] mt-1 flex min-w-[140px] flex-col gap-0.5 rounded-md border border-swath-border bg-[#1a1a1a] p-1 shadow-swath-float">
-            <button
-              type="button"
-              className="flex cursor-pointer items-center gap-2 rounded border-0 bg-transparent px-2.5 py-1.5 text-left text-[13px] text-swath-text [-webkit-app-region:no-drag] [app-region:no-drag] hover:bg-[#2a2a2a]"
-              onClick={() => {
-                appActions.addTab(workspace.id);
-                setShowTypeSelector(false);
-              }}
-            >
-              <IconTerminal width={16} height={16} className="block" />
-              <span>Terminal</span>
-            </button>
+            {getTabTypes().map((tabType) => (
+              <button
+                key={tabType.kind}
+                type="button"
+                className="flex cursor-pointer items-center gap-2 rounded border-0 bg-transparent px-2.5 py-1.5 text-left text-[13px] text-swath-text [-webkit-app-region:no-drag] [app-region:no-drag] hover:bg-[#2a2a2a]"
+                onClick={() => {
+                  appActions.createView(workspace.id, tabType.kind);
+                  setShowTypeSelector(false);
+                }}
+              >
+                <IconTerminal width={16} height={16} className="block" />
+                <span>{tabType.label}</span>
+              </button>
+            ))}
           </div>
         )}
       </div>

@@ -25,7 +25,7 @@ export function TerminalWorkspace({ workspace, settings, sidebarCollapsed, onTog
           <LayoutRenderer workspace={workspace} view={activeView} settings={settings} node={activeView.layout} />
         ) : (
           <div className="grid h-full place-items-center">
-            <button type="button" className={primaryBtn} onClick={() => appActions.addTab(workspace.id)}>
+            <button type="button" className={primaryBtn} onClick={() => appActions.createView(workspace.id)}>
               Create terminal tab
             </button>
           </div>

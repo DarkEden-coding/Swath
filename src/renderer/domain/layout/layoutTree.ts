@@ -19,6 +19,11 @@ export function collectPaneIds(node: LayoutNode): string[] {
   return [...collectPaneIds(node.first), ...collectPaneIds(node.second)];
 }
 
+export function collectPanes(node: LayoutNode): PaneNode[] {
+  if (node.type === "pane") return [node];
+  return [...collectPanes(node.first), ...collectPanes(node.second)];
+}
+
 export function findPane(node: LayoutNode, paneId: string): PaneNode | null {
   if (node.type === "pane") return node.id === paneId ? node : null;
   return findPane(node.first, paneId) ?? findPane(node.second, paneId);
@@ -33,12 +38,13 @@ export function splitPaneWithId(
   paneId: string,
   direction: SplitDirection,
   newPaneId: string,
-  kind?: PaneKind
+  kind?: PaneKind,
+  meta?: Partial<Omit<PaneNode, "type" | "id" | "kind">>
 ): LayoutNode {
   if (node.type === "pane") {
     if (node.id !== paneId) return node;
 
-    const newPane = createPaneLeaf(kind ?? node.kind, newPaneId, {
+    const newPane = createPaneLeaf(kind ?? node.kind, newPaneId, meta ?? {
       title: node.title,
       promptLabel: node.promptLabel,
       cwd: node.cwd,
@@ -59,8 +65,8 @@ export function splitPaneWithId(
 
   return {
     ...node,
-    first: splitPaneWithId(node.first, paneId, direction, newPaneId, kind),
-    second: splitPaneWithId(node.second, paneId, direction, newPaneId, kind)
+    first: splitPaneWithId(node.first, paneId, direction, newPaneId, kind, meta),
+    second: splitPaneWithId(node.second, paneId, direction, newPaneId, kind, meta)
   };
 }
 

@@ -1,17 +1,17 @@
-import type { ComponentType } from "react";
+import type { ComponentType, LazyExoticComponent } from "react";
 import type { PaneKind } from "../../../shared/types";
-import { TerminalPane } from "../terminal/components/TerminalPane";
+import { getTabType } from "../tabTypes/registry";
 import type { PaneComponentProps } from "./paneTypes";
 
 interface PaneRegistration {
   label: string;
-  Component: ComponentType<PaneComponentProps>;
+  Component: ComponentType<PaneComponentProps> | LazyExoticComponent<ComponentType<PaneComponentProps>>;
 }
 
 export const paneRegistry: Record<PaneKind, PaneRegistration> = {
   terminal: {
-    label: "Terminal",
-    Component: TerminalPane,
+    label: getTabType("terminal").label,
+    Component: getTabType("terminal").Component,
   },
 };
 

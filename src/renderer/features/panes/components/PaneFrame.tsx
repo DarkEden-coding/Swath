@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import type { PaneKind } from "../../../../shared/types";
 import { PaneToolbar } from "./PaneToolbar";
 
 interface PaneFrameProps {
@@ -6,8 +7,8 @@ interface PaneFrameProps {
   title: string;
   statusClass?: string;
   onActivate: () => void;
-  onSplitRight: (shiftKey?: boolean) => void;
-  onSplitDown: (shiftKey?: boolean) => void;
+  onSplitRight: (kind?: PaneKind) => void;
+  onSplitDown: (kind?: PaneKind) => void;
   onClose: () => void;
   onKeyDown?: React.KeyboardEventHandler<HTMLDivElement>;
   onContextMenu?: React.MouseEventHandler<HTMLDivElement>;
@@ -30,7 +31,7 @@ export function PaneFrame({
 
   return (
     <div
-      className={`relative grid h-full min-h-0 min-w-0 grid-rows-[34px_1fr] overflow-hidden rounded-md border bg-swath-bg ${ring}`}
+      className={`relative grid h-full w-full min-h-0 min-w-0 grid-rows-[34px_1fr] overflow-hidden rounded-md border bg-swath-bg ${ring}`}
       onMouseDown={onActivate}
       onKeyDown={onKeyDown}
       onContextMenu={onContextMenu}

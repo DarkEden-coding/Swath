@@ -16,8 +16,8 @@ export interface CommandContext {
   activeView: WorkspaceView | null;
   activePaneId: string | null;
   addWorkspaceFromFolder: () => void | Promise<void>;
-  addTab: (workspaceId?: string) => void;
-  closeTab: (workspaceId: string, viewId: string) => void;
+  createView: (workspaceId?: string) => void;
+  closeView: (workspaceId: string, viewId: string) => void;
   splitPane: (workspaceId: string, viewId: string, paneId: string, direction: SplitDirection) => void;
   closePane: (workspaceId: string, viewId: string, paneId: string) => void;
   openSettings: () => void;
@@ -27,8 +27,8 @@ export function runAppCommand(command: string, context: CommandContext): void {
   const workspace = context.activeWorkspace;
   const view = context.activeView;
   if (command === "workspace:add") void context.addWorkspaceFromFolder();
-  if (command === "view:new" || command === "tab:new") context.addTab();
-  if ((command === "view:close" || command === "tab:close") && workspace && view) context.closeTab(workspace.id, view.id);
+  if (command === "view:new" || command === "tab:new") context.createView();
+  if ((command === "view:close" || command === "tab:close") && workspace && view) context.closeView(workspace.id, view.id);
   runPaneCommand(command, context, workspace, view);
   if (command === "settings:open") context.openSettings();
 }

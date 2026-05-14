@@ -363,8 +363,8 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
       title={headerLine}
       statusClass={exited ? "exited" : startedSessions.has(paneId) ? "running" : "dormant"}
       onActivate={() => appActions.setActivePane(workspace.id, view.id, paneId)}
-      onSplitRight={() => appActions.splitPane(workspace.id, view.id, paneId, "vertical")}
-      onSplitDown={() => appActions.splitPane(workspace.id, view.id, paneId, "horizontal")}
+      onSplitRight={(kind) => appActions.splitPane(workspace.id, view.id, paneId, "vertical", kind)}
+      onSplitDown={(kind) => appActions.splitPane(workspace.id, view.id, paneId, "horizontal", kind)}
       onClose={close}
       onKeyDown={onKeyDown}
       onContextMenu={(event: MouseEvent<HTMLDivElement>) => {

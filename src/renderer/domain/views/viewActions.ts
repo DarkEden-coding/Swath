@@ -1,28 +1,30 @@
-import type { AppConfig, AppSettings, ShellProfile, WorkspaceView } from "../../../shared/types";
-import { createId } from "../../utils/ids";
-import { collectPaneIds, createPaneNode } from "../layout/layoutTree";
+import type { AppConfig, AppSettings, PaneKind, WorkspaceView } from "../../../shared/types";
+import { collectPaneIds, collectPanes } from "../layout/layoutTree";
+import { createTabTypeView } from "../../features/tabTypes/registry";
 
-function shellFor(settings: AppSettings): ShellProfile | null {
-  return settings.shellProfiles.find((profile) => profile.id === settings.defaultShellProfileId) ?? settings.shellProfiles[0] ?? null;
+const fallbackSettings: AppSettings = {
+  fontFamily: "",
+  fontSize: 13,
+  lineHeight: 1.2,
+  cursorBlink: true,
+  cursorStyle: "block",
+  defaultShellProfileId: "",
+  shellProfiles: [],
+  globalEnv: {},
+  confirmBeforeClosingPane: true,
+};
+
+export function createWorkspaceView(title = "Terminal", cwd?: string, settings?: AppSettings, kind: PaneKind = "terminal"): WorkspaceView {
+  return createTabTypeView(kind, title, cwd, settings ?? fallbackSettings);
 }
 
-export function paneMeta(settings: AppSettings, cwd?: string) {
-  const shellProfile = shellFor(settings);
-  return { cwd, shellProfile, env: { ...(settings.globalEnv ?? {}) }, metadata: { cwd, shellProfileId: shellProfile?.id, shellProfile, env: { ...(settings.globalEnv ?? {}) } } };
-}
-
-export function createWorkspaceView(title = "Terminal", cwd?: string, settings?: AppSettings): WorkspaceView {
-  const pane = createPaneNode(undefined, settings ? paneMeta(settings, cwd) : {});
-  return { id: createId("view"), type: "workspace-view", title, layout: pane, activePaneId: pane.id };
-}
-
-export function addView(config: AppConfig, workspaceId?: string): { config: AppConfig; activePaneId: string | null } {
+export function addView(config: AppConfig, workspaceId?: string, kind: PaneKind = "terminal"): { config: AppConfig; activePaneId: string | null } {
   let activePaneId: string | null = null;
   const targetWorkspaceId = workspaceId ?? config.activeWorkspaceId ?? config.workspaces[0]?.id;
   if (!targetWorkspaceId) return { config, activePaneId };
   const workspaces = config.workspaces.map((workspace) => {
     if (workspace.id !== targetWorkspaceId) return workspace;
-    const view = createWorkspaceView(`Terminal ${workspace.views.length + 1}`, workspace.path, config.settings);
+    const view = createWorkspaceView(`Terminal ${workspace.views.length + 1}`, workspace.path, config.settings, kind);
     activePaneId = view.activePaneId;
     return { ...workspace, views: [...workspace.views, view], activeViewId: view.id, updatedAt: Date.now() };
   });
@@ -71,4 +73,9 @@ export function renameView(config: AppConfig, workspaceId: string, viewId: strin
 export function paneIdsForView(config: AppConfig, workspaceId: string, viewId: string): string[] {
   const view = config.workspaces.find((workspace) => workspace.id === workspaceId)?.views.find((item) => item.id === viewId);
   return view ? collectPaneIds(view.layout) : [];
+}
+
+export function panesForView(config: AppConfig, workspaceId: string, viewId: string) {
+  const view = config.workspaces.find((workspace) => workspace.id === workspaceId)?.views.find((item) => item.id === viewId);
+  return view ? collectPanes(view.layout) : [];
 }

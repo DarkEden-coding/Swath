@@ -1,4 +1,4 @@
-import { useRef, type PointerEvent as ReactPointerEvent } from "react";
+import { Suspense, useRef, type PointerEvent as ReactPointerEvent } from "react";
 import type { AppSettings, LayoutNode, PaneLeaf, SplitNode, Workspace, WorkspaceView } from "../../../../shared/types";
 import { setSplitRatio } from "../../../app/appActions";
 import { getPaneRegistration } from "../paneRegistry";
@@ -14,7 +14,11 @@ export function LayoutRenderer({ workspace, view, settings, node }: LayoutRender
   if (node.type === "pane") {
     const pane = node as PaneLeaf;
     const { Component } = getPaneRegistration(pane.kind);
-    return <Component workspace={workspace} view={view} pane={pane} settings={settings} />;
+    return (
+      <Suspense fallback={<div className="h-full w-full rounded-md border border-swath-border bg-swath-bg" />}>
+        <Component workspace={workspace} view={view} pane={pane} settings={settings} />
+      </Suspense>
+    );
   }
 
   return <SplitRenderer workspace={workspace} view={view} settings={settings} node={node} />;
@@ -57,8 +61,8 @@ function SplitRenderer({ workspace, view, settings, node }: SplitRendererProps):
   const flexDir = vertical ? "flex-row" : "flex-col";
 
   return (
-    <div ref={hostRef} className={`flex h-full min-h-0 min-w-0 w-full ${flexDir}`}>
-      <div className="flex min-h-20 min-w-24 overflow-hidden" style={{ flexBasis: `${node.ratio * 100}%` }}>
+    <div ref={hostRef} className={`flex h-full w-full min-h-0 min-w-0 ${flexDir}`}>
+      <div className="flex min-h-20 min-w-24 overflow-hidden" style={{ flex: `${node.ratio} 1 0` }}>
         <LayoutRenderer workspace={workspace} view={view} settings={settings} node={node.first} />
       </div>
       <div
@@ -70,7 +74,7 @@ function SplitRenderer({ workspace, view, settings, node }: SplitRendererProps):
           aria-hidden
         />
       </div>
-      <div className="flex min-h-20 min-w-24 overflow-hidden" style={{ flexBasis: `${(1 - node.ratio) * 100}%` }}>
+      <div className="flex min-h-20 min-w-24 overflow-hidden" style={{ flex: `${1 - node.ratio} 1 0` }}>
         <LayoutRenderer workspace={workspace} view={view} settings={settings} node={node.second} />
       </div>
     </div>
