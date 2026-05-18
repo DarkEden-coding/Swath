@@ -16,6 +16,7 @@ import { TerminalViewport } from "./TerminalViewport";
 import { TERMINAL_COL_RESERVE } from "../hooks/useTerminalInstance";
 import { copyTerminalSelection, readTerminalPastePayload } from "../hooks/useTerminalClipboard";
 import { formatPathPaste, getClipboardEventFilePaths, getClipboardEventText } from "../../../utils/terminalPaste";
+import { getTerminalKeyAction, shouldXtermHandleKeyEvent } from "../utils/terminalKeyboard";
 import { detachCachedTerminalElement, disposeCachedTerminal, exitStateSetters, startedSessions, terminalCache } from "../runtime/terminalCache";
 
 function shellFor(settings: AppSettings): ShellProfile | null {
@@ -138,6 +139,7 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
     const initialSelection = terminal.getSelection();
     lastSelectionRef.current = initialSelection;
     lastSelectionAtRef.current = initialSelection ? Date.now() : 0;
+    terminal.attachCustomKeyEventHandler(shouldXtermHandleKeyEvent);
 
     const currentCwd = paneMeta?.cwd ?? paneMeta?.metadata?.cwd ?? workspace.path;
 
@@ -340,6 +342,7 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
     if (!data) return;
 
     event.preventDefault();
+    event.stopPropagation();
     pasteToTerminal(data);
   };
 
@@ -384,27 +387,16 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
   };
 
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>): void => {
-    const key = event.key.toLowerCase();
-    const commandModifier = (event.metaKey || event.ctrlKey) && !event.altKey;
-
     if (isEditableTarget(event.target)) return;
 
-    if (
-      (commandModifier && key === "c" && getCopySelection(true)) ||
-      (event.ctrlKey && key === "insert" && getCopySelection(true))
-    ) {
+    const action = getTerminalKeyAction(event, Boolean(getCopySelection(true)));
+    if (action === "copy") {
       event.preventDefault();
       void copy(true);
       return;
     }
 
-    if ((commandModifier && key === "v") || (event.shiftKey && key === "insert")) {
-      event.preventDefault();
-      void paste();
-      return;
-    }
-
-    if (commandModifier && key === "f") {
+    if (action === "find") {
       event.preventDefault();
       setSearchOpen(true);
     }
