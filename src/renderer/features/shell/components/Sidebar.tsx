@@ -196,13 +196,20 @@ function WorkspaceItem({
         <button
           type="button"
           className="grid size-8 min-h-8 cursor-pointer place-items-center rounded-lg border border-swath-border bg-swath-bg p-0 text-swath-muted [-webkit-app-region:no-drag] [app-region:no-drag] hover:border-swath-border-strong hover:bg-[#161b22]"
-          onClick={() => setMenuOpen((value) => !value)}
+          onClick={(event) => {
+            event.stopPropagation();
+            setMenuOpen((value) => !value);
+          }}
           aria-label="Project menu"
         >
           <IconMoreVertical width={17} height={17} className="block" />
         </button>
         {menuOpen ? (
-          <div className="absolute right-1 top-[34px] z-20 min-w-32 rounded-xl border border-swath-border bg-[#151a22] p-1.5 shadow-swath [-webkit-app-region:no-drag] [app-region:no-drag]">
+          <div
+            className="absolute right-1 top-[34px] z-20 min-w-32 rounded-xl border border-swath-border bg-[#151a22] p-1.5 shadow-swath [-webkit-app-region:no-drag] [app-region:no-drag]"
+            onMouseDown={(event) => event.stopPropagation()}
+            onClick={(event) => event.stopPropagation()}
+          >
             <button
               type="button"
               className="block w-full cursor-pointer rounded-lg border-0 bg-transparent px-2.5 py-2 text-left text-swath-text [-webkit-app-region:no-drag] [app-region:no-drag] hover:bg-[#202735]"
