@@ -86,6 +86,7 @@ function createStubSwath(): SwathApi {
     },
     clipboard: {
       readForTerminal: async () => ({ text: "", imagePath: null }),
+      writeText: async () => {},
     },
     permissions: {
       ensureTerminalPaste: async () => ({ accessibility: "unavailable" }),

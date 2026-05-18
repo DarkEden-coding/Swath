@@ -11,6 +11,8 @@ interface PaneFrameProps {
   onSplitDown: (kind?: PaneKind) => void;
   onClose: () => void;
   onKeyDown?: React.KeyboardEventHandler<HTMLDivElement>;
+  onCopyCapture?: React.ClipboardEventHandler<HTMLDivElement>;
+  onPasteCapture?: React.ClipboardEventHandler<HTMLDivElement>;
   onContextMenu?: React.MouseEventHandler<HTMLDivElement>;
   children: ReactNode;
 }
@@ -24,6 +26,8 @@ export function PaneFrame({
   onSplitDown,
   onClose,
   onKeyDown,
+  onCopyCapture,
+  onPasteCapture,
   onContextMenu,
   children,
 }: PaneFrameProps): JSX.Element {
@@ -34,6 +38,8 @@ export function PaneFrame({
       className={`relative grid h-full w-full min-h-0 min-w-0 grid-rows-[34px_1fr] overflow-hidden rounded-md border bg-swath-bg ${ring}`}
       onMouseDown={onActivate}
       onKeyDown={onKeyDown}
+      onCopyCapture={onCopyCapture}
+      onPasteCapture={onPasteCapture}
       onContextMenu={onContextMenu}
     >
       <PaneToolbar title={title} statusClass={statusClass} onSplitRight={onSplitRight} onSplitDown={onSplitDown} onClose={onClose} />

@@ -1,11 +1,21 @@
 import type { ClipboardEvent } from "react";
 
-export function shellQuotePath(path: string): string {
+function shellKind(shellCommand: string | undefined): "cmd" | "powershell" | "posix" {
+  const commandName = shellCommand?.split(/[\\/]/).pop()?.toLowerCase().replace(/\.exe$/, "");
+  if (commandName === "cmd") return "cmd";
+  if (commandName === "powershell" || commandName === "pwsh") return "powershell";
+  return "posix";
+}
+
+export function shellQuotePath(path: string, shellCommand?: string): string {
+  const kind = shellKind(shellCommand);
+  if (kind === "cmd") return `"${path.replaceAll('"', '""')}"`;
+  if (kind === "powershell") return `'${path.replaceAll("'", "''")}'`;
   return `'${path.replaceAll("'", "'\\''")}'`;
 }
 
-export function formatPathPaste(paths: string[]): string {
-  return paths.map(shellQuotePath).join(" ");
+export function formatPathPaste(paths: string[], shellCommand?: string): string {
+  return paths.map((path) => shellQuotePath(path, shellCommand)).join(" ");
 }
 
 export function getClipboardEventText(event: ClipboardEvent<HTMLElement>): string {

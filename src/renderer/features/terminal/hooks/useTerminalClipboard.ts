@@ -1,5 +1,10 @@
 export async function copyTerminalSelection(selection: string | undefined): Promise<void> {
-  if (selection) await navigator.clipboard.writeText(selection);
+  if (!selection) return;
+  try {
+    await window.swath.clipboard.writeText(selection);
+  } catch {
+    await navigator.clipboard?.writeText(selection);
+  }
 }
 
 export async function readTerminalPastePayload(): Promise<string> {

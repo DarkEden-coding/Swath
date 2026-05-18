@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
+import { useEffect, useRef, useState, type ClipboardEvent, type KeyboardEvent, type MouseEvent } from "react";
 import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
 import { WebLinksAddon } from "@xterm/addon-web-links";
@@ -15,7 +15,8 @@ import { TerminalSearchBar } from "./TerminalSearchBar";
 import { TerminalViewport } from "./TerminalViewport";
 import { TERMINAL_COL_RESERVE } from "../hooks/useTerminalInstance";
 import { copyTerminalSelection, readTerminalPastePayload } from "../hooks/useTerminalClipboard";
-import { exitStateSetters, startedSessions, terminalCache } from "../runtime/terminalCache";
+import { formatPathPaste, getClipboardEventFilePaths, getClipboardEventText } from "../../../utils/terminalPaste";
+import { detachCachedTerminalElement, disposeCachedTerminal, exitStateSetters, startedSessions, terminalCache } from "../runtime/terminalCache";
 
 function shellFor(settings: AppSettings): ShellProfile | null {
   return settings.shellProfiles.find((profile) => profile.id === settings.defaultShellProfileId) ?? settings.shellProfiles[0] ?? null;
@@ -27,6 +28,22 @@ function normalizeEnv(env: unknown): Record<string, string> | undefined {
   return env as Record<string, string>;
 }
 
+function isEditableTarget(target: EventTarget | null): boolean {
+  return (
+    target instanceof HTMLInputElement ||
+    (target instanceof HTMLTextAreaElement && !target.classList.contains("xterm-helper-textarea"))
+  );
+}
+
+function removeForeignTerminalElements(host: HTMLElement, currentElement: HTMLElement | undefined): void {
+  Array.from(host.children).forEach((child) => {
+    if (child === currentElement) return;
+    if (child.classList.contains("xterm")) host.removeChild(child);
+  });
+}
+
+const RECENT_SELECTION_MS = 2000;
+
 export function TerminalPane({ workspace, view, pane, settings }: PaneComponentProps): JSX.Element {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<Terminal | null>(null);
@@ -34,6 +51,8 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
   const searchRef = useRef<SearchAddon | null>(null);
   const bannerSentRef = useRef(false);
   const dormantInputRef = useRef("");
+  const lastSelectionRef = useRef("");
+  const lastSelectionAtRef = useRef(0);
   const scrollbarHideTimerRef = useRef<number | null>(null);
   const [exited, setExited] = useState(false);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
@@ -47,6 +66,7 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
 
   const paneMeta = findPane(view.layout, paneId);
   const headerLine = paneMeta?.title ?? paneMeta?.metadata?.title ?? paneMeta?.promptLabel ?? `${workspace.name}`;
+  const paneShellProfile = paneMeta?.shellProfile ?? paneMeta?.metadata?.shellProfile ?? initialShellProfileRef.current;
 
   const isActive = activePaneId === paneId || view.activePaneId === paneId;
 
@@ -61,10 +81,7 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
     exitStateSetters.set(paneId, setExited);
 
     const cachedEntry = terminalCache.get(paneId);
-    if (cachedEntry && cachedEntry.disposeTimer !== null) {
-      window.clearTimeout(cachedEntry.disposeTimer);
-      cachedEntry.disposeTimer = null;
-    }
+    setExited(cachedEntry?.stopped ?? false);
 
     const terminal =
       cachedEntry?.terminal ??
@@ -105,8 +122,10 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
     const search = cachedEntry?.search ?? new SearchAddon();
     if (cachedEntry) {
       const terminalElement = terminal.element;
+      removeForeignTerminalElements(host, terminalElement);
       if (terminalElement && terminalElement.parentElement !== host) host.appendChild(terminalElement);
     } else {
+      removeForeignTerminalElements(host, undefined);
       terminal.loadAddon(fit);
       terminal.loadAddon(search);
       terminal.loadAddon(new WebLinksAddon());
@@ -116,19 +135,24 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
     termRef.current = terminal;
     fitRef.current = fit;
     searchRef.current = search;
+    const initialSelection = terminal.getSelection();
+    lastSelectionRef.current = initialSelection;
+    lastSelectionAtRef.current = initialSelection ? Date.now() : 0;
 
     const currentCwd = paneMeta?.cwd ?? paneMeta?.metadata?.cwd ?? workspace.path;
 
     const startPty = (): void => {
       if (startedSessions.has(paneId) || !termRef.current) return;
       startedSessions.add(paneId);
+      const entry = terminalCache.get(paneId);
+      if (entry) entry.stopped = false;
       exitStateSetters.get(paneId)?.(false);
       terminalClient.create({
         sessionId: paneId,
         cwd: currentCwd,
         cols: termRef.current.cols,
         rows: termRef.current.rows,
-        shellProfile: paneMeta?.shellProfile ?? paneMeta?.metadata?.shellProfile ?? initialShellProfileRef.current,
+        shellProfile: paneShellProfile,
         env: paneMeta?.env ?? normalizeEnv(paneMeta?.metadata?.env) ?? initialSettingsRef.current.globalEnv,
       });
     };
@@ -165,6 +189,12 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
 
     dormantInputRef.current = "";
 
+    const selectionDisposable = terminal.onSelectionChange(() => {
+      const selection = terminal.getSelection();
+      if (!selection) return;
+      lastSelectionRef.current = selection;
+      lastSelectionAtRef.current = Date.now();
+    });
     const disposable = cachedEntry
       ? null
       : terminal.onData((data) => {
@@ -200,6 +230,8 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
           if (sessionId !== paneId) return;
           startedSessions.delete(sessionId);
           exitStateSetters.get(paneId)?.(true);
+          const entry = terminalCache.get(paneId);
+          if (entry) entry.stopped = true;
           const message = "\r\n\x1b[2m[process exited — close, restart, or split a new terminal]\x1b[0m\r\n";
           terminal.write(message);
         });
@@ -216,7 +248,7 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
           terminal.dispose();
           startedSessions.delete(paneId);
         },
-        disposeTimer: null,
+        stopped: false,
       });
     }
 
@@ -237,15 +269,13 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
       if (scrollbarHideTimerRef.current !== null) window.clearTimeout(scrollbarHideTimerRef.current);
       host.classList.remove("is-scrolling");
       const entry = terminalCache.get(paneId);
-      if (entry) {
-        entry.disposeTimer = window.setTimeout(() => {
-          const currentEntry = terminalCache.get(paneId);
-          if (currentEntry !== entry) return;
-          currentEntry.dispose();
-          terminalCache.delete(paneId);
-          if (exitStateSetters.get(paneId) === setExited) exitStateSetters.delete(paneId);
-        }, 0);
+      if (entry?.stopped) {
+        disposeCachedTerminal(paneId);
+      } else if (entry) {
+        detachCachedTerminalElement(entry, host);
+        if (exitStateSetters.get(paneId) === setExited) exitStateSetters.delete(paneId);
       }
+      selectionDisposable.dispose();
       termRef.current = null;
       fitRef.current = null;
       searchRef.current = null;
@@ -279,8 +309,16 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
     termRef.current?.focus();
   }, [isActive]);
 
-  const copy = async (): Promise<void> => {
-    await copyTerminalSelection(termRef.current?.getSelection());
+  const getCopySelection = (allowRecentSelection: boolean): string => {
+    const selection = termRef.current?.getSelection();
+    if (selection) return selection;
+    if (allowRecentSelection && Date.now() - lastSelectionAtRef.current <= RECENT_SELECTION_MS) return lastSelectionRef.current;
+    return "";
+  };
+
+  const copy = async (allowRecentSelection = false): Promise<void> => {
+    const selection = getCopySelection(allowRecentSelection);
+    await copyTerminalSelection(selection);
   };
 
   const pasteToTerminal = (data: string): void => {
@@ -293,9 +331,29 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
     pasteToTerminal(await readTerminalPastePayload());
   };
 
+  const pasteFromClipboardEvent = (event: ClipboardEvent<HTMLDivElement>): void => {
+    if (isEditableTarget(event.target)) return;
+
+    const text = getClipboardEventText(event);
+    const filePaths = getClipboardEventFilePaths(event);
+    const data = text || (filePaths.length > 0 ? formatPathPaste(filePaths, paneShellProfile?.command) : "");
+    if (!data) return;
+
+    event.preventDefault();
+    pasteToTerminal(data);
+  };
+
+  const copyFromClipboardEvent = (event: ClipboardEvent<HTMLDivElement>): void => {
+    if (isEditableTarget(event.target) || !getCopySelection(true)) return;
+    event.preventDefault();
+    void copy(true);
+  };
+
   const restart = (): void => {
     startedSessions.add(paneId);
     termRef.current?.reset();
+    const entry = terminalCache.get(paneId);
+    if (entry) entry.stopped = false;
     setExited(false);
     void terminalClient.restart(paneId);
   };
@@ -306,7 +364,7 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
 
   const runContextAction = (action: string): void => {
     setContextMenu(null);
-    if (action === "copy") void copy();
+    if (action === "copy") void copy(true);
     if (action === "paste") void paste();
     if (action === "selectAll") termRef.current?.selectAll();
     if (action === "clear") termRef.current?.clear();
@@ -326,7 +384,27 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
   };
 
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>): void => {
-    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "f") {
+    const key = event.key.toLowerCase();
+    const commandModifier = (event.metaKey || event.ctrlKey) && !event.altKey;
+
+    if (isEditableTarget(event.target)) return;
+
+    if (
+      (commandModifier && key === "c" && getCopySelection(true)) ||
+      (event.ctrlKey && key === "insert" && getCopySelection(true))
+    ) {
+      event.preventDefault();
+      void copy(true);
+      return;
+    }
+
+    if ((commandModifier && key === "v") || (event.shiftKey && key === "insert")) {
+      event.preventDefault();
+      void paste();
+      return;
+    }
+
+    if (commandModifier && key === "f") {
       event.preventDefault();
       setSearchOpen(true);
     }
@@ -350,10 +428,10 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
       setContextMenu(null);
     };
     window.addEventListener("keydown", onKeyDownGlobal);
-    window.addEventListener("mousedown", onClick);
+    window.addEventListener("click", onClick);
     return () => {
       window.removeEventListener("keydown", onKeyDownGlobal);
-      window.removeEventListener("mousedown", onClick);
+      window.removeEventListener("click", onClick);
     };
   }, [contextMenu]);
 
@@ -367,6 +445,8 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
       onSplitDown={(kind) => appActions.splitPane(workspace.id, view.id, paneId, "horizontal", kind)}
       onClose={close}
       onKeyDown={onKeyDown}
+      onCopyCapture={copyFromClipboardEvent}
+      onPasteCapture={pasteFromClipboardEvent}
       onContextMenu={(event: MouseEvent<HTMLDivElement>) => {
         event.preventDefault();
         setContextMenu({ x: event.clientX, y: event.clientY });

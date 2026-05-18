@@ -16,7 +16,7 @@ export function LayoutRenderer({ workspace, view, settings, node }: LayoutRender
     const { Component } = getPaneRegistration(pane.kind);
     return (
       <Suspense fallback={<div className="h-full w-full rounded-md border border-swath-border bg-swath-bg" />}>
-        <Component workspace={workspace} view={view} pane={pane} settings={settings} />
+        <Component key={pane.id} workspace={workspace} view={view} pane={pane} settings={settings} />
       </Suspense>
     );
   }

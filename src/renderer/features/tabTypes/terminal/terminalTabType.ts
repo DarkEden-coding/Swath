@@ -1,6 +1,7 @@
 import { lazy } from "react";
 import type { AppSettings, PaneLeaf, ShellProfile, WorkspaceView } from "../../../../shared/types";
 import { createPaneNode } from "../../../domain/layout/layoutTree";
+import { disposeCachedTerminal } from "../../terminal/runtime/terminalCache";
 import { terminalClient } from "../../../services/terminalClient";
 import { createId } from "../../../utils/ids";
 import type { TabTypeRegistration } from "../types";
@@ -34,5 +35,8 @@ export const terminalTabType: TabTypeRegistration = {
   createPaneMeta: createTerminalPaneMeta,
   createView: (title, cwd, settings) => createTerminalView(title, cwd, settings),
   isBusy: (paneId) => terminalClient.isBusy(paneId),
-  closePane: (paneId) => terminalClient.kill(paneId),
+  closePane: (paneId) => {
+    terminalClient.kill(paneId);
+    disposeCachedTerminal(paneId);
+  },
 };

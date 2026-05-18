@@ -2,6 +2,7 @@ export const IpcChannels = {
   configLoad: "config:load",
   configSave: "config:save",
   clipboardReadForTerminal: "clipboard:read-for-terminal",
+  clipboardWriteText: "clipboard:write-text",
   permissionsEnsureTerminalPaste: "permissions:ensure-terminal-paste",
   dialogSelectFolder: "dialog:select-folder",
   terminalCreate: "terminal:create",
