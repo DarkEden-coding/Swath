@@ -14,9 +14,8 @@ import { TerminalContextMenu } from "./TerminalContextMenu";
 import { TerminalSearchBar } from "./TerminalSearchBar";
 import { TerminalViewport } from "./TerminalViewport";
 import { TERMINAL_COL_RESERVE } from "../hooks/useTerminalInstance";
-import { copyTerminalSelection, readTerminalPastePayload } from "../hooks/useTerminalClipboard";
-import { formatPathPaste, getClipboardEventFilePaths, getClipboardEventText } from "../../../utils/terminalPaste";
-import { getTerminalKeyAction, shouldXtermHandleKeyEvent } from "../utils/terminalKeyboard";
+import { readTerminalPastePayload } from "../hooks/useTerminalClipboard";
+import { createTerminalInputController, type TerminalInputController } from "../input/terminalInputController";
 import { detachCachedTerminalElement, disposeCachedTerminal, exitStateSetters, startedSessions, terminalCache } from "../runtime/terminalCache";
 
 function shellFor(settings: AppSettings): ShellProfile | null {
@@ -29,13 +28,6 @@ function normalizeEnv(env: unknown): Record<string, string> | undefined {
   return env as Record<string, string>;
 }
 
-function isEditableTarget(target: EventTarget | null): boolean {
-  return (
-    target instanceof HTMLInputElement ||
-    (target instanceof HTMLTextAreaElement && !target.classList.contains("xterm-helper-textarea"))
-  );
-}
-
 function removeForeignTerminalElements(host: HTMLElement, currentElement: HTMLElement | undefined): void {
   Array.from(host.children).forEach((child) => {
     if (child === currentElement) return;
@@ -43,17 +35,14 @@ function removeForeignTerminalElements(host: HTMLElement, currentElement: HTMLEl
   });
 }
 
-const RECENT_SELECTION_MS = 2000;
-
 export function TerminalPane({ workspace, view, pane, settings }: PaneComponentProps): JSX.Element {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const searchRef = useRef<SearchAddon | null>(null);
+  const inputControllerRef = useRef<TerminalInputController | null>(null);
   const bannerSentRef = useRef(false);
   const dormantInputRef = useRef("");
-  const lastSelectionRef = useRef("");
-  const lastSelectionAtRef = useRef(0);
   const scrollbarHideTimerRef = useRef<number | null>(null);
   const [exited, setExited] = useState(false);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
@@ -136,10 +125,14 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
     termRef.current = terminal;
     fitRef.current = fit;
     searchRef.current = search;
-    const initialSelection = terminal.getSelection();
-    lastSelectionRef.current = initialSelection;
-    lastSelectionAtRef.current = initialSelection ? Date.now() : 0;
-    terminal.attachCustomKeyEventHandler(shouldXtermHandleKeyEvent);
+    inputControllerRef.current?.dispose();
+    inputControllerRef.current = createTerminalInputController({
+      terminal,
+      shellProfile: paneShellProfile,
+      readClipboardText: readTerminalPastePayload,
+      writeClipboardText: (text) => window.swath.clipboard.writeText(text),
+      openSearch: () => setSearchOpen(true),
+    });
 
     const currentCwd = paneMeta?.cwd ?? paneMeta?.metadata?.cwd ?? workspace.path;
 
@@ -191,12 +184,6 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
 
     dormantInputRef.current = "";
 
-    const selectionDisposable = terminal.onSelectionChange(() => {
-      const selection = terminal.getSelection();
-      if (!selection) return;
-      lastSelectionRef.current = selection;
-      lastSelectionAtRef.current = Date.now();
-    });
     const disposable = cachedEntry
       ? null
       : terminal.onData((data) => {
@@ -277,7 +264,8 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
         detachCachedTerminalElement(entry, host);
         if (exitStateSetters.get(paneId) === setExited) exitStateSetters.delete(paneId);
       }
-      selectionDisposable.dispose();
+      inputControllerRef.current?.dispose();
+      inputControllerRef.current = null;
       termRef.current = null;
       fitRef.current = null;
       searchRef.current = null;
@@ -311,45 +299,8 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
     termRef.current?.focus();
   }, [isActive]);
 
-  const getCopySelection = (allowRecentSelection: boolean): string => {
-    const selection = termRef.current?.getSelection();
-    if (selection) return selection;
-    if (allowRecentSelection && Date.now() - lastSelectionAtRef.current <= RECENT_SELECTION_MS) return lastSelectionRef.current;
-    return "";
-  };
-
-  const copy = async (allowRecentSelection = false): Promise<void> => {
-    const selection = getCopySelection(allowRecentSelection);
-    await copyTerminalSelection(selection);
-  };
-
-  const pasteToTerminal = (data: string): void => {
-    if (!data) return;
-    termRef.current?.focus();
-    termRef.current?.paste(data);
-  };
-
   const paste = async (): Promise<void> => {
-    pasteToTerminal(await readTerminalPastePayload());
-  };
-
-  const pasteFromClipboardEvent = (event: ClipboardEvent<HTMLDivElement>): void => {
-    if (isEditableTarget(event.target)) return;
-
-    const text = getClipboardEventText(event);
-    const filePaths = getClipboardEventFilePaths(event);
-    const data = text || (filePaths.length > 0 ? formatPathPaste(filePaths, paneShellProfile?.command) : "");
-    if (!data) return;
-
-    event.preventDefault();
-    event.stopPropagation();
-    pasteToTerminal(data);
-  };
-
-  const copyFromClipboardEvent = (event: ClipboardEvent<HTMLDivElement>): void => {
-    if (isEditableTarget(event.target) || !getCopySelection(true)) return;
-    event.preventDefault();
-    void copy(true);
+    await inputControllerRef.current?.pasteFromClipboard();
   };
 
   const restart = (): void => {
@@ -367,7 +318,7 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
 
   const runContextAction = (action: string): void => {
     setContextMenu(null);
-    if (action === "copy") void copy(true);
+    if (action === "copy") void inputControllerRef.current?.copy(true);
     if (action === "paste") void paste();
     if (action === "selectAll") termRef.current?.selectAll();
     if (action === "clear") termRef.current?.clear();
@@ -387,19 +338,7 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
   };
 
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>): void => {
-    if (isEditableTarget(event.target)) return;
-
-    const action = getTerminalKeyAction(event, Boolean(getCopySelection(true)));
-    if (action === "copy") {
-      event.preventDefault();
-      void copy(true);
-      return;
-    }
-
-    if (action === "find") {
-      event.preventDefault();
-      setSearchOpen(true);
-    }
+    inputControllerRef.current?.handleKeyDown(event);
     if (event.key === "Escape") {
       setSearchOpen(false);
       setContextMenu(null);
@@ -437,8 +376,8 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
       onSplitDown={(kind) => appActions.splitPane(workspace.id, view.id, paneId, "horizontal", kind)}
       onClose={close}
       onKeyDown={onKeyDown}
-      onCopyCapture={copyFromClipboardEvent}
-      onPasteCapture={pasteFromClipboardEvent}
+      onCopyCapture={(event: ClipboardEvent<HTMLDivElement>) => inputControllerRef.current?.handleCopyEvent(event)}
+      onPasteCapture={(event: ClipboardEvent<HTMLDivElement>) => inputControllerRef.current?.handlePasteEvent(event)}
       onContextMenu={(event: MouseEvent<HTMLDivElement>) => {
         event.preventDefault();
         setContextMenu({ x: event.clientX, y: event.clientY });
