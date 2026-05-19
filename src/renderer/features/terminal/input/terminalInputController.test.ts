@@ -139,6 +139,24 @@ describe("createTerminalInputController", () => {
     expect(openSearch).toHaveBeenCalled();
   });
 
+  it("sends modified Enter escape sequences instead of letting xterm submit plain Enter", () => {
+    const terminal = createFakeTerminal();
+    createTerminalInputController({
+      terminal,
+      shellProfile: null,
+      readClipboardText: async () => "",
+      writeClipboardText: async () => {},
+      openSearch: vi.fn(),
+    });
+    const xtermKeyHandler = terminal.attachCustomKeyEventHandler.mock.calls[0][0];
+
+    expect(xtermKeyHandler({ type: "keydown", key: "Enter", ctrlKey: true })).toBe(false);
+    expect(terminal.paste).toHaveBeenCalledWith("\x1b[13;5u");
+
+    expect(xtermKeyHandler({ type: "keydown", key: "Enter", metaKey: true })).toBe(false);
+    expect(terminal.paste).toHaveBeenCalledWith("\x1b[13;9u");
+  });
+
   it("removes paste listeners and restores xterm key handling on dispose", () => {
     const terminal = createFakeTerminal();
     const controller = createTerminalInputController({

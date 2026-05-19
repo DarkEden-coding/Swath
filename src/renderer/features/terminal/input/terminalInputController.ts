@@ -1,6 +1,6 @@
 import type { ShellProfile } from "../../../../shared/types";
 import { formatPathPaste } from "../../../utils/terminalPaste";
-import { getTerminalKeyAction, shouldXtermHandleKeyEvent } from "../utils/terminalKeyboard";
+import { getModifiedEnterSequence, getTerminalKeyAction, shouldXtermHandleKeyEvent } from "../utils/terminalKeyboard";
 
 interface Disposable {
   dispose: () => void;
@@ -114,7 +114,15 @@ export function createTerminalInputController({
   });
   disposables.push(() => selectionDisposable.dispose());
 
-  terminal.attachCustomKeyEventHandler(shouldXtermHandleKeyEvent);
+  terminal.attachCustomKeyEventHandler((event) => {
+    const modifiedEnterSequence = getModifiedEnterSequence(event);
+    if (modifiedEnterSequence) {
+      terminal.paste(modifiedEnterSequence);
+      return false;
+    }
+
+    return shouldXtermHandleKeyEvent(event);
+  });
   disposables.push(() => terminal.attachCustomKeyEventHandler(() => true));
 
   const pasteText = (data: string): void => {

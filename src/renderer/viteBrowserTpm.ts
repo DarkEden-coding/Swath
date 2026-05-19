@@ -83,6 +83,7 @@ function createStubSwath(): SwathApi {
     },
     dialog: {
       selectFolder: async () => ({ canceled: true, path: null, name: null }),
+      confirm: async (request) => window.confirm(request.detail ? `${request.message}\n\n${request.detail}` : request.message),
     },
     clipboard: {
       readForTerminal: async () => ({ text: "", imagePath: null }),

@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer, type IpcRendererEvent } from "electron";
 import { IpcChannels, type GitRpcRequest } from "../shared/ipc";
 import type {
   AppConfig,
+  ConfirmDialogRequest,
   FolderSelectResult,
   PtyResizeRequest,
   TerminalClipboardPayload,
@@ -19,6 +20,7 @@ const swath = {
   },
   dialog: {
     selectFolder: (): Promise<FolderSelectResult> => ipcRenderer.invoke(IpcChannels.dialogSelectFolder),
+    confirm: (request: ConfirmDialogRequest): Promise<boolean> => ipcRenderer.invoke(IpcChannels.dialogConfirm, request),
   },
   clipboard: {
     readForTerminal: (): Promise<TerminalClipboardPayload> => ipcRenderer.invoke(IpcChannels.clipboardReadForTerminal),

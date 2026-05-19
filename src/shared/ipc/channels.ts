@@ -5,6 +5,7 @@ export const IpcChannels = {
   clipboardWriteText: "clipboard:write-text",
   permissionsEnsureTerminalPaste: "permissions:ensure-terminal-paste",
   dialogSelectFolder: "dialog:select-folder",
+  dialogConfirm: "dialog:confirm",
   terminalCreate: "terminal:create",
   terminalWrite: "terminal:write",
   terminalResize: "terminal:resize",

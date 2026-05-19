@@ -125,7 +125,7 @@ export class TerminalSessionManager {
     if (session.pty) return;
 
     const cwd = fs.existsSync(session.request.cwd) ? session.request.cwd : os.homedir();
-    const shell = this.resolveShell(session.request.shellProfile ?? null);
+    const shell = this.normalizeShell(this.resolveShell(session.request.shellProfile ?? null));
     const env = {
       ...process.env,
       ...shell.env,
@@ -134,13 +134,19 @@ export class TerminalSessionManager {
       COLORTERM: "truecolor",
     } as NodeJS.ProcessEnv;
 
-    const ptyProcess = pty.spawn(shell.command, shell.args, {
-      name: "xterm-256color",
-      cols: session.cols,
-      rows: session.rows,
-      cwd,
-      env,
-    });
+    let ptyProcess: IPty;
+    try {
+      ptyProcess = pty.spawn(shell.command, shell.args, {
+        name: "xterm-256color",
+        cols: session.cols,
+        rows: session.rows,
+        cwd,
+        env,
+      });
+    } catch (error) {
+      this.failSessionStart(session, shell, error);
+      return;
+    }
 
     session.shellCommand = shell.command;
     session.pty = ptyProcess;
@@ -185,6 +191,58 @@ export class TerminalSessionManager {
 
   private send(channel: string, ...args: unknown[]): void {
     if (!this.window.isDestroyed()) this.window.webContents.send(channel, ...args);
+  }
+
+  private failSessionStart(session: TerminalSession, shell: ShellProfile, error: unknown): void {
+    session.pty = null;
+    const message = error instanceof Error ? error.message : String(error);
+    const commandLine = [shell.command, ...shell.args].join(" ").trim();
+    const output = `\r\n\x1b[31m[failed to start terminal]\x1b[0m ${commandLine}\r\n${message}\r\n`;
+    this.appendReplay(session, output);
+    this.send(IpcChannels.terminalData, session.id, output);
+    this.send(IpcChannels.terminalExit, session.id, { exitCode: 1, signal: 0 });
+  }
+
+  private normalizeShell(profile: ShellProfile): ShellProfile {
+    if (profile.args.length > 0 || !/\s/.test(profile.command) || fs.existsSync(profile.command)) return profile;
+    const parts = this.splitCommandLine(profile.command);
+    if (parts.length <= 1) return profile;
+    return { ...profile, command: parts[0], args: [...parts.slice(1), ...profile.args] };
+  }
+
+  private splitCommandLine(value: string): string[] {
+    const parts: string[] = [];
+    let current = "";
+    let quote: '"' | "'" | null = null;
+    let escaping = false;
+
+    for (const char of value.trim()) {
+      if (escaping) {
+        current += char;
+        escaping = false;
+        continue;
+      }
+      if (char === "\\") {
+        escaping = true;
+        continue;
+      }
+      if ((char === '"' || char === "'") && (!quote || quote === char)) {
+        quote = quote ? null : char;
+        continue;
+      }
+      if (/\s/.test(char) && !quote) {
+        if (current) {
+          parts.push(current);
+          current = "";
+        }
+        continue;
+      }
+      current += char;
+    }
+
+    if (escaping) current += "\\";
+    if (current) parts.push(current);
+    return parts;
   }
 
   private resolveShell(profile: ShellProfile | null): ShellProfile {

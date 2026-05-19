@@ -48,7 +48,7 @@ export function Sidebar({ onToggleCollapse }: SidebarProps): JSX.Element {
                 setDraggedIndex(null);
               }}
               onSelect={() => appActions.selectWorkspace(workspace.id)}
-              onRemove={() => appActions.removeWorkspace(workspace.id)}
+              onRemove={() => void appActions.removeWorkspace(workspace.id)}
               onRename={(name) => appActions.renameWorkspace(workspace.id, name)}
             />
           );

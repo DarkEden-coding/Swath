@@ -13,3 +13,10 @@ export interface FolderSelectResult {
   path: string | null;
   name: string | null;
 }
+
+export interface ConfirmDialogRequest {
+  message: string;
+  detail?: string;
+  confirmLabel?: string;
+  cancelLabel?: string;
+}

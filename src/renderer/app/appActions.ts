@@ -67,11 +67,21 @@ export async function addWorkspaceFromFolder(): Promise<void> {
   });
 }
 
-export function removeWorkspace(workspaceId: string): void {
+export async function removeWorkspace(workspaceId: string): Promise<void> {
   const config = useConfigStore.getState().config;
   if (!config) return;
+  const workspace = config.workspaces.find((item) => item.id === workspaceId);
+  if (!workspace) return;
   const panes = panesForWorkspace(config, workspaceId);
-  if (panes.length > 0 && !window.confirm("Remove this workspace and close its panes?")) return;
+  if (panes.length > 0) {
+    const confirmed = await dialogClient.confirm({
+      message: "Remove this project?",
+      detail: `This removes “${workspace.name}” from Swath and closes its panes. Files on disk are not deleted.`,
+      confirmLabel: "Remove",
+      cancelLabel: "Cancel",
+    });
+    if (!confirmed) return;
+  }
   closeRegisteredPanes(panes);
   const next = workspaceActions.removeWorkspace(config, workspaceId);
   commit(next, workspaceActions.getActivePaneIdForConfig(next));
