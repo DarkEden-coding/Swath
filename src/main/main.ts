@@ -2,7 +2,6 @@ import { app, BrowserWindow, dialog } from "electron";
 import { createMainWindow } from "./app/createWindow";
 import { createApplicationMenu } from "./app/menu";
 import { registerIpc } from "./ipc/registerIpc";
-import { ensureTerminalPastePermissions } from "./services/permissionsService";
 import { TerminalSessionManager } from "./services/terminalSessionManager";
 
 let mainWindow: BrowserWindow | null = null;
@@ -53,7 +52,6 @@ app.whenReady().then(() => {
 
   openMainWindow();
   createApplicationMenu(() => mainWindow);
-  ensureTerminalPastePermissions();
 
   app.on("before-quit", () => {
     isQuitting = true;
