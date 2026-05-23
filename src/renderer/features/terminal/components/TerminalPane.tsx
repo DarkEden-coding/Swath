@@ -131,6 +131,7 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
       shellProfile: paneShellProfile,
       readClipboardText: readTerminalPastePayload,
       writeClipboardText: (text) => window.swath.clipboard.writeText(text),
+      writeTerminalData: (data) => terminalClient.write(paneId, data),
       openSearch: () => setSearchOpen(true),
     });
 

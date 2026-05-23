@@ -1,6 +1,6 @@
 import type { ShellProfile } from "../../../../shared/types";
 import { formatPathPaste } from "../../../utils/terminalPaste";
-import { getTerminalKeyAction, shouldXtermHandleKeyEvent } from "../utils/terminalKeyboard";
+import { getTerminalKeyAction, shouldXtermHandleKeyEvent, type TerminalKeyEvent } from "../utils/terminalKeyboard";
 
 interface Disposable {
   dispose: () => void;
@@ -42,6 +42,7 @@ export interface TerminalInputControllerOptions {
   shellProfile: ShellProfile | null;
   readClipboardText: () => Promise<string>;
   writeClipboardText: (text: string) => Promise<void>;
+  writeTerminalData?: (data: string) => void;
   openSearch: () => void;
   now?: () => number;
 }
@@ -93,11 +94,16 @@ function stopClipboardEvent(event: TerminalInputClipboardEvent): void {
   event.stopImmediatePropagation?.();
 }
 
+function isShiftEnter(event: TerminalKeyEvent): boolean {
+  return event.type === "keydown" && event.key === "Enter" && Boolean(event.shiftKey) && !event.ctrlKey && !event.metaKey && !event.altKey;
+}
+
 export function createTerminalInputController({
   terminal,
   shellProfile,
   readClipboardText,
   writeClipboardText,
+  writeTerminalData,
   openSearch,
   now = () => Date.now(),
 }: TerminalInputControllerOptions): TerminalInputController {
@@ -115,6 +121,12 @@ export function createTerminalInputController({
   disposables.push(() => selectionDisposable.dispose());
 
   const handleXtermKeyEvent = (event: KeyboardEvent): boolean => {
+    if (isShiftEnter(event) && writeTerminalData) {
+      event.preventDefault();
+      writeTerminalData("\x1b[13;2u");
+      return false;
+    }
+
     if (!shouldXtermHandleKeyEvent(event)) return false;
 
     if (event.type === "keydown" && getTerminalKeyAction(event, Boolean(getCopySelection(true))) === "copy") {
