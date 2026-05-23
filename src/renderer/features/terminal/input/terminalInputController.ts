@@ -114,7 +114,19 @@ export function createTerminalInputController({
   });
   disposables.push(() => selectionDisposable.dispose());
 
-  terminal.attachCustomKeyEventHandler(shouldXtermHandleKeyEvent);
+  const handleXtermKeyEvent = (event: KeyboardEvent): boolean => {
+    if (!shouldXtermHandleKeyEvent(event)) return false;
+
+    if (event.type === "keydown" && getTerminalKeyAction(event, Boolean(getCopySelection(true))) === "copy") {
+      event.preventDefault();
+      void copy(true);
+      return false;
+    }
+
+    return true;
+  };
+
+  terminal.attachCustomKeyEventHandler(handleXtermKeyEvent);
   disposables.push(() => terminal.attachCustomKeyEventHandler(() => true));
 
   const pasteText = (data: string): void => {

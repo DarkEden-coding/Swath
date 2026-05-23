@@ -119,18 +119,36 @@ describe("createTerminalInputController", () => {
     expect(writeClipboardText).toHaveBeenLastCalledWith("selected terminal text");
   });
 
-  it("keeps paste shortcuts out of xterm's keydown handler and handles app shortcuts itself", () => {
+  it("keeps paste and selected-copy shortcuts out of xterm's keydown handler and handles app shortcuts itself", () => {
     const terminal = createFakeTerminal();
     const openSearch = vi.fn();
+    const writeClipboardText = vi.fn().mockResolvedValue(undefined);
     const controller = createTerminalInputController({
       terminal,
       shellProfile: null,
       readClipboardText: async () => "",
-      writeClipboardText: async () => {},
+      writeClipboardText,
       openSearch,
     });
     const xtermKeyHandler = terminal.attachCustomKeyEventHandler.mock.calls[0][0];
     expect(xtermKeyHandler({ type: "keydown", key: "v", ctrlKey: true })).toBe(false);
+
+    terminal.setSelection("selected terminal text");
+    const copyEvent = { type: "keydown", key: "c", ctrlKey: true, preventDefault: vi.fn() };
+    expect(xtermKeyHandler(copyEvent)).toBe(false);
+    expect(copyEvent.preventDefault).toHaveBeenCalled();
+    expect(writeClipboardText).toHaveBeenCalledWith("selected terminal text");
+
+    const terminalWithoutSelection = createFakeTerminal();
+    createTerminalInputController({
+      terminal: terminalWithoutSelection,
+      shellProfile: null,
+      readClipboardText: async () => "",
+      writeClipboardText: async () => {},
+      openSearch: vi.fn(),
+    });
+    const xtermKeyHandlerWithoutSelection = terminalWithoutSelection.attachCustomKeyEventHandler.mock.calls[0][0];
+    expect(xtermKeyHandlerWithoutSelection({ type: "keydown", key: "c", ctrlKey: true, preventDefault: vi.fn() })).toBe(true);
 
     const preventDefault = vi.fn();
     controller.handleKeyDown({ key: "f", ctrlKey: true, preventDefault });
