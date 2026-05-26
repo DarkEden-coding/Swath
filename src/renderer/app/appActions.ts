@@ -126,6 +126,10 @@ export function renameView(workspaceId: string, viewId: string, title: string): 
   withConfig((config) => viewActions.renameView(config, workspaceId, viewId, title));
 }
 
+export function moveView(workspaceId: string, fromIndex: number, toIndex: number): void {
+  withConfig((config) => viewActions.moveView(config, workspaceId, fromIndex, toIndex));
+}
+
 export function splitPane(workspaceId: string, viewId: string, paneId: string, direction: SplitDirection, kind?: PaneKind): void {
   withConfig((config) => paneActions.splitPane(config, workspaceId, viewId, paneId, direction, kind));
 }

@@ -71,6 +71,22 @@ export function renameView(config: AppConfig, workspaceId: string, viewId: strin
   };
 }
 
+export function moveView(config: AppConfig, workspaceId: string, fromIndex: number, toIndex: number): AppConfig {
+  if (fromIndex === toIndex || fromIndex < 0 || toIndex < 0) return config;
+  return {
+    ...config,
+    workspaces: config.workspaces.map((workspace) => {
+      if (workspace.id !== workspaceId) return workspace;
+      if (fromIndex >= workspace.views.length || toIndex >= workspace.views.length) return workspace;
+      const views = [...workspace.views];
+      const [view] = views.splice(fromIndex, 1);
+      if (!view) return workspace;
+      views.splice(toIndex, 0, view);
+      return { ...workspace, views, updatedAt: Date.now() };
+    })
+  };
+}
+
 export function paneIdsForView(config: AppConfig, workspaceId: string, viewId: string): string[] {
   const view = config.workspaces.find((workspace) => workspace.id === workspaceId)?.views.find((item) => item.id === viewId);
   return view ? collectPaneIds(view.layout) : [];
