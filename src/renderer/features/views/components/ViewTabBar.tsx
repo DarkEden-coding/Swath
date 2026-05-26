@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type DragEventHandler } from "react";
+import { Fragment, useEffect, useRef, useState, type DragEvent, type DragEventHandler } from "react";
 import type { PaneKind, ViewHealth, Workspace } from "../../../../shared/types";
 import * as appActions from "../../../app/appActions";
 import { IconChevronsLeft, IconClose, IconGitBranch, IconPlus, IconTerminal } from "../../shell/icons";
@@ -25,7 +25,34 @@ function tabTypeIcon(kind: PaneKind): JSX.Element {
 export function ViewTabBar({ workspace, sidebarCollapsed, onToggleSidebar }: ViewTabBarProps): JSX.Element {
   const [showTypeSelector, setShowTypeSelector] = useState(false);
   const [draggedViewId, setDraggedViewId] = useState<string | null>(null);
+  const [dropIndex, setDropIndex] = useState<number | null>(null);
   const selectorRef = useRef<HTMLDivElement>(null);
+  const tabStripRef = useRef<HTMLDivElement>(null);
+
+  function getDropIndex(clientX: number): number {
+    const tabButtons = Array.from(tabStripRef.current?.querySelectorAll<HTMLButtonElement>("[data-view-id]") ?? []);
+    const hoveredIndex = tabButtons.findIndex((button) => {
+      const rect = button.getBoundingClientRect();
+      return clientX < rect.left + rect.width / 2;
+    });
+    return hoveredIndex === -1 ? workspace.views.length : hoveredIndex;
+  }
+
+  function moveDraggedView(event: DragEvent): void {
+    event.preventDefault();
+    const draggedId = event.dataTransfer.getData("text/plain") || draggedViewId;
+    const fromIndex = workspace.views.findIndex((view) => view.id === draggedId);
+    if (fromIndex === -1) {
+      setDraggedViewId(null);
+      setDropIndex(null);
+      return;
+    }
+    const insertionIndex = dropIndex ?? getDropIndex(event.clientX);
+    const toIndex = fromIndex < insertionIndex ? insertionIndex - 1 : insertionIndex;
+    if (toIndex >= 0 && toIndex < workspace.views.length && fromIndex !== toIndex) appActions.moveView(workspace.id, fromIndex, toIndex);
+    setDraggedViewId(null);
+    setDropIndex(null);
+  }
 
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
@@ -57,10 +84,24 @@ export function ViewTabBar({ workspace, sidebarCollapsed, onToggleSidebar }: Vie
           </button>
         </>
       ) : null}
-      <div className="flex min-w-0 flex-1 items-stretch overflow-x-auto [-webkit-app-region:no-drag] [app-region:no-drag]">
+      <div
+        ref={tabStripRef}
+        className="flex min-w-0 flex-1 items-stretch overflow-x-auto [-webkit-app-region:no-drag] [app-region:no-drag]"
+        onDragOver={(event) => {
+          if (!draggedViewId) return;
+          event.preventDefault();
+          event.dataTransfer.dropEffect = "move";
+          setDropIndex(getDropIndex(event.clientX));
+        }}
+        onDrop={moveDraggedView}
+        onDragLeave={(event) => {
+          if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDropIndex(null);
+        }}
+      >
         {workspace.views.map((tab, index) => (
-          <WorkspaceViewButton
-            key={tab.id}
+          <Fragment key={tab.id}>
+            {dropIndex === index ? <TabDropIndicator /> : null}
+            <WorkspaceViewButton
             id={tab.id}
             title={tab.title}
             health={tab.health}
@@ -72,24 +113,18 @@ export function ViewTabBar({ workspace, sidebarCollapsed, onToggleSidebar }: Vie
             onRename={(nextTitle) => appActions.renameView(workspace.id, tab.id, nextTitle)}
             onDragStart={(event) => {
               setDraggedViewId(tab.id);
+              setDropIndex(index);
               event.dataTransfer.effectAllowed = "move";
               event.dataTransfer.setData("text/plain", tab.id);
             }}
-            onDragOver={(event) => {
-              if (!draggedViewId || draggedViewId === tab.id) return;
-              event.preventDefault();
-              event.dataTransfer.dropEffect = "move";
-            }}
-            onDrop={(event) => {
-              event.preventDefault();
-              const draggedId = event.dataTransfer.getData("text/plain") || draggedViewId;
-              const fromIndex = workspace.views.findIndex((view) => view.id === draggedId);
-              if (fromIndex !== -1 && fromIndex !== index) appActions.moveView(workspace.id, fromIndex, index);
+            onDragEnd={() => {
               setDraggedViewId(null);
+              setDropIndex(null);
             }}
-            onDragEnd={() => setDraggedViewId(null)}
-          />
+            />
+          </Fragment>
         ))}
+        {dropIndex === workspace.views.length ? <TabDropIndicator /> : null}
       </div>
       <div className="relative flex items-center [-webkit-app-region:no-drag] [app-region:no-drag]" ref={selectorRef}>
         <button
@@ -134,6 +169,14 @@ export function ViewTabBar({ workspace, sidebarCollapsed, onToggleSidebar }: Vie
   );
 }
 
+function TabDropIndicator(): JSX.Element {
+  return (
+    <div className="relative z-10 w-0 shrink-0" aria-hidden>
+      <div className="absolute inset-y-1 left-[-1.5px] w-[3px] rounded-full bg-[#58a6ff] shadow-[0_0_8px_rgba(88,166,255,0.65)]" />
+    </div>
+  );
+}
+
 interface WorkspaceViewButtonProps {
   id: string;
   title: string;
@@ -145,12 +188,10 @@ interface WorkspaceViewButtonProps {
   onClose: () => void;
   onRename: (title: string) => void;
   onDragStart: DragEventHandler<HTMLButtonElement>;
-  onDragOver: DragEventHandler<HTMLButtonElement>;
-  onDrop: DragEventHandler<HTMLButtonElement>;
   onDragEnd: DragEventHandler<HTMLButtonElement>;
 }
 
-function WorkspaceViewButton({ id, title, health, active, canClose, dragging, onSelect, onClose, onRename, onDragStart, onDragOver, onDrop, onDragEnd }: WorkspaceViewButtonProps): JSX.Element {
+function WorkspaceViewButton({ id, title, health, active, canClose, dragging, onSelect, onClose, onRename, onDragStart, onDragEnd }: WorkspaceViewButtonProps): JSX.Element {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(title);
 
@@ -168,8 +209,6 @@ function WorkspaceViewButton({ id, title, health, active, canClose, dragging, on
       onClick={onSelect}
       onDoubleClick={() => setEditing(true)}
       onDragStart={onDragStart}
-      onDragOver={onDragOver}
-      onDrop={onDrop}
       onDragEnd={onDragEnd}
     >
       <span className={healthClass(health)} title={health ?? "healthy"} aria-hidden />
