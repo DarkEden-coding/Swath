@@ -11,10 +11,9 @@ import type {
   TerminalSessionStatus,
 } from "../shared/types";
 import { IpcChannels } from "../shared/ipc";
+import { TERMINAL_REPLAY_MAX_BYTES } from "../shared/memoryLimits";
 import { defaultShellProfiles } from "./defaults";
 import { hasChildProcesses, matchesShellProcess } from "./services/terminalProcessInspector";
-
-const MAX_REPLAY_BUFFER_BYTES = 8 * 1024 * 1024;
 
 interface TerminalSession {
   id: string;
@@ -169,7 +168,7 @@ export class TerminalSessionManager {
     }
     session.replayChunks.push(data);
     session.replayBytes += Buffer.byteLength(data);
-    while (session.replayBytes > MAX_REPLAY_BUFFER_BYTES && session.replayChunks.length > 0) {
+    while (session.replayBytes > TERMINAL_REPLAY_MAX_BYTES && session.replayChunks.length > 0) {
       const removed = session.replayChunks.shift() ?? "";
       session.replayBytes -= Buffer.byteLength(removed);
     }

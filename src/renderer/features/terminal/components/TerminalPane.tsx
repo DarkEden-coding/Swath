@@ -16,7 +16,8 @@ import { TerminalViewport } from "./TerminalViewport";
 import { TERMINAL_COL_RESERVE } from "../hooks/useTerminalInstance";
 import { readTerminalPastePayload } from "../hooks/useTerminalClipboard";
 import { createTerminalInputController, type TerminalInputController } from "../input/terminalInputController";
-import { detachCachedTerminalElement, disposeCachedTerminal, exitStateSetters, startedSessions, terminalCache } from "../runtime/terminalCache";
+import { TERMINAL_SCROLLBACK_LINES } from "../../../../shared/memoryLimits";
+import { detachCachedTerminalElement, disposeCachedTerminal, evictCachedTerminal, exitStateSetters, startedSessions, terminalCache } from "../runtime/terminalCache";
 
 function shellFor(settings: AppSettings): ShellProfile | null {
   return settings.shellProfiles.find((profile) => profile.id === settings.defaultShellProfileId) ?? settings.shellProfiles[0] ?? null;
@@ -83,7 +84,7 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
         fontFamily: initialSettingsRef.current.fontFamily,
         fontSize: initialSettingsRef.current.fontSize,
         lineHeight: initialSettingsRef.current.lineHeight,
-        scrollback: 10000,
+        scrollback: TERMINAL_SCROLLBACK_LINES,
         theme: {
           background: "#0d1117",
           foreground: "#c9d1d9",
@@ -234,12 +235,11 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
         terminal,
         fit,
         search,
-        dispose: () => {
+        disposeResources: () => {
           disposable?.dispose();
           removeDataListener?.();
           removeExitListener?.();
           terminal.dispose();
-          startedSessions.delete(paneId);
         },
         stopped: false,
       });
@@ -265,7 +265,7 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
       if (entry?.stopped) {
         disposeCachedTerminal(paneId);
       } else if (entry) {
-        detachCachedTerminalElement(entry, host);
+        evictCachedTerminal(paneId);
         if (exitStateSetters.get(paneId) === setExited) exitStateSetters.delete(paneId);
       }
       inputControllerRef.current?.dispose();

@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { GIT_RUN_MAX_BUFFER_BYTES } from "../../shared/memoryLimits";
 
 const execFileAsync = promisify(execFile);
 
@@ -20,7 +21,7 @@ export interface RunGitResult {
  */
 export async function runGit(cwd: string, args: string[], options?: RunGitOptions): Promise<RunGitResult> {
   const timeout = options?.timeout ?? 300_000;
-  const maxBuffer = options?.maxBuffer ?? 10 * 1024 * 1024;
+  const maxBuffer = options?.maxBuffer ?? GIT_RUN_MAX_BUFFER_BYTES;
   try {
     const { stdout, stderr } = await execFileAsync("git", args, {
       cwd,

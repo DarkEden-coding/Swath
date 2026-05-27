@@ -23,13 +23,16 @@ export function createMainWindow(): BrowserWindow {
       preload: path.join(__dirname, "../preload/preload.mjs"),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false
-    }
+      sandbox: false,
+      spellcheck: false,
+      backgroundThrottling: true,
+    },
   });
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     void shell.openExternal(url);
     return { action: "deny" };
   });
+  mainWindow.webContents.session.setSpellCheckerEnabled(false);
   mainWindow.once("ready-to-show", () => mainWindow.show());
   if (process.env.ELECTRON_RENDERER_URL) void mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL);
   else void mainWindow.loadFile(path.join(__dirname, "../renderer/index.html"));
