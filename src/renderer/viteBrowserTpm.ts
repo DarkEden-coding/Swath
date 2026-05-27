@@ -107,6 +107,7 @@ function createStubSwath(): SwathApi {
       attach: async () => ({ sessionId: "", running: false }),
       restart: async () => ({ sessionId: "", running: false }),
       replay: async () => ({ sessionId: "", running: false }),
+      setStreaming: () => {},
       isBusy: async () => false,
       onData: () => () => {},
       onExit: () => () => {},
@@ -220,6 +221,9 @@ function createTauriSwath(): SwathApi {
       attach: (request) => invoke("terminal_attach", { request }),
       restart: (sessionId) => invoke("terminal_restart", { sessionId }),
       replay: (sessionId) => invoke("terminal_replay", { sessionId }),
+      setStreaming: (sessionId, enabled) => {
+        void invoke("terminal_set_streaming", { sessionId, enabled });
+      },
       isBusy: (sessionId) => invoke("terminal_is_busy", { sessionId }),
       onData: (callback) => {
         let disposed = false;

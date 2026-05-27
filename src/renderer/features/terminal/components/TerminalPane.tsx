@@ -19,6 +19,29 @@ import { createTerminalInputController, type TerminalInputController } from "../
 import { TERMINAL_SCROLLBACK_LINES } from "../../../../shared/memoryLimits";
 import { detachCachedTerminalElement, disposeCachedTerminal, evictCachedTerminal, exitStateSetters, startedSessions, terminalCache } from "../runtime/terminalCache";
 
+const TERMINAL_THEME = {
+  background: "#0d1117",
+  foreground: "#c9d1d9",
+  cursor: "#58a6ff",
+  selectionBackground: "#264f78",
+  black: "#0d1117",
+  red: "#ff7b72",
+  green: "#3fb950",
+  yellow: "#d29922",
+  blue: "#58a6ff",
+  magenta: "#bc8cff",
+  cyan: "#39c5cf",
+  white: "#c9d1d9",
+  brightBlack: "#6e7681",
+  brightRed: "#ffa198",
+  brightGreen: "#56d364",
+  brightYellow: "#e3b341",
+  brightBlue: "#79c0ff",
+  brightMagenta: "#d2a8ff",
+  brightCyan: "#56d4dd",
+  brightWhite: "#f0f6fc",
+} as const;
+
 function shellFor(settings: AppSettings): ShellProfile | null {
   return settings.shellProfiles.find((profile) => profile.id === settings.defaultShellProfileId) ?? settings.shellProfiles[0] ?? null;
 }
@@ -45,6 +68,7 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
   const bannerSentRef = useRef(false);
   const dormantInputRef = useRef("");
   const scrollbarHideTimerRef = useRef<number | null>(null);
+  const webLinksDisposableRef = useRef<{ dispose: () => void } | null>(null);
   const [exited, setExited] = useState(false);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
   const [searchOpen, setSearchOpen] = useState(false);
@@ -66,8 +90,17 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
   }, [paneId, view.id]);
 
   useEffect(() => {
+    if (isActive || !startedSessions.has(paneId)) return;
+    terminalClient.setStreaming(paneId, false);
+  }, [isActive, paneId]);
+
+  useEffect(() => {
+    if (!isActive) return;
+
     const host = hostRef.current;
     if (!host) return;
+
+    if (startedSessions.has(paneId)) terminalClient.setStreaming(paneId, true);
 
     exitStateSetters.set(paneId, setExited);
 
@@ -85,32 +118,10 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
         fontSize: initialSettingsRef.current.fontSize,
         lineHeight: initialSettingsRef.current.lineHeight,
         scrollback: TERMINAL_SCROLLBACK_LINES,
-        theme: {
-          background: "#0d1117",
-          foreground: "#c9d1d9",
-          cursor: "#58a6ff",
-          selectionBackground: "#264f78",
-          black: "#0d1117",
-          red: "#ff7b72",
-          green: "#3fb950",
-          yellow: "#d29922",
-          blue: "#58a6ff",
-          magenta: "#bc8cff",
-          cyan: "#39c5cf",
-          white: "#c9d1d9",
-          brightBlack: "#6e7681",
-          brightRed: "#ffa198",
-          brightGreen: "#56d364",
-          brightYellow: "#e3b341",
-          brightBlue: "#79c0ff",
-          brightMagenta: "#d2a8ff",
-          brightCyan: "#56d4dd",
-          brightWhite: "#f0f6fc",
-        },
+        theme: TERMINAL_THEME,
       });
 
     const fit = cachedEntry?.fit ?? new FitAddon();
-    const search = cachedEntry?.search ?? new SearchAddon();
     if (cachedEntry) {
       const terminalElement = terminal.element;
       removeForeignTerminalElements(host, terminalElement);
@@ -118,18 +129,12 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
     } else {
       removeForeignTerminalElements(host, undefined);
       terminal.loadAddon(fit);
-      terminal.loadAddon(search);
-      terminal.loadAddon(
-        new WebLinksAddon((_event, uri) => {
-          void window.swath.browser.openExternal(uri);
-        }),
-      );
       terminal.open(host);
     }
 
     termRef.current = terminal;
     fitRef.current = fit;
-    searchRef.current = search;
+    searchRef.current = null;
     inputControllerRef.current?.dispose();
     inputControllerRef.current = createTerminalInputController({
       terminal,
@@ -234,7 +239,6 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
       terminalCache.set(paneId, {
         terminal,
         fit,
-        search,
         disposeResources: () => {
           disposable?.dispose();
           removeDataListener?.();
@@ -261,6 +265,9 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
       viewport?.removeEventListener("scroll", showScrollbar);
       if (scrollbarHideTimerRef.current !== null) window.clearTimeout(scrollbarHideTimerRef.current);
       host.classList.remove("is-scrolling");
+      webLinksDisposableRef.current?.dispose();
+      webLinksDisposableRef.current = null;
+      if (startedSessions.has(paneId)) terminalClient.setStreaming(paneId, false);
       const entry = terminalCache.get(paneId);
       if (entry?.stopped) {
         disposeCachedTerminal(paneId);
@@ -274,7 +281,7 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
       fitRef.current = null;
       searchRef.current = null;
     };
-  }, [paneId, view.id, workspace.path]);
+  }, [isActive, paneId, view.id, workspace.path]);
 
   useEffect(() => {
     const terminal = termRef.current;
@@ -355,6 +362,26 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
   };
 
   useEffect(() => {
+    const terminal = termRef.current;
+    if (!isActive || !terminal || webLinksDisposableRef.current) return;
+    const addon = new WebLinksAddon((_event, uri) => {
+      void window.swath.browser.openExternal(uri);
+    });
+    terminal.loadAddon(addon);
+    webLinksDisposableRef.current = addon;
+  }, [isActive, paneId]);
+
+  useEffect(() => {
+    if (!searchOpen) return;
+    const terminal = termRef.current;
+    if (!terminal || searchRef.current) return;
+    const search = new SearchAddon();
+    terminal.loadAddon(search);
+    searchRef.current = search;
+    if (searchQuery) search.findNext(searchQuery);
+  }, [searchOpen, searchQuery]);
+
+  useEffect(() => {
     if (!contextMenu) return;
     const onKeyDownGlobal = (event: globalThis.KeyboardEvent): void => {
       if (event.key === "Escape") setContextMenu(null);
@@ -387,7 +414,7 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
         setContextMenu({ x: event.clientX, y: event.clientY });
       }}
     >
-      <TerminalViewport hostRef={hostRef} />
+      <TerminalViewport hostRef={hostRef} suspended={!isActive} />
       {searchOpen ? (
         <TerminalSearchBar
           query={searchQuery}

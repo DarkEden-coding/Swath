@@ -1,10 +1,11 @@
 use crate::types::{
     PtyResizeRequest, TerminalDataEvent, TerminalExitEventPayload, TerminalSessionAttachRequest,
-    TerminalSessionStartRequest, TerminalSessionStatus, TERMINAL_REPLAY_MAX_BYTES,
+    TerminalSessionStartRequest, TerminalSessionStatus, TERMINAL_REPLAY_DETACHED_MAX_BYTES,
+    TERMINAL_REPLAY_MAX_BYTES,
 };
 use anyhow::{anyhow, Result};
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::str;
@@ -32,6 +33,7 @@ struct TerminalSession {
     master: Mutex<Box<dyn MasterPty + Send>>,
     child: Mutex<Box<dyn Child + Send + Sync>>,
     replay: Mutex<ReplayBuffer>,
+    stream_to_ui: AtomicBool,
     running: AtomicBool,
 }
 
@@ -165,6 +167,18 @@ impl TerminalManager {
         })
     }
 
+    pub fn set_streaming(&self, session_id: &str, enabled: bool) -> Result<()> {
+        let session = self.get(session_id)?;
+        session.stream_to_ui.store(enabled, Ordering::Relaxed);
+        let mut replay = session.replay.lock().unwrap();
+        if enabled {
+            replay.set_limit(TERMINAL_REPLAY_MAX_BYTES);
+        } else {
+            replay.set_limit(TERMINAL_REPLAY_DETACHED_MAX_BYTES);
+        }
+        Ok(())
+    }
+
     pub fn is_busy(&self, session_id: &str) -> Result<bool> {
         let session = self.get(session_id)?;
         if !session.running.load(Ordering::SeqCst) {
@@ -212,7 +226,8 @@ impl TerminalManager {
             writer: Mutex::new(writer),
             master: Mutex::new(pair.master),
             child: Mutex::new(child),
-            replay: Mutex::new(ReplayBuffer::default()),
+            replay: Mutex::new(ReplayBuffer::new(TERMINAL_REPLAY_MAX_BYTES)),
+            stream_to_ui: AtomicBool::new(true),
             running: AtomicBool::new(true),
         });
 
@@ -233,13 +248,15 @@ impl TerminalManager {
                     Ok(n) => {
                         for data in decoder.push(&buf[..n]) {
                             append_replay(&session, &data);
-                            let _ = app.emit(
-                                DATA_EVENT,
-                                TerminalDataEvent {
-                                    session_id: session.id.clone(),
-                                    data,
-                                },
-                            );
+                            if session.stream_to_ui.load(Ordering::Relaxed) {
+                                let _ = app.emit(
+                                    DATA_EVENT,
+                                    TerminalDataEvent {
+                                        session_id: session.id.clone(),
+                                        data,
+                                    },
+                                );
+                            }
                         }
                     }
                     Err(_) => break,
@@ -247,13 +264,15 @@ impl TerminalManager {
             }
             if let Some(data) = decoder.finish() {
                 append_replay(&session, &data);
-                let _ = app.emit(
-                    DATA_EVENT,
-                    TerminalDataEvent {
-                        session_id: session.id.clone(),
-                        data,
-                    },
-                );
+                if session.stream_to_ui.load(Ordering::Relaxed) {
+                    let _ = app.emit(
+                        DATA_EVENT,
+                        TerminalDataEvent {
+                            session_id: session.id.clone(),
+                            data,
+                        },
+                    );
+                }
             }
         });
     }
@@ -342,34 +361,50 @@ fn has_child_processes(pid: u32) -> bool {
     }
 }
 
-#[derive(Default)]
 struct ReplayBuffer {
-    chunks: VecDeque<String>,
-    bytes: usize,
+    data: String,
+    max_bytes: usize,
 }
 
 impl ReplayBuffer {
-    fn push(&mut self, data: &str) {
-        if data.contains("\x1bc") || data.contains("\x1b[2J") || data.contains("\x1b[3J") {
+    fn new(max_bytes: usize) -> Self {
+        Self {
+            data: String::new(),
+            max_bytes,
+        }
+    }
+
+    fn set_limit(&mut self, max_bytes: usize) {
+        self.max_bytes = max_bytes;
+        self.trim_to_max();
+    }
+
+    fn push(&mut self, chunk: &str) {
+        if chunk.contains("\x1bc") || chunk.contains("\x1b[2J") || chunk.contains("\x1b[3J") {
             self.clear();
         }
-        self.bytes += data.len();
-        self.chunks.push_back(data.to_string());
-        while self.bytes > TERMINAL_REPLAY_MAX_BYTES {
-            let Some(removed) = self.chunks.pop_front() else {
-                break;
-            };
-            self.bytes = self.bytes.saturating_sub(removed.len());
+        self.data.push_str(chunk);
+        self.trim_to_max();
+    }
+
+    fn trim_to_max(&mut self) {
+        if self.data.len() <= self.max_bytes {
+            return;
         }
+        let excess = self.data.len() - self.max_bytes;
+        let mut drain_end = excess;
+        while drain_end < self.data.len() && !self.data.is_char_boundary(drain_end) {
+            drain_end += 1;
+        }
+        self.data.drain(..drain_end);
     }
 
     fn clear(&mut self) {
-        self.chunks.clear();
-        self.bytes = 0;
+        self.data.clear();
     }
 
     fn text(&self) -> String {
-        self.chunks.iter().map(String::as_str).collect()
+        self.data.clone()
     }
 }
 

@@ -13,6 +13,7 @@ export const IpcChannels = {
   terminalAttach: "terminal:attach",
   terminalRestart: "terminal:restart",
   terminalReplay: "terminal:replay",
+  terminalSetStreaming: "terminal:set-streaming",
   terminalIsBusy: "terminal:is-busy",
   terminalData: "terminal:data",
   terminalExit: "terminal:exit",

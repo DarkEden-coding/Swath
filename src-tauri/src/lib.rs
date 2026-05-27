@@ -45,6 +45,7 @@ pub fn run() {
             commands::terminal_attach,
             commands::terminal_restart,
             commands::terminal_replay,
+            commands::terminal_set_streaming,
             commands::terminal_is_busy,
             commands::git_rpc,
         ])

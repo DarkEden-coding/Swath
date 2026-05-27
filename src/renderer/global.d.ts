@@ -42,6 +42,7 @@ interface SwathApi {
     attach: (request: import("../shared/types").TerminalSessionAttachRequest) => Promise<import("../shared/types").TerminalSessionStatus | undefined>;
     restart: (sessionId: string) => Promise<import("../shared/types").TerminalSessionStatus | undefined>;
     replay: (sessionId: string) => Promise<import("../shared/types").TerminalSessionStatus | undefined>;
+    setStreaming: (sessionId: string, enabled: boolean) => void;
     isBusy: (sessionId: string) => Promise<boolean>;
     onData: (callback: (sessionId: string, data: string) => void) => () => void;
     onExit: (callback: (sessionId: string, event: { exitCode: number; signal?: number }) => void) => () => void;

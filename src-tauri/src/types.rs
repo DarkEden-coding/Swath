@@ -1,8 +1,9 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-pub const TERMINAL_REPLAY_MAX_BYTES: usize = 2 * 1024 * 1024;
-pub const GIT_RUN_MAX_BUFFER_BYTES: usize = 4 * 1024 * 1024;
+pub const TERMINAL_REPLAY_MAX_BYTES: usize = 512 * 1024;
+pub const TERMINAL_REPLAY_DETACHED_MAX_BYTES: usize = 64 * 1024;
+pub const GIT_RUN_MAX_BUFFER_BYTES: usize = 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

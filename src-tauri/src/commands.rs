@@ -127,6 +127,18 @@ pub fn terminal_replay(
 }
 
 #[tauri::command]
+pub fn terminal_set_streaming(
+    state: State<'_, AppState>,
+    session_id: String,
+    enabled: bool,
+) -> CommandResult<()> {
+    state
+        .terminal
+        .set_streaming(&session_id, enabled)
+        .map_err(|err| err.to_string())
+}
+
+#[tauri::command]
 pub fn terminal_is_busy(state: State<'_, AppState>, session_id: String) -> CommandResult<bool> {
     state
         .terminal
