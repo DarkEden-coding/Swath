@@ -118,7 +118,11 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
       removeForeignTerminalElements(host, undefined);
       terminal.loadAddon(fit);
       terminal.loadAddon(search);
-      terminal.loadAddon(new WebLinksAddon());
+      terminal.loadAddon(
+        new WebLinksAddon((_event, uri) => {
+          void window.swath.browser.openExternal(uri);
+        }),
+      );
       terminal.open(host);
     }
 

@@ -17,7 +17,8 @@ export const IpcChannels = {
   terminalData: "terminal:data",
   terminalExit: "terminal:exit",
   appCommand: "app:command",
-  gitRpc: "git:rpc"
+  gitRpc: "git:rpc",
+  browserOpenExternal: "browser:open-external"
 } as const;
 
 export type IpcChannel = (typeof IpcChannels)[keyof typeof IpcChannels];

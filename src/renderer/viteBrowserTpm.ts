@@ -89,6 +89,11 @@ function createStubSwath(): SwathApi {
       readForTerminal: async () => ({ text: "", imagePath: null }),
       writeText: async () => {},
     },
+    browser: {
+      openExternal: async (url: string) => {
+        window.open(url, "_blank", "noopener,noreferrer");
+      },
+    },
     permissions: {
       ensureTerminalPaste: async () => ({ accessibility: "unavailable" }),
     },

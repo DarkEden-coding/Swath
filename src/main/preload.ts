@@ -26,6 +26,9 @@ const swath = {
     readForTerminal: (): Promise<TerminalClipboardPayload> => ipcRenderer.invoke(IpcChannels.clipboardReadForTerminal),
     writeText: (text: string): Promise<void> => ipcRenderer.invoke(IpcChannels.clipboardWriteText, text),
   },
+  browser: {
+    openExternal: (url: string): Promise<void> => ipcRenderer.invoke(IpcChannels.browserOpenExternal, url),
+  },
   permissions: {
     ensureTerminalPaste: (): Promise<TerminalPastePermissionStatus> =>
       ipcRenderer.invoke(IpcChannels.permissionsEnsureTerminalPaste),

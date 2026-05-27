@@ -1,4 +1,5 @@
 import type { BrowserWindow } from "electron";
+import { registerBrowserIpc } from "./browserIpc";
 import { registerClipboardIpc } from "./clipboardIpc";
 import { registerConfigIpc } from "./configIpc";
 import { registerDialogIpc } from "./dialogIpc";
@@ -13,6 +14,7 @@ interface RegisterIpcOptions {
 }
 
 export function registerIpc({ getMainWindow, getTerminalManager }: RegisterIpcOptions): void {
+  registerBrowserIpc();
   registerConfigIpc();
   registerClipboardIpc();
   registerPermissionsIpc();

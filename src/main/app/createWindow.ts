@@ -1,6 +1,6 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { app, BrowserWindow } from "electron";
+import { app, BrowserWindow, shell } from "electron";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -25,6 +25,10 @@ export function createMainWindow(): BrowserWindow {
       nodeIntegration: false,
       sandbox: false
     }
+  });
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    void shell.openExternal(url);
+    return { action: "deny" };
   });
   mainWindow.once("ready-to-show", () => mainWindow.show());
   if (process.env.ELECTRON_RENDERER_URL) void mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL);
