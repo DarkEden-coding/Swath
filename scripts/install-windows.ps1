@@ -31,36 +31,26 @@ function Assert-WindowsNativeBuildPrerequisites {
   if ($LASTEXITCODE -ne 0 -or -not $InstallPaths) {
     throw "Visual Studio C++ build tools were not found. Install the MSVC v143 x64/x86 build tools from Visual Studio Installer."
   }
-
-  $SpectreLibs = foreach ($InstallPath in $InstallPaths) {
-    Get-ChildItem -Path (Join-Path $InstallPath 'VC\Tools\MSVC') -Directory -ErrorAction SilentlyContinue |
-      Where-Object { Test-Path (Join-Path $_.FullName 'lib\spectre\x64') }
-  }
-
-  if (-not $SpectreLibs) {
-    throw "Missing Visual Studio Spectre-mitigated libraries required by node-pty. Open Visual Studio Installer > Modify > Individual components, then install 'MSVC v143 - VS 2022 C++ x64/x86 Spectre-mitigated libs' for the installed toolset."
-  }
 }
 
-$ElectronBuilderBin = Join-Path $RootDir 'node_modules\.bin\electron-builder.cmd'
+$TauriBin = Join-Path $RootDir 'node_modules\.bin\tauri.cmd'
 
-if (-not (Test-Path $ElectronBuilderBin)) {
+if (-not (Test-Path $TauriBin)) {
   Write-Host "Installing dependencies..."
   Invoke-Checked npm install
 }
 
 Assert-WindowsNativeBuildPrerequisites
 
-Write-Host "Building $AppName for Windows..."
-Invoke-Checked npm run build --ignore-scripts
-Invoke-Checked npx electron-builder --win dir
+Write-Host "Building $AppName Tauri bundle for Windows..."
+Invoke-Checked npm run tauri:build
 
-$Exe = Get-ChildItem -Path (Join-Path $RootDir 'release') -Recurse -Filter "$AppName.exe" |
-  Where-Object { $_.FullName -match 'win.*unpacked' } |
+$Exe = Get-ChildItem -Path (Join-Path $RootDir 'src-tauri\target\release') -Recurse -Filter "$AppName.exe" |
+  Where-Object { $_.FullName -notmatch '\\deps\\' } |
   Select-Object -First 1
 
 if (-not $Exe) {
-  throw "Could not find built executable at release/**/win*-unpacked/$AppName.exe"
+  throw "Could not find built executable at src-tauri\target\release\**\$AppName.exe"
 }
 
 Write-Host "Creating Start Menu shortcut..."

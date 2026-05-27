@@ -70,10 +70,6 @@ export function ViewTabBar({ workspace, sidebarCollapsed, onToggleSidebar }: Vie
     >
       {sidebarCollapsed ? (
         <>
-          <div
-            className="min-h-0 w-0 shrink-0 self-stretch [html.platform-darwin_&]:w-[76px] [-webkit-app-region:drag] [app-region:drag]"
-            aria-hidden="true"
-          />
           <button
             type="button"
             className="grid w-[38px] shrink-0 cursor-pointer place-items-center border-0 border-r border-swath-border bg-swath-panel text-swath-accent-strong [-webkit-app-region:no-drag] [app-region:no-drag] hover:bg-swath-bg hover:text-swath-accent"

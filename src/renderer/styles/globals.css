@@ -45,6 +45,23 @@
   }
 }
 
+[data-tauri-drag-region],
+.drag-region {
+  -webkit-app-region: drag;
+  app-region: drag;
+}
+
+[data-tauri-no-drag-region],
+.no-drag-region,
+button,
+input,
+select,
+textarea,
+a {
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+
 /* xterm viewport scrollbar (WebKit) */
 .xterm-viewport::-webkit-scrollbar {
   width: 12px;

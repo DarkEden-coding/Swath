@@ -2,45 +2,40 @@
   "name": "swath",
   "version": "0.1.0",
   "description": "A lightweight terminal-first project/workspace manager for coding agents.",
-  "main": "out/main/main.js",
   "author": "Generated with ChatGPT",
   "license": "MIT",
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "electron-vite dev",
-    "predev": "npm run rebuild:native",
-    "build": "electron-vite build",
-    "prebuild": "npm run rebuild:native",
+    "dev": "tauri dev",
+    "dev:renderer": "vite",
+    "build": "tauri build",
+    "build:renderer": "vite build",
     "typecheck": "tsc --noEmit",
     "test": "node --experimental-strip-types scripts/test-terminal-paste.mjs",
     "test:unit": "vitest run",
-    "dist": "npm run build && electron-builder",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build",
+    "dist": "npm run tauri:build",
     "install:mac": "bash scripts/install-mac.sh",
-    "install:win": "powershell -ExecutionPolicy Bypass -File scripts/install-windows.ps1",
-    "rebuild:native": "electron-builder install-app-deps",
-    "postinstall": "npm run rebuild:native"
+    "install:win": "powershell -ExecutionPolicy Bypass -File scripts/install-windows.ps1"
   },
   "dependencies": {
+    "@tauri-apps/api": "^2.0.0",
     "@xterm/addon-fit": "^0.10.0",
     "@xterm/addon-search": "^0.15.0",
     "@xterm/addon-web-links": "^0.11.0",
     "@xterm/xterm": "^5.5.0",
-    "better-sqlite3": "^12.10.0",
-    "node-pty": "^1.0.0",
     "zod": "^4.4.3",
     "zustand": "^5.0.3"
   },
   "devDependencies": {
-    "@types/better-sqlite3": "^7.6.13",
+    "@tauri-apps/cli": "^2.0.0",
     "@types/node": "^22.10.2",
     "@types/react": "^19.0.2",
     "@types/react-dom": "^19.0.2",
     "@vitejs/plugin-react": "^4.3.4",
     "autoprefixer": "^10.5.0",
-    "electron": "39.8.5",
-    "electron-builder": "^26.8.1",
-    "electron-vite": "^5.0.0",
     "postcss": "^8.5.14",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
@@ -48,47 +43,5 @@
     "typescript": "^5.7.2",
     "vite": "^7.3.3",
     "vitest": "^4.1.6"
-  },
-  "build": {
-    "appId": "dev.generated.swath",
-    "productName": "Swath",
-    "directories": {
-      "output": "release"
-    },
-    "files": [
-      "out/**/*",
-      "node_modules/**/*",
-      "package.json"
-    ],
-    "extraResources": [
-      {
-        "from": "icon.png",
-        "to": "icon.png"
-      }
-    ],
-    "icon": "icon.png",
-    "mac": {
-      "target": [
-        "dmg",
-        "zip"
-      ],
-      "category": "public.app-category.developer-tools"
-    },
-    "win": {
-      "target": [
-        "nsis",
-        "zip"
-      ],
-      "icon": "build/icon.ico"
-    },
-    "linux": {
-      "target": [
-        "AppImage",
-        "tar.gz"
-      ],
-      "icon": "icon.png",
-      "category": "Development"
-    },
-    "npmRebuild": true
   }
 }

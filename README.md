@@ -1,6 +1,6 @@
 # Swath
 
-Swath is a fast, terminal-first desktop workspace manager for developers and coding agents. It keeps your projects, terminal tabs, split panes, shell profiles, and local environment setup in one sharp Electron app so you can jump between work without rebuilding your terminal layout every time.
+Swath is a fast, terminal-first desktop workspace manager for developers and coding agents. It keeps your projects, terminal views, split panes, shell profiles, and local environment setup in one sharp Tauri app so you can jump between work without rebuilding your terminal layout every time.
 
 <img src="docs/screenshots/swath-workspace.png" alt="Swath workspace view" width="760">
 
@@ -10,7 +10,7 @@ Swath is built for people who live in terminals all day and want their project c
 
 - Keep every project in a dedicated workspace.
 - Start terminals directly inside each workspace folder.
-- Use tabs for separate flows like app server, tests, database, and agents.
+- Use views for separate flows like app server, tests, database, and agents.
 - Split panes horizontally or vertically when one terminal is not enough.
 - Resize panes and keep your preferred layout between launches.
 - Tune fonts, cursor behavior, shell profiles, and global environment variables.
@@ -20,7 +20,7 @@ Swath is built for people who live in terminals all day and want their project c
 
 ### Workspace
 
-Projects live in the sidebar, terminal tabs stay across the top, and the active pane has quick controls for splitting and closing.
+Projects live in the sidebar, terminal views stay across the top, and the active pane has quick controls for splitting and closing.
 
 <img src="docs/screenshots/swath-workspace.png" alt="Swath workspace with a clean terminal pane" width="760">
 
@@ -32,13 +32,13 @@ Split panes keep related terminal sessions visible side by side without leaving 
 
 ## Features
 
-- Cross-platform Electron app for macOS, Windows, and Linux packaging.
+- Cross-platform Tauri app for macOS, Windows, and Linux packaging.
 - Local project/workspace list with add, remove, rename, and drag-to-reorder.
-- Multiple terminal tabs per workspace.
+- Multiple terminal views per workspace.
 - Horizontal and vertical split panes.
 - Resizable split ratios that persist across app launches.
 - xterm.js terminal rendering with fit, search, and web-link addons.
-- Real PTY-backed shells through `node-pty`.
+- Real PTY-backed shells through the Rust native backend.
 - Configurable terminal font, font size, line height, cursor style, and cursor blink.
 - Shell profiles for `zsh`, `bash`, PowerShell, Command Prompt, or custom commands.
 - Global environment variables applied to newly spawned panes.
@@ -47,15 +47,15 @@ Split panes keep related terminal sessions visible side by side without leaving 
 
 ## Tech Stack
 
-- Electron
+- Tauri 2
+- Rust
 - React
 - TypeScript
-- Vite / electron-vite
+- Vite
 - xterm.js
-- node-pty
-- better-sqlite3
+- portable-pty
+- rusqlite
 - Zustand
-- electron-builder
 
 ## Getting Started
 
@@ -71,17 +71,20 @@ Start the development app:
 npm run dev
 ```
 
-`node-pty` is a native dependency. The `postinstall`, `predev`, and `prebuild` scripts run `electron-builder install-app-deps` so native modules are rebuilt for Electron.
+This runs Tauri with a Vite-powered renderer and a Rust backend.
 
 ## Useful Commands
 
 | Command | What it does |
 | --- | --- |
-| `npm run dev` | Starts Swath in development mode. |
+| `npm run dev` | Starts Swath in Tauri development mode. |
+| `npm run dev:renderer` | Starts only the Vite renderer dev server. |
 | `npm run typecheck` | Runs TypeScript without emitting files. |
 | `npm test` | Runs the terminal paste test script. |
-| `npm run build` | Builds app assets into `out/`. |
-| `npm run dist` | Builds packaged installers into `release/`. |
+| `npm run test:unit` | Runs Vitest unit tests. |
+| `npm run build:renderer` | Builds renderer assets into `dist/`. |
+| `npm run build` | Builds the Tauri app bundle. |
+| `npm run dist` | Builds distributable Tauri packages. |
 | `npm run install:mac` | Builds and installs Swath to `/Applications` on macOS. |
 | `npm run install:win` | Builds Swath and creates a Windows Start Menu shortcut. |
 
@@ -90,8 +93,8 @@ npm run dev
 | Shortcut | Action |
 | --- | --- |
 | `Cmd/Ctrl + Shift + O` | Add workspace |
-| `Cmd/Ctrl + T` | New terminal tab |
-| `Cmd/Ctrl + W` | Close terminal tab |
+| `Cmd/Ctrl + T` | New terminal view |
+| `Cmd/Ctrl + W` | Close terminal view |
 | `Cmd/Ctrl + \` | Split active pane right |
 | `Cmd/Ctrl + Shift + \` | Split active pane down |
 | `Cmd/Ctrl + Shift + W` | Close active pane |
@@ -99,15 +102,15 @@ npm run dev
 
 ## Persistence
 
-Swath stores app configuration locally in Electron's user data directory as `swath.sqlite3`.
+Swath stores app configuration locally in the Tauri app data directory as `swath.sqlite3`.
 
 Saved between launches:
 
 - Workspace list and order
 - Active workspace
-- Terminal tabs
+- Terminal views
 - Split layouts and split ratios
-- Active tab and active pane
+- Active view and active pane
 - Terminal appearance settings
 - Shell profiles
 - Global environment variables
@@ -129,18 +132,14 @@ Build distributable packages with:
 npm run dist
 ```
 
-Artifacts are written to `release/`. The current `electron-builder` config targets:
-
-- macOS: DMG and ZIP
-- Windows: NSIS and ZIP
-- Linux: AppImage and tar.gz
+Tauri writes artifacts under `src-tauri/target/release/bundle/`.
 
 ## Project Structure
 
 ```text
-src/shared/      Cross-process domain types and typed IPC contracts
-src/main/        Electron main process, IPC handlers, services, app lifecycle
+src/shared/      Domain types and renderer/backend command contracts
 src/renderer/    React UI split into app, state, services, domain, and features
+src-tauri/       Tauri/Rust backend, commands, PTY, SQLite, git, menu, bundle config
 scripts/         Install helpers and tests
 docs/screenshots README screenshots
 public/          Static renderer assets

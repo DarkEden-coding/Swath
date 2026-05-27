@@ -19,8 +19,7 @@ export function Sidebar({ onToggleCollapse }: SidebarProps): JSX.Element {
 
   return (
     <aside className="z-[2] flex h-full min-h-0 min-w-0 flex-col border-r border-swath-border bg-swath-panel">
-      <div className="h-9 shrink-0 [-webkit-app-region:drag] [app-region:drag]" />
-      <header className="flex items-center justify-between gap-3 px-3.5 pb-2 pt-2.5 [-webkit-app-region:drag] [app-region:drag]">
+      <header className="flex items-center justify-between gap-3 px-3.5 pb-2 pt-2.5">
         <div className="flex min-w-0 items-center gap-2.5">
           <span className="grid size-[30px] place-items-center overflow-visible rounded-none border-0 bg-transparent" aria-hidden>
             <img src={appIcon} alt="" className="size-7 object-contain [filter:drop-shadow(0_8px_16px_rgba(0,0,0,0.28))]" />

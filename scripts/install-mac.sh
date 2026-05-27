@@ -9,18 +9,17 @@ DEST_APP="${DEST_DIR}/${PRODUCT_APP}"
 
 cd "$ROOT_DIR"
 
-echo "Building ${APP_NAME} for macOS..."
-npm run build
-npx electron-builder --mac dir
+echo "Building ${APP_NAME} Tauri bundle for macOS..."
+npm run tauri:build
 
 APP_PATH=""
 while IFS= read -r -d '' candidate; do
   APP_PATH="$candidate"
   break
-done < <(find "$ROOT_DIR/release" -maxdepth 3 -type d -name "$PRODUCT_APP" -print0)
+done < <(find "$ROOT_DIR/src-tauri/target/release/bundle" -maxdepth 4 -type d -name "$PRODUCT_APP" -print0 2>/dev/null)
 
 if [[ -z "$APP_PATH" ]]; then
-  echo "Could not find built app at release/**/${PRODUCT_APP}" >&2
+  echo "Could not find built app at src-tauri/target/release/bundle/**/${PRODUCT_APP}" >&2
   exit 1
 fi
 
@@ -30,7 +29,6 @@ if [[ -d "$DEST_APP" ]]; then
 fi
 cp -R "$APP_PATH" "$DEST_DIR/"
 
-# Clear quarantine if the attribute exists, then ask Launch Services to index it.
 xattr -dr com.apple.quarantine "$DEST_APP" 2>/dev/null || true
 /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$DEST_APP" 2>/dev/null || true
 

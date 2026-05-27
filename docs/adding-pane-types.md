@@ -42,14 +42,14 @@ Fields:
 - **`createView`**: builds a `WorkspaceView` whose root pane uses this kind (same `kind` rule as above).
 - **`isBusy` / `closePane`**: optional lifecycle hooks for background work (terminal uses both; many panes omit them).
 
-## Main-process features (optional)
+## Native backend features (optional)
 
 If the pane needs privileged work (subprocesses, filesystem, etc.):
 
-1. Prefer **one IPC channel per domain** so preload stays stable — Git uses `IpcChannels.gitRpc` with a discriminated `GitRpcRequest` in `src/shared/ipc/gitRpc.ts` (`op` field). New Git operations extend that union and the main `handleGitRpc` switch; **do not add a new preload method per command**.
-2. Register the handler once in **`src/main/ipc/registerIpc.ts`** (e.g. `registerGitIpc()`).
-3. Expose a small renderer client (e.g. `gitClient.ts`) that calls `window.swath.git.rpc(...)`.
-4. Update the **browser dev stub** in `src/renderer/viteBrowserTpm.ts` so `window.swath.git.rpc` exists in Vite-only runs.
+1. Prefer **one command/RPC surface per domain** so `window.swath` stays stable — Git uses `window.swath.git.rpc` with a discriminated `GitRpcRequest` in `src/shared/ipc/gitRpc.ts` (`op` field). New Git operations extend that union and the Rust `git_rpc` handler; **do not add a new renderer API method per command**.
+2. Register the Tauri command in **`src-tauri/src/commands.rs`** and wire any module in **`src-tauri/src/lib.rs`**.
+3. Expose or reuse a small renderer client (e.g. `gitClient.ts`) that calls `window.swath.git.rpc(...)`.
+4. Update the **browser dev stub / Tauri adapter** in `src/renderer/viteBrowserTpm.ts` so `window.swath.git.rpc` exists in Vite-only and Tauri runs.
 
 ## Component props
 
