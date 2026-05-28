@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type DragEvent, type MouseEvent as ReactMouseEvent } from "react";
 import type { Workspace } from "../../../../shared/types";
 import * as appActions from "../../../app/appActions";
 import { useConfigStore } from "../../../state/configStore";
@@ -9,11 +9,67 @@ interface SidebarProps {
   onToggleCollapse: () => void;
 }
 
+function WorkspaceDropIndicator(): JSX.Element {
+  return <div className="pointer-events-none mx-1 my-1 h-0.5 rounded-full bg-swath-accent shadow-[0_0_10px_rgba(56,139,253,0.9)]" />;
+}
+
 export function Sidebar({ onToggleCollapse }: SidebarProps): JSX.Element {
   const config = useConfigStore((state) => state.config)!;
   const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
+  const [dropIndex, setDropIndex] = useState<number | null>(null);
+  const itemRefs = useRef<Array<HTMLDivElement | null>>([]);
 
   const list = useMemo(() => config.workspaces, [config.workspaces]);
+
+  function getDropIndex(clientY: number): number {
+    const hoveredIndex = itemRefs.current.findIndex((item) => {
+      if (!item) return false;
+      const rect = item.getBoundingClientRect();
+      return clientY < rect.top + rect.height / 2;
+    });
+    return hoveredIndex === -1 ? list.length : hoveredIndex;
+  }
+
+  function finishDrag(): void {
+    setDraggedIndex(null);
+    setDropIndex(null);
+  }
+
+  function moveWorkspace(fromIndex: number | null, insertionIndex = dropIndex ?? list.length): void {
+    if (fromIndex !== null && fromIndex !== -1) {
+      const toIndex = fromIndex < insertionIndex ? insertionIndex - 1 : insertionIndex;
+      if (toIndex >= 0 && toIndex < config.workspaces.length && fromIndex !== toIndex) appActions.moveWorkspace(fromIndex, toIndex);
+    }
+    finishDrag();
+  }
+
+  function dropWorkspace(event: DragEvent, insertionIndex = dropIndex ?? list.length): void {
+    event.preventDefault();
+    const draggedId = event.dataTransfer.getData("text/plain");
+    moveWorkspace(draggedId ? config.workspaces.findIndex((workspace) => workspace.id === draggedId) : draggedIndex, insertionIndex);
+  }
+
+  useEffect(() => {
+    if (draggedIndex === null) return;
+
+    const onMouseMove = (event: MouseEvent): void => {
+      event.preventDefault();
+      setDropIndex(getDropIndex(event.clientY));
+    };
+    const onMouseUp = (event: MouseEvent): void => {
+      event.preventDefault();
+      moveWorkspace(draggedIndex, getDropIndex(event.clientY));
+    };
+
+    document.body.style.userSelect = "none";
+    window.addEventListener("mousemove", onMouseMove);
+    window.addEventListener("mouseup", onMouseUp, { once: true });
+    return () => {
+      document.body.style.userSelect = "";
+      window.removeEventListener("mousemove", onMouseMove);
+      window.removeEventListener("mouseup", onMouseUp);
+    };
+  }, [draggedIndex, dropIndex, list.length]);
 
   const indexOf = (workspace: Workspace): number => config.workspaces.findIndex((item) => item.id === workspace.id);
 
@@ -30,28 +86,49 @@ export function Sidebar({ onToggleCollapse }: SidebarProps): JSX.Element {
         </div>
       </header>
 
-      <div className="flex-1 overflow-y-auto px-2 pb-2.5 pt-1" role="list">
-        {list.map((workspace) => {
+      <div
+        className="flex-1 overflow-y-auto px-2 pb-2.5 pt-1"
+        role="list"
+        onDragOver={(event) => {
+          if (draggedIndex === null) return;
+          event.preventDefault();
+          event.dataTransfer.dropEffect = "move";
+          setDropIndex(getDropIndex(event.clientY));
+        }}
+        onDrop={(event) => dropWorkspace(event)}
+      >
+        {list.map((workspace, index) => {
           const originalIndex = indexOf(workspace);
           return (
-            <WorkspaceItem
-              key={workspace.id}
+            <div key={workspace.id} className="contents">
+              {dropIndex === index ? <WorkspaceDropIndicator /> : null}
+              <WorkspaceItem
+              itemRef={(element) => {
+                itemRefs.current[index] = element;
+              }}
               workspace={workspace}
               active={config.activeWorkspaceId === workspace.id}
               originalIndex={originalIndex}
               draggedIndex={draggedIndex}
-              onDragStart={() => setDraggedIndex(originalIndex)}
-              onDragEnd={() => setDraggedIndex(null)}
-              onDrop={(targetIndex) => {
-                if (draggedIndex !== null) appActions.moveWorkspace(draggedIndex, targetIndex);
-                setDraggedIndex(null);
+              onDragStart={() => {
+                setDraggedIndex(originalIndex);
+                setDropIndex(originalIndex);
               }}
+              onDragEnd={finishDrag}
+              onMouseDragStart={(event) => {
+                event.preventDefault();
+                setDraggedIndex(originalIndex);
+                setDropIndex(getDropIndex(event.clientY));
+              }}
+              onDrop={(event) => dropWorkspace(event, getDropIndex(event.clientY))}
               onSelect={() => appActions.selectWorkspace(workspace.id)}
               onRemove={() => void appActions.removeWorkspace(workspace.id)}
               onRename={(name) => appActions.renameWorkspace(workspace.id, name)}
-            />
+              />
+            </div>
           );
         })}
+        {dropIndex === list.length ? <WorkspaceDropIndicator /> : null}
       </div>
 
       <footer className="border-t border-swath-border px-3 pb-3 pt-2.5">
@@ -81,25 +158,29 @@ export function Sidebar({ onToggleCollapse }: SidebarProps): JSX.Element {
 }
 
 interface WorkspaceItemProps {
+  itemRef: (element: HTMLDivElement | null) => void;
   workspace: Workspace;
   active: boolean;
   originalIndex: number;
   draggedIndex: number | null;
   onDragStart: () => void;
   onDragEnd: () => void;
-  onDrop: (targetIndex: number) => void;
+  onMouseDragStart: (event: ReactMouseEvent) => void;
+  onDrop: (event: DragEvent) => void;
   onSelect: () => void;
   onRemove: () => void;
   onRename: (name: string) => void;
 }
 
 function WorkspaceItem({
+  itemRef,
   workspace,
   active,
   originalIndex,
   draggedIndex,
   onDragStart,
   onDragEnd,
+  onMouseDragStart,
   onDrop,
   onSelect,
   onRemove,
@@ -131,24 +212,28 @@ function WorkspaceItem({
 
   return (
     <div
-      draggable
+      ref={itemRef}
+      draggable={false}
       role="listitem"
-      className={`relative my-0.5 flex min-w-0 items-stretch gap-0.5 rounded-md border border-transparent bg-transparent ${draggedIndex === originalIndex ? "opacity-[0.55]" : ""} ${activeClasses}`}
+      className={`relative my-0.5 flex min-w-0 items-stretch gap-0.5 rounded-md border border-transparent bg-transparent [-webkit-app-region:no-drag] [app-region:no-drag] ${draggedIndex === originalIndex ? "opacity-[0.55]" : ""} ${activeClasses}`}
       onDragStart={(event) => {
         event.dataTransfer.effectAllowed = "move";
+        event.dataTransfer.setData("text/plain", workspace.id);
         onDragStart();
       }}
       onDragEnd={onDragEnd}
-      onDragOver={(event) => event.preventDefault()}
-      onDrop={(event) => {
+      onDragOver={(event) => {
+        if (draggedIndex === null) return;
         event.preventDefault();
-        onDrop(originalIndex);
+        event.dataTransfer.dropEffect = "move";
       }}
+      onDrop={(event) => onDrop(event)}
     >
       <span
         className="grid w-[22px] shrink-0 cursor-grab grid-cols-[repeat(2,3px)] grid-rows-[repeat(3,3px)] gap-0.5 place-content-center pl-1 opacity-45 [-webkit-app-region:no-drag] [app-region:no-drag]"
         title="Drag to reorder"
         aria-hidden
+        onMouseDown={onMouseDragStart}
       >
         <span className="size-[3px] rounded-full bg-swath-muted-2" />
         <span className="size-[3px] rounded-full bg-swath-muted-2" />
