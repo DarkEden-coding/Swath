@@ -1,7 +1,9 @@
 /// <reference types="vite/client" />
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+import { IpcChannels } from "../shared/ipc/channels";
 import type { AppConfig } from "../shared/types";
 import type { GitRpcRequest } from "../shared/ipc/gitRpc";
-import type { SwathApi } from "../main/preload";
 
 const browserDevConfig: AppConfig = {
   version: 2,
@@ -83,10 +85,16 @@ function createStubSwath(): SwathApi {
     },
     dialog: {
       selectFolder: async () => ({ canceled: true, path: null, name: null }),
+      confirm: async (request) => window.confirm(request.detail ? `${request.message}\n\n${request.detail}` : request.message),
     },
     clipboard: {
       readForTerminal: async () => ({ text: "", imagePath: null }),
       writeText: async () => {},
+    },
+    browser: {
+      openExternal: async (url: string) => {
+        window.open(url, "_blank", "noopener,noreferrer");
+      },
     },
     permissions: {
       ensureTerminalPaste: async () => ({ accessibility: "unavailable" }),
@@ -99,6 +107,7 @@ function createStubSwath(): SwathApi {
       attach: async () => ({ sessionId: "", running: false }),
       restart: async () => ({ sessionId: "", running: false }),
       replay: async () => ({ sessionId: "", running: false }),
+      setStreaming: () => {},
       isBusy: async () => false,
       onData: () => () => {},
       onExit: () => () => {},
@@ -179,10 +188,104 @@ function createStubSwath(): SwathApi {
   };
 }
 
-export function attachViteBrowserTpmIfMissing(): void {
+function isTauriRuntime(): boolean {
+  return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+}
+
+function createTauriSwath(): SwathApi {
+  return {
+    platform: typeof navigator !== "undefined" ? (navigator.platform.includes("Win") ? "win32" : "darwin") : "darwin",
+    config: {
+      load: () => invoke("config_load"),
+      save: (config: AppConfig) => invoke("config_save", { config }),
+    },
+    dialog: {
+      selectFolder: () => invoke("dialog_select_folder"),
+      confirm: (request) => invoke("dialog_confirm", { request }),
+    },
+    clipboard: {
+      readForTerminal: () => invoke("clipboard_read_for_terminal"),
+      writeText: (text: string) => invoke("clipboard_write_text", { text }),
+    },
+    browser: {
+      openExternal: (url: string) => invoke("browser_open_external", { url }),
+    },
+    permissions: {
+      ensureTerminalPaste: () => invoke("permissions_ensure_terminal_paste"),
+    },
+    terminal: {
+      create: (request) => { void invoke("terminal_create", { request }); },
+      write: (sessionId, data) => { void invoke("terminal_write", { sessionId, data }); },
+      resize: (request) => { void invoke("terminal_resize", { request }); },
+      kill: (sessionId) => { void invoke("terminal_kill", { sessionId }); },
+      attach: (request) => invoke("terminal_attach", { request }),
+      restart: (sessionId) => invoke("terminal_restart", { sessionId }),
+      replay: (sessionId) => invoke("terminal_replay", { sessionId }),
+      setStreaming: (sessionId, enabled) => {
+        void invoke("terminal_set_streaming", { sessionId, enabled });
+      },
+      isBusy: (sessionId) => invoke("terminal_is_busy", { sessionId }),
+      onData: (callback) => {
+        let disposed = false;
+        let unsubscribe: (() => void) | undefined;
+        void listen<{ sessionId: string; data: string }>(IpcChannels.terminalData, (event) => {
+          callback(event.payload.sessionId, event.payload.data);
+        }).then((unlisten) => {
+          unsubscribe = unlisten;
+          if (disposed) unlisten();
+        });
+        return () => {
+          disposed = true;
+          unsubscribe?.();
+        };
+      },
+      onExit: (callback) => {
+        let disposed = false;
+        let unsubscribe: (() => void) | undefined;
+        void listen<{ sessionId: string; exitCode: number; signal?: number }>(IpcChannels.terminalExit, (event) => {
+          callback(event.payload.sessionId, { exitCode: event.payload.exitCode, signal: event.payload.signal });
+        }).then((unlisten) => {
+          unsubscribe = unlisten;
+          if (disposed) unlisten();
+        });
+        return () => {
+          disposed = true;
+          unsubscribe?.();
+        };
+      },
+    },
+    app: {
+      onCommand: (callback) => {
+        let disposed = false;
+        let unsubscribe: (() => void) | undefined;
+        void listen<string>(IpcChannels.appCommand, (event) => callback(event.payload)).then((unlisten) => {
+          unsubscribe = unlisten;
+          if (disposed) unlisten();
+        });
+        return () => {
+          disposed = true;
+          unsubscribe?.();
+        };
+      },
+    },
+    git: {
+      rpc: (request: GitRpcRequest) => invoke("git_rpc", { request }),
+    },
+  };
+}
+
+export function attachSwathAdapterIfMissing(): void {
   if (typeof window === "undefined") return;
-  if (!import.meta.env.DEV) return;
   if ("swath" in window && window.swath) return;
 
-  (window as unknown as { swath: SwathApi }).swath = createStubSwath();
+  if (isTauriRuntime()) {
+    (window as unknown as { swath: SwathApi }).swath = createTauriSwath();
+    return;
+  }
+
+  if (import.meta.env.DEV) {
+    (window as unknown as { swath: SwathApi }).swath = createStubSwath();
+  }
 }
+
+export const attachViteBrowserTpmIfMissing = attachSwathAdapterIfMissing;

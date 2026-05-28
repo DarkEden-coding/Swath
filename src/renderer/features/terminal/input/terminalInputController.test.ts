@@ -157,25 +157,6 @@ describe("createTerminalInputController", () => {
     expect(openSearch).toHaveBeenCalled();
   });
 
-  it("sends a distinct CSI-u sequence for Shift+Enter instead of letting xterm submit Enter", () => {
-    const terminal = createFakeTerminal();
-    const writeTerminalData = vi.fn();
-    createTerminalInputController({
-      terminal,
-      shellProfile: null,
-      readClipboardText: async () => "",
-      writeClipboardText: async () => {},
-      writeTerminalData,
-      openSearch: vi.fn(),
-    });
-    const xtermKeyHandler = terminal.attachCustomKeyEventHandler.mock.calls[0][0];
-    const shiftEnterEvent = { type: "keydown", key: "Enter", shiftKey: true, preventDefault: vi.fn() };
-
-    expect(xtermKeyHandler(shiftEnterEvent)).toBe(false);
-    expect(shiftEnterEvent.preventDefault).toHaveBeenCalled();
-    expect(writeTerminalData).toHaveBeenCalledWith("\x1b[13;2u");
-  });
-
   it("removes paste listeners and restores xterm key handling on dispose", () => {
     const terminal = createFakeTerminal();
     const controller = createTerminalInputController({

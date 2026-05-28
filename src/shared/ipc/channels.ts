@@ -5,6 +5,7 @@ export const IpcChannels = {
   clipboardWriteText: "clipboard:write-text",
   permissionsEnsureTerminalPaste: "permissions:ensure-terminal-paste",
   dialogSelectFolder: "dialog:select-folder",
+  dialogConfirm: "dialog:confirm",
   terminalCreate: "terminal:create",
   terminalWrite: "terminal:write",
   terminalResize: "terminal:resize",
@@ -12,11 +13,13 @@ export const IpcChannels = {
   terminalAttach: "terminal:attach",
   terminalRestart: "terminal:restart",
   terminalReplay: "terminal:replay",
+  terminalSetStreaming: "terminal:set-streaming",
   terminalIsBusy: "terminal:is-busy",
   terminalData: "terminal:data",
   terminalExit: "terminal:exit",
   appCommand: "app:command",
-  gitRpc: "git:rpc"
+  gitRpc: "git:rpc",
+  browserOpenExternal: "browser:open-external"
 } as const;
 
 export type IpcChannel = (typeof IpcChannels)[keyof typeof IpcChannels];

@@ -1,6 +1,6 @@
 import type { ShellProfile } from "../../../../shared/types";
 import { formatPathPaste } from "../../../utils/terminalPaste";
-import { getTerminalKeyAction, shouldXtermHandleKeyEvent, type TerminalKeyEvent } from "../utils/terminalKeyboard";
+import { getModifiedEnterSequence, getTerminalKeyAction, shouldXtermHandleKeyEvent, type TerminalKeyEvent } from "../utils/terminalKeyboard";
 
 interface Disposable {
   dispose: () => void;
@@ -121,9 +121,14 @@ export function createTerminalInputController({
   disposables.push(() => selectionDisposable.dispose());
 
   const handleXtermKeyEvent = (event: KeyboardEvent): boolean => {
-    if (isShiftEnter(event) && writeTerminalData) {
+    const modifiedEnterSequence = isShiftEnter(event) ? "\x1b[13;2u" : getModifiedEnterSequence(event);
+    if (modifiedEnterSequence) {
       event.preventDefault();
-      writeTerminalData("\x1b[13;2u");
+      if (writeTerminalData) {
+        writeTerminalData(modifiedEnterSequence);
+      } else {
+        terminal.paste(modifiedEnterSequence);
+      }
       return false;
     }
 

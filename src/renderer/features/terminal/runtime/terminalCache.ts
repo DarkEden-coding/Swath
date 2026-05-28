@@ -1,12 +1,10 @@
 import type { FitAddon } from "@xterm/addon-fit";
-import type { SearchAddon } from "@xterm/addon-search";
 import type { Terminal } from "@xterm/xterm";
 
 export interface TerminalCacheEntry {
   terminal: Terminal;
   fit: FitAddon;
-  search: SearchAddon;
-  dispose: () => void;
+  disposeResources: () => void;
   stopped: boolean;
 }
 
@@ -21,11 +19,18 @@ export function detachCachedTerminalElement(entry: TerminalCacheEntry, host?: HT
   element.parentElement?.removeChild(element);
 }
 
-export function disposeCachedTerminal(paneId: string): void {
+/** Drop renderer-side xterm resources while keeping the main-process PTY session (for replay). */
+export function evictCachedTerminal(paneId: string): void {
   const entry = terminalCache.get(paneId);
   if (!entry) return;
   detachCachedTerminalElement(entry);
-  entry.dispose();
+  entry.disposeResources();
   terminalCache.delete(paneId);
+}
+
+/** Fully tear down a pane terminal, including session tracking. */
+export function disposeCachedTerminal(paneId: string): void {
+  evictCachedTerminal(paneId);
+  startedSessions.delete(paneId);
   exitStateSetters.delete(paneId);
 }

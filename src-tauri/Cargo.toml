@@ -1,0 +1,31 @@
+[package]
+name = "swath"
+version = "0.1.0"
+description = "A lightweight terminal-first project/workspace manager for coding agents."
+authors = ["Generated with ChatGPT"]
+license = "MIT"
+edition = "2021"
+
+[lib]
+name = "swath_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "swath"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+tauri-plugin-clipboard-manager = "2"
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rusqlite = { version = "0.32", features = ["bundled"] }
+portable-pty = "0.8"
+anyhow = "1"
+thiserror = "2"
+once_cell = "1"

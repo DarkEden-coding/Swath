@@ -237,6 +237,35 @@ export function GitManagerPane({ workspace, view, pane }: PaneComponentProps): J
     }
   };
 
+  const runCommitAndSync = async (): Promise<void> => {
+    if (!cwd) return;
+    const trimmed = message.trim();
+    if (!trimmed) {
+      setLog("Commit + Sync\nEnter a commit message first.");
+      return;
+    }
+    setBusy(true);
+    try {
+      const commitResult = await gitClient.commit(cwd, trimmed);
+      if (commitResult.exitCode !== 0) {
+        appendLog("git commit", commitResult);
+        await refresh();
+        return;
+      }
+
+      setMessage("");
+      const syncResult = await gitClient.sync(cwd);
+      appendLog("git commit && git pull && git push", {
+        exitCode: syncResult.exitCode,
+        stdout: [commitResult.stdout, syncResult.stdout].filter((s) => s.trim().length > 0).join("\n"),
+        stderr: [commitResult.stderr, syncResult.stderr].filter((s) => s.trim().length > 0).join("\n"),
+      });
+      await refresh();
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const runPull = async (): Promise<void> => {
     if (!cwd) return;
     setBusy(true);
@@ -438,6 +467,16 @@ export function GitManagerPane({ workspace, view, pane }: PaneComponentProps): J
                     <IconCheck width={15} height={15} className="block" strokeWidth={2.25} />
                     Commit
                   </button>
+                  <button
+                    type="button"
+                    className={btnGhost}
+                    disabled={busy || stagedList.length === 0}
+                    title="Commit staged changes, then pull and push"
+                    onClick={() => void runCommitAndSync()}
+                  >
+                    <IconRefresh width={14} height={14} className="block shrink-0" strokeWidth={2.25} />
+                    Commit + Sync
+                  </button>
                   <button type="button" className={btnGhost} disabled={busy || !cwd} title="Pull then push" onClick={() => void runSync()}>
                     <IconRefresh width={14} height={14} className="block shrink-0" strokeWidth={2.25} />
                     Sync
@@ -536,13 +575,24 @@ export function GitManagerPane({ workspace, view, pane }: PaneComponentProps): J
                           Unstaged ({changesList.length})
                         </span>
                         {changesList.length > 0 ? (
-                          <button
-                            type="button"
-                            className="border-0 bg-transparent text-[11px] text-swath-accent hover:underline"
-                            onClick={toggleAllChanges}
-                          >
-                            {changesList.every((p) => selected.has(p)) ? "Deselect all" : "Select all"}
-                          </button>
+                          <div className="flex items-center gap-2">
+                            <button
+                              type="button"
+                              className="border-0 bg-transparent text-[11px] text-swath-accent hover:underline disabled:opacity-40"
+                              disabled={busy}
+                              onClick={toggleAllChanges}
+                            >
+                              {changesList.every((p) => selected.has(p)) ? "Deselect all" : "Select all"}
+                            </button>
+                            <button
+                              type="button"
+                              className="border-0 bg-transparent text-[11px] text-swath-accent hover:underline disabled:opacity-40"
+                              disabled={busy}
+                              onClick={() => void runStage(changesList)}
+                            >
+                              Stage all
+                            </button>
+                          </div>
                         ) : null}
                       </div>
                       {changesList.length === 0 ? (

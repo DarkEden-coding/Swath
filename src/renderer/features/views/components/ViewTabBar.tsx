@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState, type DragEvent, type DragEventHandler } from "react";
 import type { PaneKind, ViewHealth, Workspace } from "../../../../shared/types";
 import * as appActions from "../../../app/appActions";
 import { IconChevronsLeft, IconClose, IconGitBranch, IconPlus, IconTerminal } from "../../shell/icons";
@@ -24,7 +24,35 @@ function tabTypeIcon(kind: PaneKind): JSX.Element {
 
 export function ViewTabBar({ workspace, sidebarCollapsed, onToggleSidebar }: ViewTabBarProps): JSX.Element {
   const [showTypeSelector, setShowTypeSelector] = useState(false);
+  const [draggedViewId, setDraggedViewId] = useState<string | null>(null);
+  const [dropIndex, setDropIndex] = useState<number | null>(null);
   const selectorRef = useRef<HTMLDivElement>(null);
+  const tabStripRef = useRef<HTMLDivElement>(null);
+
+  function getDropIndex(clientX: number): number {
+    const tabButtons = Array.from(tabStripRef.current?.querySelectorAll<HTMLButtonElement>("[data-view-id]") ?? []);
+    const hoveredIndex = tabButtons.findIndex((button) => {
+      const rect = button.getBoundingClientRect();
+      return clientX < rect.left + rect.width / 2;
+    });
+    return hoveredIndex === -1 ? workspace.views.length : hoveredIndex;
+  }
+
+  function moveDraggedView(event: DragEvent): void {
+    event.preventDefault();
+    const draggedId = event.dataTransfer.getData("text/plain") || draggedViewId;
+    const fromIndex = workspace.views.findIndex((view) => view.id === draggedId);
+    if (fromIndex === -1) {
+      setDraggedViewId(null);
+      setDropIndex(null);
+      return;
+    }
+    const insertionIndex = dropIndex ?? getDropIndex(event.clientX);
+    const toIndex = fromIndex < insertionIndex ? insertionIndex - 1 : insertionIndex;
+    if (toIndex >= 0 && toIndex < workspace.views.length && fromIndex !== toIndex) appActions.moveView(workspace.id, fromIndex, toIndex);
+    setDraggedViewId(null);
+    setDropIndex(null);
+  }
 
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
@@ -42,10 +70,6 @@ export function ViewTabBar({ workspace, sidebarCollapsed, onToggleSidebar }: Vie
     >
       {sidebarCollapsed ? (
         <>
-          <div
-            className="min-h-0 w-0 shrink-0 self-stretch [html.platform-darwin_&]:w-[76px] [-webkit-app-region:drag] [app-region:drag]"
-            aria-hidden="true"
-          />
           <button
             type="button"
             className="grid w-[38px] shrink-0 cursor-pointer place-items-center border-0 border-r border-swath-border bg-swath-panel text-swath-accent-strong [-webkit-app-region:no-drag] [app-region:no-drag] hover:bg-swath-bg hover:text-swath-accent"
@@ -56,19 +80,47 @@ export function ViewTabBar({ workspace, sidebarCollapsed, onToggleSidebar }: Vie
           </button>
         </>
       ) : null}
-      <div className="flex min-w-0 flex-1 items-stretch overflow-x-auto [-webkit-app-region:no-drag] [app-region:no-drag]">
-        {workspace.views.map((tab) => (
-          <WorkspaceViewButton
-            key={tab.id}
+      <div
+        ref={tabStripRef}
+        className="flex min-w-0 flex-1 items-stretch overflow-x-auto [-webkit-app-region:no-drag] [app-region:no-drag]"
+        onDragOver={(event) => {
+          if (!draggedViewId) return;
+          event.preventDefault();
+          event.dataTransfer.dropEffect = "move";
+          setDropIndex(getDropIndex(event.clientX));
+        }}
+        onDrop={moveDraggedView}
+        onDragLeave={(event) => {
+          if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDropIndex(null);
+        }}
+      >
+        {workspace.views.map((tab, index) => (
+          <Fragment key={tab.id}>
+            {dropIndex === index ? <TabDropIndicator /> : null}
+            <WorkspaceViewButton
+            id={tab.id}
             title={tab.title}
             health={tab.health}
             active={workspace.activeViewId === tab.id}
             canClose={workspace.views.length > 1}
+            dragging={draggedViewId === tab.id}
             onSelect={() => appActions.selectView(workspace.id, tab.id)}
             onClose={() => appActions.closeView(workspace.id, tab.id)}
             onRename={(nextTitle) => appActions.renameView(workspace.id, tab.id, nextTitle)}
-          />
+            onDragStart={(event) => {
+              setDraggedViewId(tab.id);
+              setDropIndex(index);
+              event.dataTransfer.effectAllowed = "move";
+              event.dataTransfer.setData("text/plain", tab.id);
+            }}
+            onDragEnd={() => {
+              setDraggedViewId(null);
+              setDropIndex(null);
+            }}
+            />
+          </Fragment>
         ))}
+        {dropIndex === workspace.views.length ? <TabDropIndicator /> : null}
       </div>
       <div className="relative flex items-center [-webkit-app-region:no-drag] [app-region:no-drag]" ref={selectorRef}>
         <button
@@ -113,17 +165,29 @@ export function ViewTabBar({ workspace, sidebarCollapsed, onToggleSidebar }: Vie
   );
 }
 
+function TabDropIndicator(): JSX.Element {
+  return (
+    <div className="relative z-10 w-0 shrink-0" aria-hidden>
+      <div className="absolute inset-y-1 left-[-1.5px] w-[3px] rounded-full bg-[#58a6ff] shadow-[0_0_8px_rgba(88,166,255,0.65)]" />
+    </div>
+  );
+}
+
 interface WorkspaceViewButtonProps {
+  id: string;
   title: string;
   health?: ViewHealth;
   active: boolean;
   canClose: boolean;
+  dragging: boolean;
   onSelect: () => void;
   onClose: () => void;
   onRename: (title: string) => void;
+  onDragStart: DragEventHandler<HTMLButtonElement>;
+  onDragEnd: DragEventHandler<HTMLButtonElement>;
 }
 
-function WorkspaceViewButton({ title, health, active, canClose, onSelect, onClose, onRename }: WorkspaceViewButtonProps): JSX.Element {
+function WorkspaceViewButton({ id, title, health, active, canClose, dragging, onSelect, onClose, onRename, onDragStart, onDragEnd }: WorkspaceViewButtonProps): JSX.Element {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(title);
 
@@ -134,9 +198,14 @@ function WorkspaceViewButton({ title, health, active, canClose, onSelect, onClos
   return (
     <button
       type="button"
-      className={`flex min-w-[140px] max-w-[240px] shrink-0 cursor-pointer items-center gap-2 border-0 border-r border-swath-border py-0 pl-3 pr-2.5 [-webkit-app-region:no-drag] [app-region:no-drag] ${tabActive}`}
+      draggable={!editing}
+      aria-grabbed={dragging}
+      data-view-id={id}
+      className={`flex min-w-[140px] max-w-[240px] shrink-0 cursor-grab items-center gap-2 border-0 border-r border-swath-border py-0 pl-3 pr-2.5 [-webkit-app-region:no-drag] [app-region:no-drag] active:cursor-grabbing ${dragging ? "opacity-60" : ""} ${tabActive}`}
       onClick={onSelect}
       onDoubleClick={() => setEditing(true)}
+      onDragStart={onDragStart}
+      onDragEnd={onDragEnd}
     >
       <span className={healthClass(health)} title={health ?? "healthy"} aria-hidden />
       {editing ? (

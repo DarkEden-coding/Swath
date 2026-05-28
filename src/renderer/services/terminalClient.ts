@@ -4,6 +4,7 @@ import type {
   TerminalSessionStartRequest,
   TerminalSessionStatus,
 } from "../../shared/types";
+import { subscribeTerminalData, subscribeTerminalExit } from "./terminalEventHub";
 
 export const terminalClient = {
   create: (request: TerminalSessionStartRequest): void => window.swath.terminal.create(request),
@@ -13,8 +14,8 @@ export const terminalClient = {
   attach: (request: TerminalSessionAttachRequest): Promise<TerminalSessionStatus | undefined> => window.swath.terminal.attach(request),
   restart: (sessionId: string): Promise<TerminalSessionStatus | undefined> => window.swath.terminal.restart(sessionId),
   replay: (sessionId: string): Promise<TerminalSessionStatus | undefined> => window.swath.terminal.replay(sessionId),
+  setStreaming: (sessionId: string, enabled: boolean): void => window.swath.terminal.setStreaming(sessionId, enabled),
   isBusy: (sessionId: string): Promise<boolean> => window.swath.terminal.isBusy(sessionId),
-  onData: (callback: (sessionId: string, data: string) => void): (() => void) => window.swath.terminal.onData(callback),
-  onExit: (callback: (sessionId: string, event: { exitCode: number; signal?: number }) => void): (() => void) =>
-    window.swath.terminal.onExit(callback),
+  onData: subscribeTerminalData,
+  onExit: subscribeTerminalExit,
 };
