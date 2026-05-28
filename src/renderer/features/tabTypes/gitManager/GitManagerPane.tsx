@@ -115,14 +115,17 @@ export function GitManagerPane({ workspace, view, pane }: PaneComponentProps): J
   useOnClickOutside(overflowRef, () => setOverflowOpen(false), overflowOpen);
   useOnClickOutside(fileMenuRef, () => setFileMenu(null), fileMenu !== null);
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (options: { includeLog?: boolean } = {}) => {
     if (!cwd) return;
+    const includeLog = options.includeLog ?? true;
     setBusy(true);
     try {
-      const [next, logRes] = await Promise.all([gitClient.getStatus(cwd), gitClient.getLog(cwd)]);
+      const [next, logRes] = await Promise.all([gitClient.getStatus(cwd), includeLog ? gitClient.getLog(cwd) : Promise.resolve(null)]);
       setStatus(next);
-      if (logRes.ok) setCommits(logRes.commits);
-      else setCommits([]);
+      if (logRes) {
+        if (logRes.ok) setCommits(logRes.commits);
+        else setCommits([]);
+      }
       setSelected((prev) => {
         const allowed = new Set(changePaths(next));
         const n = new Set<string>();
@@ -186,7 +189,7 @@ export function GitManagerPane({ workspace, view, pane }: PaneComponentProps): J
       const r = await gitClient.stagePaths(cwd, list);
       appendLog("git add", r);
       if (r.exitCode === 0 && !paths) setSelected(new Set());
-      await refresh();
+      await refresh({ includeLog: false });
     } finally {
       setBusy(false);
     }
@@ -199,7 +202,7 @@ export function GitManagerPane({ workspace, view, pane }: PaneComponentProps): J
       const r = await gitClient.unstagePaths(cwd, paths);
       appendLog("git restore --staged", r);
       setFileMenu(null);
-      await refresh();
+      await refresh({ includeLog: false });
     } finally {
       setBusy(false);
     }
@@ -213,7 +216,7 @@ export function GitManagerPane({ workspace, view, pane }: PaneComponentProps): J
       const r = await gitClient.discardPaths(cwd, paths);
       appendLog("git restore / git clean", r);
       setFileMenu(null);
-      await refresh();
+      await refresh({ includeLog: false });
     } finally {
       setBusy(false);
     }

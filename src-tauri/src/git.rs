@@ -4,6 +4,12 @@ use std::error::Error;
 use std::io::Read;
 use std::process::{Command, Stdio};
 use std::thread;
+
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
 use std::time::{Duration, Instant};
 
 const RS: char = '\x1f';
@@ -37,14 +43,22 @@ fn read_capped<R: Read + Send + 'static>(mut reader: R) -> thread::JoinHandle<St
     })
 }
 
-fn run_git(cwd: &str, args: &[&str]) -> RunGitResult {
-    let mut child = match Command::new("git")
+fn git_command(cwd: &str, args: &[&str]) -> Command {
+    let mut command = Command::new("git");
+    command
         .args(args)
         .current_dir(cwd)
+        .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-    {
+        .stderr(Stdio::piped());
+    #[cfg(windows)]
+    command.creation_flags(CREATE_NO_WINDOW);
+    command
+}
+
+fn run_git(cwd: &str, args: &[&str]) -> RunGitResult {
+    let mut child = match git_command(cwd, args).spawn() {
+
         Ok(child) => child,
         Err(err) => {
             let exit_code = if err.kind() == std::io::ErrorKind::NotFound {
@@ -115,46 +129,55 @@ fn paths_field(v: &Value) -> Option<Vec<String>> {
         .collect()
 }
 
-fn split_null(stdout: &str) -> Vec<String> {
-    stdout
-        .split('\0')
-        .filter(|p| !p.is_empty())
-        .map(ToOwned::to_owned)
-        .collect()
-}
-
-fn parse_name_status(stdout: &str) -> Vec<Value> {
-    stdout
-        .lines()
-        .filter_map(|line| {
-            let (raw, path_field) = line.split_once('\t')?;
-            let path = path_field.rsplit('\t').next().unwrap_or(path_field);
-            let status = raw.chars().next().unwrap_or('?').to_string();
-            Some(json!({ "path": path, "status": status }))
-        })
-        .collect()
+fn parse_status_porcelain(stdout: &str) -> (Value, Vec<Value>, Vec<Value>, Vec<String>) {
+    let mut branch = Value::Null;
+    let mut staged = Vec::new();
+    let mut unstaged = Vec::new();
+    let mut untracked = Vec::new();
+    let mut entries = stdout.split('\0').filter(|p| !p.is_empty()).peekable();
+    while let Some(entry) = entries.next() {
+        if let Some(head) = entry.strip_prefix("## ") {
+            let name = head
+                .split("...")
+                .next()
+                .unwrap_or(head)
+                .trim();
+            if !name.is_empty() && name != "HEAD (no branch)" {
+                branch = json!(name);
+            }
+            continue;
+        }
+        if entry.len() < 4 {
+            continue;
+        }
+        let bytes = entry.as_bytes();
+        let x = bytes[0] as char;
+        let y = bytes[1] as char;
+        let path = &entry[3..];
+        if x == '?' && y == '?' {
+            untracked.push(path.to_string());
+            continue;
+        }
+        if matches!(x, 'R' | 'C') {
+            let _ = entries.next();
+        }
+        if x != ' ' && x != '?' && x != '!' {
+            staged.push(json!({ "path": path, "status": x.to_string() }));
+        }
+        if y != ' ' && y != '?' && y != '!' {
+            unstaged.push(json!({ "path": path, "status": y.to_string() }));
+        }
+    }
+    (branch, staged, unstaged, untracked)
 }
 
 fn get_status(cwd: &str) -> Value {
-    let wt = run_git(cwd, &["rev-parse", "--is-inside-work-tree"]);
-    if wt.exit_code != 0 || wt.stdout.trim() != "true" {
-        return json!({ "ok": false, "branch": null, "staged": [], "unstaged": [], "untracked": [], "error": if wt.stderr.trim().is_empty() { "Not a Git repository" } else { wt.stderr.trim() }, "stderr": wt.stderr });
+    let r = run_git(cwd, &["-c", "core.quotepath=false", "status", "--porcelain=v1", "-z", "-b", "--untracked-files=all"]);
+    if r.exit_code != 0 {
+        return json!({ "ok": false, "branch": null, "staged": [], "unstaged": [], "untracked": [], "error": if r.stderr.trim().is_empty() { "Not a Git repository" } else { r.stderr.trim() }, "stderr": r.stderr });
     }
-    let branch_r = run_git(cwd, &["branch", "--show-current"]);
-    let branch = if branch_r.exit_code == 0 && !branch_r.stdout.trim().is_empty() {
-        json!(branch_r.stdout.trim())
-    } else {
-        Value::Null
-    };
-    let unstaged_r = run_git(cwd, &["diff", "--name-status"]);
-    let staged_r = run_git(cwd, &["diff", "--cached", "--name-status"]);
-    let untracked_r = run_git(cwd, &["ls-files", "-z", "--others", "--exclude-standard"]);
-    let stderr = [unstaged_r.stderr, staged_r.stderr, untracked_r.stderr]
-        .into_iter()
-        .filter(|s| !s.is_empty())
-        .collect::<Vec<_>>()
-        .join("\n");
-    json!({ "ok": true, "branch": branch, "staged": parse_name_status(&staged_r.stdout), "unstaged": parse_name_status(&unstaged_r.stdout), "untracked": split_null(&untracked_r.stdout), "stderr": stderr })
+    let (branch, staged, unstaged, untracked) = parse_status_porcelain(&r.stdout);
+    json!({ "ok": true, "branch": branch, "staged": staged, "unstaged": unstaged, "untracked": untracked, "stderr": r.stderr })
 }
 
 fn discard_paths(cwd: &str, paths: &[String]) -> Value {
