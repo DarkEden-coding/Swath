@@ -1,6 +1,7 @@
 mod commands;
 mod config;
 mod git;
+#[cfg(not(target_os = "windows"))]
 mod menu;
 mod platform;
 mod terminal;
@@ -25,6 +26,7 @@ pub fn run() {
         .setup(|app| {
             let terminal = Arc::new(TerminalManager::new(app.handle().clone()));
             app.manage(AppState { terminal });
+            #[cfg(not(target_os = "windows"))]
             menu::install_menu(app.handle())?;
             Ok(())
         })

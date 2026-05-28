@@ -2,8 +2,11 @@ $ErrorActionPreference = 'Stop'
 
 $RootDir = Resolve-Path (Join-Path $PSScriptRoot '..')
 $AppName = 'Swath'
+$ExeName = 'swath.exe'
 $StartMenuDir = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs'
+$CommonStartMenuDir = Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs'
 $ShortcutPath = Join-Path $StartMenuDir "$AppName.lnk"
+$CommonShortcutPath = Join-Path $CommonStartMenuDir "$AppName.lnk"
 
 Set-Location $RootDir
 
@@ -42,16 +45,21 @@ if (-not (Test-Path $TauriBin)) {
 
 Assert-WindowsNativeBuildPrerequisites
 
+$ReleaseDir = Join-Path $RootDir 'src-tauri\target\release'
+$ExpectedExePath = Join-Path $ReleaseDir $ExeName
+
 Write-Host "Building $AppName Tauri bundle for Windows..."
 Invoke-Checked npm run tauri:build
 
-$Exe = Get-ChildItem -Path (Join-Path $RootDir 'src-tauri\target\release') -Recurse -Filter "$AppName.exe" |
-  Where-Object { $_.FullName -notmatch '\\deps\\' } |
-  Select-Object -First 1
-
-if (-not $Exe) {
-  throw "Could not find built executable at src-tauri\target\release\**\$AppName.exe"
+if (-not (Test-Path $ExpectedExePath)) {
+  throw "Could not find built executable at $ExpectedExePath"
 }
+
+$Exe = Get-Item $ExpectedExePath
+$Hash = (Get-FileHash -Algorithm SHA256 $Exe.FullName).Hash
+Write-Host "Built executable: $($Exe.FullName)"
+Write-Host "Modified: $($Exe.LastWriteTime.ToString('u'))"
+Write-Host "SHA256: $Hash"
 
 Write-Host "Creating Start Menu shortcut..."
 New-Item -ItemType Directory -Force -Path $StartMenuDir | Out-Null
@@ -60,8 +68,25 @@ $WScriptShell = New-Object -ComObject WScript.Shell
 $Shortcut = $WScriptShell.CreateShortcut($ShortcutPath)
 $Shortcut.TargetPath = $Exe.FullName
 $Shortcut.WorkingDirectory = $Exe.DirectoryName
-$Shortcut.Description = $AppName
+$Shortcut.Description = "$AppName ($Hash)"
 $Shortcut.Save()
 
-Write-Host "Installed shortcut: $ShortcutPath"
+$SavedShortcut = $WScriptShell.CreateShortcut($ShortcutPath)
+if ($SavedShortcut.TargetPath -ne $Exe.FullName) {
+  throw "Shortcut target mismatch. Expected '$($Exe.FullName)', got '$($SavedShortcut.TargetPath)'."
+}
+
+if (Test-Path $CommonShortcutPath) {
+  try {
+    $CommonShortcut = $WScriptShell.CreateShortcut($CommonShortcutPath)
+    if ($CommonShortcut.TargetPath -ne $Exe.FullName) {
+      Write-Warning "A machine-wide Start Menu shortcut exists at '$CommonShortcutPath' and points to '$($CommonShortcut.TargetPath)'."
+      Write-Warning "Launchers may prefer that stale shortcut. Remove it manually or rerun this script as Administrator to update it."
+    }
+  } catch {
+    Write-Warning "Could not inspect machine-wide shortcut '$CommonShortcutPath': $_"
+  }
+}
+
+Write-Host "Installed shortcut: $ShortcutPath -> $($Exe.FullName)"
 Write-Host "Launchers that index the Start Menu, such as PowerToys Run or Flow Launcher, should now be able to find '$AppName'."
