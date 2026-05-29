@@ -210,6 +210,22 @@ function WorkspaceItem({
     ? "border-[rgba(56,139,253,0.35)] bg-[rgba(56,139,253,0.12)] before:absolute before:bottom-1.5 before:left-0 before:top-1.5 before:w-[3px] before:rounded-full before:bg-swath-accent before:content-['']"
     : "";
 
+  async function copyWorkingDirectory(): Promise<void> {
+    try {
+      await navigator.clipboard.writeText(workspace.path);
+    } catch {
+      const textarea = document.createElement("textarea");
+      textarea.value = workspace.path;
+      textarea.setAttribute("readonly", "");
+      textarea.style.position = "fixed";
+      textarea.style.opacity = "0";
+      document.body.appendChild(textarea);
+      textarea.select();
+      document.execCommand("copy");
+      document.body.removeChild(textarea);
+    }
+  }
+
   return (
     <div
       ref={itemRef}
@@ -303,6 +319,16 @@ function WorkspaceItem({
               }}
             >
               Rename
+            </button>
+            <button
+              type="button"
+              className="block w-full cursor-pointer rounded-lg border-0 bg-transparent px-2.5 py-2 text-left text-swath-text [-webkit-app-region:no-drag] [app-region:no-drag] hover:bg-[#202735]"
+              onClick={() => {
+                setMenuOpen(false);
+                void copyWorkingDirectory();
+              }}
+            >
+              Copy Working Directory
             </button>
             <button
               type="button"
