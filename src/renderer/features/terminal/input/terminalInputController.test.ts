@@ -96,6 +96,43 @@ describe("createTerminalInputController", () => {
     expect(terminal.paste).toHaveBeenCalledWith("current clipboard");
   });
 
+  it("forwards empty paste events as Ctrl+V so terminal apps can read image clipboards", () => {
+    const terminal = createFakeTerminal();
+    const writeTerminalData = vi.fn();
+    const controller = createTerminalInputController({
+      terminal,
+      shellProfile: null,
+      readClipboardText: async () => "",
+      writeClipboardText: async () => {},
+      writeTerminalData,
+      openSearch: vi.fn(),
+    });
+
+    const event = createPasteEvent("");
+    expect(controller.handlePasteEvent(event)).toBe(true);
+
+    expect(event.preventDefault).toHaveBeenCalled();
+    expect(writeTerminalData).toHaveBeenCalledWith("\x16");
+  });
+
+  it("forwards empty context-menu paste as Ctrl+V", async () => {
+    const terminal = createFakeTerminal();
+    const writeTerminalData = vi.fn();
+    const controller = createTerminalInputController({
+      terminal,
+      shellProfile: null,
+      readClipboardText: async () => "",
+      writeClipboardText: async () => {},
+      writeTerminalData,
+      openSearch: vi.fn(),
+    });
+
+    await controller.pasteFromClipboard();
+
+    expect(writeTerminalData).toHaveBeenCalledWith("\x16");
+  });
+
+
   it("copies current and recent terminal selections through the injected clipboard writer", async () => {
     let now = 1000;
     const terminal = createFakeTerminal();

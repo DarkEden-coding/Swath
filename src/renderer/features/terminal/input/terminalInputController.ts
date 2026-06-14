@@ -32,6 +32,9 @@ export interface TerminalInputTerminal {
   element?: HTMLElement;
   focus: () => void;
   getSelection: () => string;
+  modes?: {
+    readonly bracketedPasteMode?: boolean;
+  };
   onSelectionChange: (listener: () => void) => Disposable;
   paste: (data: string) => void;
   textarea?: HTMLElement;
@@ -152,6 +155,15 @@ export function createTerminalInputController({
     terminal.paste(data);
   };
 
+  const forwardPasteShortcutToTerminal = (): void => {
+    terminal.focus();
+    if (writeTerminalData) {
+      writeTerminalData("\x16");
+    } else {
+      terminal.paste("\x16");
+    }
+  };
+
   const getCopySelection = (allowRecentSelection: boolean): string => {
     const selection = terminal.getSelection();
     if (selection) return selection;
@@ -166,17 +178,27 @@ export function createTerminalInputController({
   };
 
   const pasteFromClipboard = async (): Promise<void> => {
-    pasteText(await readClipboardText());
+    const text = await readClipboardText();
+    if (text) {
+      pasteText(text);
+    } else {
+      forwardPasteShortcutToTerminal();
+    }
   };
 
   const handlePasteEvent = (event: TerminalInputClipboardEvent): boolean => {
     if (isEditableTarget(event.target)) return false;
 
     const data = getPasteEventData(event, shellCommand);
-    if (!data) return false;
-
     stopClipboardEvent(event);
-    pasteText(data);
+    if (data) {
+      pasteText(data);
+    } else {
+      // Image-only clipboard paste events do not expose text/files to the webview.
+      // Forward Ctrl+V to the terminal app so tools such as Pi extensions can read
+      // the native OS clipboard themselves.
+      forwardPasteShortcutToTerminal();
+    }
     return true;
   };
 
