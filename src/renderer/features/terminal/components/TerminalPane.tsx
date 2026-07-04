@@ -17,7 +17,15 @@ import { TERMINAL_COL_RESERVE } from "../hooks/useTerminalInstance";
 import { readTerminalPastePayload } from "../hooks/useTerminalClipboard";
 import { createTerminalInputController, type TerminalInputController } from "../input/terminalInputController";
 import { TERMINAL_SCROLLBACK_LINES } from "../../../../shared/memoryLimits";
-import { detachCachedTerminalElement, disposeCachedTerminal, exitStateSetters, startedSessions, terminalCache } from "../runtime/terminalCache";
+import {
+  captureTerminalScrollState,
+  detachCachedTerminalElement,
+  disposeCachedTerminal,
+  exitStateSetters,
+  restoreTerminalScrollState,
+  startedSessions,
+  terminalCache,
+} from "../runtime/terminalCache";
 
 const TERMINAL_THEME = {
   background: "#0d1117",
@@ -176,6 +184,7 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
     requestAnimationFrame(() => {
       fitAndResize();
       if (cachedEntry) {
+        restoreTerminalScrollState(cachedEntry);
         terminal.focus();
       } else if (startedSessions.has(paneId)) {
         void terminalClient.replay(paneId);
@@ -267,6 +276,7 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
       if (entry?.stopped) {
         disposeCachedTerminal(paneId);
       } else if (entry) {
+        captureTerminalScrollState(entry);
         detachCachedTerminalElement(entry, host);
         if (exitStateSetters.get(paneId) === setExited) exitStateSetters.delete(paneId);
       }
