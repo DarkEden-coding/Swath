@@ -17,7 +17,7 @@ import { TERMINAL_COL_RESERVE } from "../hooks/useTerminalInstance";
 import { readTerminalPastePayload } from "../hooks/useTerminalClipboard";
 import { createTerminalInputController, type TerminalInputController } from "../input/terminalInputController";
 import { TERMINAL_SCROLLBACK_LINES } from "../../../../shared/memoryLimits";
-import { detachCachedTerminalElement, disposeCachedTerminal, evictCachedTerminal, exitStateSetters, startedSessions, terminalCache } from "../runtime/terminalCache";
+import { detachCachedTerminalElement, disposeCachedTerminal, exitStateSetters, startedSessions, terminalCache } from "../runtime/terminalCache";
 
 const TERMINAL_THEME = {
   background: "#0d1117",
@@ -88,11 +88,6 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
   useEffect(() => {
     bannerSentRef.current = false;
   }, [paneId, view.id]);
-
-  useEffect(() => {
-    if (isActive || !startedSessions.has(paneId)) return;
-    terminalClient.setStreaming(paneId, false);
-  }, [isActive, paneId]);
 
   useEffect(() => {
     if (!isActive) return;
@@ -268,12 +263,11 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
       host.classList.remove("is-scrolling");
       webLinksDisposableRef.current?.dispose();
       webLinksDisposableRef.current = null;
-      if (startedSessions.has(paneId)) terminalClient.setStreaming(paneId, false);
       const entry = terminalCache.get(paneId);
       if (entry?.stopped) {
         disposeCachedTerminal(paneId);
       } else if (entry) {
-        evictCachedTerminal(paneId);
+        detachCachedTerminalElement(entry, host);
         if (exitStateSetters.get(paneId) === setExited) exitStateSetters.delete(paneId);
       }
       inputControllerRef.current?.dispose();
