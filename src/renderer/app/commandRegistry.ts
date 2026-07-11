@@ -9,6 +9,7 @@ export type AppCommand =
   | "pane:split-right"
   | "pane:split-down"
   | "pane:close"
+  | "terminal:paste"
   | "settings:open";
 
 export interface CommandContext {
@@ -26,6 +27,7 @@ export interface CommandContext {
 export function runAppCommand(command: string, context: CommandContext): void {
   const workspace = context.activeWorkspace;
   const view = context.activeView;
+  if (command === "terminal:paste") window.dispatchEvent(new Event("swath:terminal-paste"));
   if (command === "workspace:add") void context.addWorkspaceFromFolder();
   if (command === "view:new" || command === "tab:new") context.createView();
   if ((command === "view:close" || command === "tab:close") && workspace && view) context.closeView(workspace.id, view.id);

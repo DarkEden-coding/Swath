@@ -115,6 +115,45 @@ describe("createTerminalInputController", () => {
     expect(writeTerminalData).toHaveBeenCalledWith("\x16");
   });
 
+  it("forwards empty image paste as Alt+V on native Windows", () => {
+    const terminal = createFakeTerminal();
+    const writeTerminalData = vi.fn();
+    const controller = createTerminalInputController({
+      terminal,
+      shellProfile: null,
+      readClipboardText: async () => "",
+      writeClipboardText: async () => {},
+      writeTerminalData,
+      openSearch: vi.fn(),
+      platform: "win32",
+    });
+
+    controller.handlePasteEvent(createPasteEvent(""));
+
+    expect(writeTerminalData).toHaveBeenCalledWith("\x1bv");
+  });
+
+  it("reports native clipboard read failures without injecting a shortcut", async () => {
+    const terminal = createFakeTerminal();
+    const writeTerminalData = vi.fn();
+    const onPasteError = vi.fn();
+    const failure = new Error("clipboard unavailable");
+    const controller = createTerminalInputController({
+      terminal,
+      shellProfile: null,
+      readClipboardText: async () => Promise.reject(failure),
+      writeClipboardText: async () => {},
+      writeTerminalData,
+      openSearch: vi.fn(),
+      onPasteError,
+    });
+
+    await controller.pasteFromClipboard();
+
+    expect(onPasteError).toHaveBeenCalledWith(failure);
+    expect(writeTerminalData).not.toHaveBeenCalled();
+  });
+
   it("forwards empty context-menu paste as Ctrl+V", async () => {
     const terminal = createFakeTerminal();
     const writeTerminalData = vi.fn();

@@ -67,6 +67,18 @@ function SplitRenderer({ workspace, view, settings, node }: SplitRendererProps):
       </div>
       <div
         className={`group relative z-[2] flex shrink-0 items-center justify-center bg-transparent [-webkit-app-region:no-drag] [app-region:no-drag] hover:bg-[rgba(56,139,253,0.08)] ${vertical ? "w-2.5 cursor-col-resize" : "h-2.5 cursor-row-resize"}`}
+        role="separator"
+        tabIndex={0}
+        aria-orientation={vertical ? "vertical" : "horizontal"}
+        aria-label="Resize panes"
+        aria-valuenow={Math.round(node.ratio * 100)}
+        onKeyDown={(event) => {
+          const decrease = vertical ? event.key === "ArrowLeft" : event.key === "ArrowUp";
+          const increase = vertical ? event.key === "ArrowRight" : event.key === "ArrowDown";
+          if (!decrease && !increase) return;
+          event.preventDefault();
+          setSplitRatio(workspace.id, view.id, node.id, node.ratio + (increase ? 0.05 : -0.05));
+        }}
         onPointerDown={beginResize}
       >
         <span

@@ -34,8 +34,13 @@ pub async fn dialog_confirm(app: AppHandle, request: ConfirmDialogRequest) -> Co
 }
 
 #[tauri::command]
-pub fn clipboard_read_for_terminal(app: AppHandle) -> CommandResult<TerminalClipboardPayload> {
-    platform::read_clipboard_for_terminal(app).map_err(|err| err.to_string())
+pub async fn clipboard_read_for_terminal(
+    app: AppHandle,
+) -> CommandResult<TerminalClipboardPayload> {
+    tauri::async_runtime::spawn_blocking(move || platform::read_clipboard_for_terminal(app))
+        .await
+        .map_err(|err| err.to_string())?
+        .map_err(|err| err.to_string())
 }
 
 #[tauri::command]

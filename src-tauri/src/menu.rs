@@ -21,6 +21,7 @@ pub fn install_menu(app: &AppHandle) -> tauri::Result<()> {
     let split_right = command_item(app, "pane:split-right", "Split Right", "CmdOrCtrl+\\")?;
     let split_down = command_item(app, "pane:split-down", "Split Down", "CmdOrCtrl+Shift+\\")?;
     let close_pane = command_item(app, "pane:close", "Close Pane", "CmdOrCtrl+Shift+W")?;
+    let paste = command_item(app, "terminal:paste", "Paste", "CmdOrCtrl+V")?;
 
     let edit = SubmenuBuilder::new(app, "Edit")
         .undo()
@@ -28,7 +29,7 @@ pub fn install_menu(app: &AppHandle) -> tauri::Result<()> {
         .separator()
         .cut()
         .copy()
-        .paste()
+        .item(&paste)
         .separator()
         .select_all()
         .build()?;
@@ -71,7 +72,7 @@ pub fn install_menu(app: &AppHandle) -> tauri::Result<()> {
         let command = event.id().as_ref();
         match command {
             "workspace:add" | "view:new" | "view:close" | "pane:split-right"
-            | "pane:split-down" | "pane:close" => {
+            | "pane:split-down" | "pane:close" | "terminal:paste" => {
                 let _ = app.emit("app:command", command);
             }
             _ => {}

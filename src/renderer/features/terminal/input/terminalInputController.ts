@@ -47,6 +47,8 @@ export interface TerminalInputControllerOptions {
   writeClipboardText: (text: string) => Promise<void>;
   writeTerminalData?: (data: string) => void;
   openSearch: () => void;
+  platform?: string;
+  onPasteError?: (error: unknown) => void;
   now?: () => number;
 }
 
@@ -58,6 +60,7 @@ export interface TerminalInputController {
   handleKeyDown: (event: TerminalInputKeyboardEvent) => void;
   handlePasteEvent: (event: TerminalInputClipboardEvent) => boolean;
   pasteFromClipboard: () => Promise<void>;
+  pastePaths: (paths: string[]) => void;
   pasteText: (data: string) => void;
 }
 
@@ -108,6 +111,8 @@ export function createTerminalInputController({
   writeClipboardText,
   writeTerminalData,
   openSearch,
+  platform = "",
+  onPasteError = (error) => console.error("Unable to paste from clipboard", error),
   now = () => Date.now(),
 }: TerminalInputControllerOptions): TerminalInputController {
   let lastSelection = terminal.getSelection();
@@ -157,11 +162,16 @@ export function createTerminalInputController({
 
   const forwardPasteShortcutToTerminal = (): void => {
     terminal.focus();
+    const sequence = platform === "win32" ? "\x1bv" : "\x16";
     if (writeTerminalData) {
-      writeTerminalData("\x16");
+      writeTerminalData(sequence);
     } else {
-      terminal.paste("\x16");
+      terminal.paste(sequence);
     }
+  };
+
+  const pastePaths = (paths: string[]): void => {
+    pasteText(formatPathPaste(paths, shellCommand));
   };
 
   const getCopySelection = (allowRecentSelection: boolean): string => {
@@ -178,11 +188,15 @@ export function createTerminalInputController({
   };
 
   const pasteFromClipboard = async (): Promise<void> => {
-    const text = await readClipboardText();
-    if (text) {
-      pasteText(text);
-    } else {
-      forwardPasteShortcutToTerminal();
+    try {
+      const text = await readClipboardText();
+      if (text) {
+        pasteText(text);
+      } else {
+        forwardPasteShortcutToTerminal();
+      }
+    } catch (error) {
+      onPasteError(error);
     }
   };
 
@@ -246,6 +260,7 @@ export function createTerminalInputController({
     handleKeyDown,
     handlePasteEvent,
     pasteFromClipboard,
+    pastePaths,
     pasteText,
   };
 }

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ClipboardEvent, type KeyboardEvent, type MouseEvent } from "react";
+import { useEffect, useRef, useState, type ClipboardEvent, type DragEvent, type KeyboardEvent, type MouseEvent } from "react";
 import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
 import { WebLinksAddon } from "@xterm/addon-web-links";
@@ -142,10 +142,15 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
     inputControllerRef.current = createTerminalInputController({
       terminal,
       shellProfile: paneShellProfile,
-      readClipboardText: readTerminalPastePayload,
+      readClipboardText: () => readTerminalPastePayload(paneShellProfile?.command),
       writeClipboardText: (text) => window.swath.clipboard.writeText(text),
       writeTerminalData: (data) => terminalClient.write(paneId, data),
       openSearch: () => setSearchOpen(true),
+      platform: window.swath.platform,
+      onPasteError: (error) => {
+        console.error("Unable to read the clipboard", error);
+        terminal.write("\r\n\x1b[31m[clipboard paste failed]\x1b[0m\r\n");
+      },
     });
 
     const currentCwd = paneMeta?.cwd ?? paneMeta?.metadata?.cwd ?? workspace.path;
@@ -319,6 +324,15 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
     await inputControllerRef.current?.pasteFromClipboard();
   };
 
+  useEffect(() => {
+    if (!isActive) return;
+    const onMenuPaste = (): void => {
+      void paste();
+    };
+    window.addEventListener("swath:terminal-paste", onMenuPaste);
+    return () => window.removeEventListener("swath:terminal-paste", onMenuPaste);
+  }, [isActive, paneId]);
+
   const restart = (): void => {
     startedSessions.add(paneId);
     termRef.current?.reset();
@@ -414,6 +428,17 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
       onKeyDown={onKeyDown}
       onCopyCapture={(event: ClipboardEvent<HTMLDivElement>) => inputControllerRef.current?.handleCopyEvent(event)}
       onPasteCapture={(event: ClipboardEvent<HTMLDivElement>) => inputControllerRef.current?.handlePasteEvent(event)}
+      onDragOver={(event: DragEvent<HTMLDivElement>) => {
+        if (event.dataTransfer.files.length > 0) event.preventDefault();
+      }}
+      onDrop={(event: DragEvent<HTMLDivElement>) => {
+        const paths = Array.from(event.dataTransfer.files)
+          .map((file) => (file as File & { path?: string }).path)
+          .filter((path): path is string => Boolean(path));
+        if (paths.length === 0) return;
+        event.preventDefault();
+        inputControllerRef.current?.pastePaths(paths);
+      }}
       onContextMenu={(event: MouseEvent<HTMLDivElement>) => {
         event.preventDefault();
         setContextMenu({ x: event.clientX, y: event.clientY });

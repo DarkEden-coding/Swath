@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ShellProfile } from "../../../../shared/types";
 import * as appActions from "../../../app/appActions";
 import { useConfigStore } from "../../../state/configStore";
@@ -24,14 +24,25 @@ export function SettingsModal(): JSX.Element | null {
   const [newProfileArgs, setNewProfileArgs] = useState("");
   const [newEnvKey, setNewEnvKey] = useState("");
   const [newEnvValue, setNewEnvValue] = useState("");
+  const dialogRef = useRef<HTMLElement>(null);
 
   useEffect(() => {
     if (!open) return;
+    const previousFocus = document.activeElement as HTMLElement | null;
+    requestAnimationFrame(() => dialogRef.current?.querySelector<HTMLElement>("button, input, select, [tabindex]:not([tabindex='-1'])")?.focus());
     const onKeyDown = (event: KeyboardEvent): void => {
       if (event.key === "Escape") appActions.closeSettings();
+      if (event.key === "Tab" && dialogRef.current) {
+        const items = [...dialogRef.current.querySelectorAll<HTMLElement>("button, input, select, [tabindex]:not([tabindex='-1'])")].filter((item) => !item.hasAttribute("disabled"));
+        if (!items.length) return;
+        const first = items[0];
+        const last = items[items.length - 1];
+        if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+        else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+      }
     };
     window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
+    return () => { window.removeEventListener("keydown", onKeyDown); previousFocus?.focus(); };
   }, [open]);
 
   if (!open || !config) return null;
@@ -74,13 +85,17 @@ export function SettingsModal(): JSX.Element | null {
       onMouseDown={() => appActions.closeSettings()}
     >
       <section
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="settings-title"
         className="max-h-[min(760px,92vh)] w-[min(780px,96vw)] overflow-y-auto rounded-xl border border-swath-border-strong bg-swath-panel p-[18px] shadow-swath-modal [-webkit-app-region:no-drag] [app-region:no-drag]"
         onMouseDown={(event) => event.stopPropagation()}
       >
         <header className="mb-[18px] flex items-center justify-between gap-3 [-webkit-app-region:drag] [app-region:drag]">
           <div>
             <div className="text-[11px] font-bold uppercase leading-none tracking-[0.12em] text-swath-muted-2">Local Settings</div>
-            <h2 className="mt-1 text-lg leading-snug">Terminal preferences</h2>
+            <h2 id="settings-title" className="mt-1 text-lg leading-snug">Terminal preferences</h2>
           </div>
           <button
             type="button"
@@ -110,7 +125,10 @@ export function SettingsModal(): JSX.Element | null {
               min={9}
               max={28}
               value={settings.fontSize}
-              onChange={(event) => appActions.updateSettings({ fontSize: Number(event.target.value) })}
+              onChange={(event) => {
+                const value = Number(event.target.value);
+                if (Number.isFinite(value)) appActions.updateSettings({ fontSize: Math.min(28, Math.max(9, value)) });
+              }}
             />
           </label>
 
@@ -123,7 +141,10 @@ export function SettingsModal(): JSX.Element | null {
               max={2}
               step={0.05}
               value={settings.lineHeight}
-              onChange={(event) => appActions.updateSettings({ lineHeight: Number(event.target.value) })}
+              onChange={(event) => {
+                const value = Number(event.target.value);
+                if (Number.isFinite(value)) appActions.updateSettings({ lineHeight: Math.min(2, Math.max(1, value)) });
+              }}
             />
           </label>
 

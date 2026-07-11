@@ -49,28 +49,6 @@ export function Sidebar({ onToggleCollapse }: SidebarProps): JSX.Element {
     moveWorkspace(draggedId ? config.workspaces.findIndex((workspace) => workspace.id === draggedId) : draggedIndex, insertionIndex);
   }
 
-  useEffect(() => {
-    if (draggedIndex === null) return;
-
-    const onMouseMove = (event: MouseEvent): void => {
-      event.preventDefault();
-      setDropIndex(getDropIndex(event.clientY));
-    };
-    const onMouseUp = (event: MouseEvent): void => {
-      event.preventDefault();
-      moveWorkspace(draggedIndex, getDropIndex(event.clientY));
-    };
-
-    document.body.style.userSelect = "none";
-    window.addEventListener("mousemove", onMouseMove);
-    window.addEventListener("mouseup", onMouseUp, { once: true });
-    return () => {
-      document.body.style.userSelect = "";
-      window.removeEventListener("mousemove", onMouseMove);
-      window.removeEventListener("mouseup", onMouseUp);
-    };
-  }, [draggedIndex, dropIndex, list.length]);
-
   const indexOf = (workspace: Workspace): number => config.workspaces.findIndex((item) => item.id === workspace.id);
 
   return (
@@ -116,9 +94,31 @@ export function Sidebar({ onToggleCollapse }: SidebarProps): JSX.Element {
               }}
               onDragEnd={finishDrag}
               onMouseDragStart={(event) => {
-                event.preventDefault();
-                setDraggedIndex(originalIndex);
-                setDropIndex(getDropIndex(event.clientY));
+                if (event.button !== 0) return;
+                const startX = event.clientX;
+                const startY = event.clientY;
+                let active = false;
+                const onMove = (moveEvent: MouseEvent): void => {
+                  if (!active && Math.hypot(moveEvent.clientX - startX, moveEvent.clientY - startY) < 5) return;
+                  if (!active) {
+                    active = true;
+                    setDraggedIndex(originalIndex);
+                    document.body.style.userSelect = "none";
+                  }
+                  moveEvent.preventDefault();
+                  setDropIndex(getDropIndex(moveEvent.clientY));
+                };
+                const onUp = (upEvent: MouseEvent): void => {
+                  window.removeEventListener("mousemove", onMove);
+                  window.removeEventListener("mouseup", onUp);
+                  if (active) {
+                    upEvent.preventDefault();
+                    moveWorkspace(originalIndex, getDropIndex(upEvent.clientY));
+                    document.body.style.userSelect = "";
+                  }
+                };
+                window.addEventListener("mousemove", onMove);
+                window.addEventListener("mouseup", onUp);
               }}
               onDrop={(event) => dropWorkspace(event, getDropIndex(event.clientY))}
               onSelect={() => appActions.selectWorkspace(workspace.id)}

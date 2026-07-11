@@ -67,28 +67,6 @@ export function ViewTabBar({ workspace, sidebarCollapsed, onToggleSidebar }: Vie
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
-  useEffect(() => {
-    if (!draggedViewId) return;
-
-    const onMouseMove = (event: MouseEvent): void => {
-      event.preventDefault();
-      setDropIndex(getDropIndex(event.clientX));
-    };
-    const onMouseUp = (event: MouseEvent): void => {
-      event.preventDefault();
-      moveViewById(draggedViewId, getDropIndex(event.clientX));
-    };
-
-    document.body.style.userSelect = "none";
-    window.addEventListener("mousemove", onMouseMove);
-    window.addEventListener("mouseup", onMouseUp, { once: true });
-    return () => {
-      document.body.style.userSelect = "";
-      window.removeEventListener("mousemove", onMouseMove);
-      window.removeEventListener("mouseup", onMouseUp);
-    };
-  }, [draggedViewId, workspace.id, workspace.views]);
-
   return (
     <div
       className={`flex h-9 items-stretch border-b border-swath-border bg-swath-panel [-webkit-app-region:drag] [app-region:drag] ${sidebarCollapsed ? "pl-0" : "pl-1.5"}`}
@@ -140,9 +118,31 @@ export function ViewTabBar({ workspace, sidebarCollapsed, onToggleSidebar }: Vie
             }}
             onDragEnd={finishDrag}
             onMouseDragStart={(event) => {
-              event.preventDefault();
-              setDraggedViewId(tab.id);
-              setDropIndex(getDropIndex(event.clientX));
+              if (event.button !== 0) return;
+              const startX = event.clientX;
+              const startY = event.clientY;
+              let active = false;
+              const onMove = (moveEvent: MouseEvent): void => {
+                if (!active && Math.hypot(moveEvent.clientX - startX, moveEvent.clientY - startY) < 5) return;
+                if (!active) {
+                  active = true;
+                  setDraggedViewId(tab.id);
+                  document.body.style.userSelect = "none";
+                }
+                moveEvent.preventDefault();
+                setDropIndex(getDropIndex(moveEvent.clientX));
+              };
+              const onUp = (upEvent: MouseEvent): void => {
+                window.removeEventListener("mousemove", onMove);
+                window.removeEventListener("mouseup", onUp);
+                if (active) {
+                  upEvent.preventDefault();
+                  moveViewById(tab.id, getDropIndex(upEvent.clientX));
+                  document.body.style.userSelect = "";
+                }
+              };
+              window.addEventListener("mousemove", onMove);
+              window.addEventListener("mouseup", onUp);
             }}
             />
           </Fragment>
@@ -210,9 +210,9 @@ interface WorkspaceViewButtonProps {
   onSelect: () => void;
   onClose: () => void;
   onRename: (title: string) => void;
-  onDragStart: DragEventHandler<HTMLButtonElement>;
-  onDragEnd: DragEventHandler<HTMLButtonElement>;
-  onMouseDragStart: (event: ReactMouseEvent<HTMLButtonElement>) => void;
+  onDragStart: DragEventHandler<HTMLDivElement>;
+  onDragEnd: DragEventHandler<HTMLDivElement>;
+  onMouseDragStart: (event: ReactMouseEvent<HTMLDivElement>) => void;
 }
 
 function WorkspaceViewButton({ id, title, health, active, canClose, dragging, onSelect, onClose, onRename, onDragStart, onDragEnd, onMouseDragStart }: WorkspaceViewButtonProps): JSX.Element {
@@ -224,14 +224,22 @@ function WorkspaceViewButton({ id, title, health, active, canClose, dragging, on
     : "bg-transparent text-swath-muted";
 
   return (
-    <button
-      type="button"
+    <div
+      role="tab"
+      tabIndex={0}
       draggable={!editing}
+      aria-selected={active}
       aria-grabbed={dragging}
       data-view-id={id}
       className={`flex min-w-[140px] max-w-[240px] shrink-0 cursor-grab items-center gap-2 border-0 border-r border-swath-border py-0 pl-3 pr-2.5 [-webkit-app-region:no-drag] [app-region:no-drag] active:cursor-grabbing ${dragging ? "opacity-60" : ""} ${tabActive}`}
       onClick={onSelect}
       onDoubleClick={() => setEditing(true)}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          onSelect();
+        }
+      }}
       onDragStart={onDragStart}
       onDragEnd={onDragEnd}
       onMouseDown={onMouseDragStart}
@@ -261,25 +269,19 @@ function WorkspaceViewButton({ id, title, health, active, canClose, dragging, on
         <span className="min-w-0 flex-1 truncate text-left">{title}</span>
       )}
       {canClose ? (
-        <span
-          className="ml-auto grid size-[18px] cursor-pointer place-items-center rounded-md text-swath-muted-2 [-webkit-app-region:no-drag] [app-region:no-drag] hover:bg-[#303847] hover:text-white"
-          role="button"
-          tabIndex={0}
+        <button
+          type="button"
+          aria-label={`Close ${title}`}
+          className="ml-auto grid size-[18px] cursor-pointer place-items-center rounded-md border-0 bg-transparent p-0 text-swath-muted-2 [-webkit-app-region:no-drag] [app-region:no-drag] hover:bg-[#303847] hover:text-white"
           onMouseDown={(event) => event.stopPropagation()}
           onClick={(event) => {
             event.stopPropagation();
             onClose();
           }}
-          onKeyDown={(event) => {
-            if (event.key === "Enter" || event.key === " ") {
-              event.preventDefault();
-              onClose();
-            }
-          }}
         >
           <IconClose width={14} height={14} className="block" />
-        </span>
+        </button>
       ) : null}
-    </button>
+    </div>
   );
 }

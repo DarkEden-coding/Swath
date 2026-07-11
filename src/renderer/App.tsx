@@ -111,6 +111,13 @@ export function App(): JSX.Element {
             role="separator"
             aria-orientation="vertical"
             aria-label="Resize projects sidebar"
+            aria-valuenow={Math.round(sidebarWidthPx)}
+            tabIndex={0}
+            onKeyDown={(event) => {
+              if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+              event.preventDefault();
+              useUiStore.getState().setSidebarWidthPx(sidebarWidthPx + (event.key === "ArrowRight" ? 10 : -10));
+            }}
             className="group absolute inset-y-0 -right-[5px] z-[3] flex w-5 cursor-col-resize touch-none items-center justify-center [-webkit-app-region:no-drag] [app-region:no-drag] hover:bg-[rgba(56,139,253,0.08)]"
             onPointerDown={beginSidebarResize}
           >

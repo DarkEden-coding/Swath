@@ -3569,6 +3569,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "once_cell",
+ "png 0.17.16",
  "portable-pty",
  "rusqlite",
  "serde",

@@ -20,6 +20,8 @@ function statusDotClass(statusClass: string): string {
 export function PaneToolbar({ title, statusClass, onSplitRight, onSplitDown, onClose }: PaneToolbarProps): JSX.Element {
   const [splitDirection, setSplitDirection] = useState<SplitDirection | null>(null);
   const selectorRef = useRef<HTMLDivElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
@@ -39,6 +41,15 @@ export function PaneToolbar({ title, statusClass, onSplitRight, onSplitDown, onC
     direction === "vertical" ? onSplitRight() : onSplitDown();
   };
 
+  useEffect(() => {
+    if (splitDirection) requestAnimationFrame(() => menuRef.current?.querySelector<HTMLButtonElement>("button")?.focus());
+  }, [splitDirection]);
+
+  const closeMenu = (): void => {
+    setSplitDirection(null);
+    requestAnimationFrame(() => triggerRef.current?.focus());
+  };
+
   const selectSplitKind = (kind: PaneKind): void => {
     if (!splitDirection) return;
     splitDirection === "vertical" ? onSplitRight(kind) : onSplitDown(kind);
@@ -56,7 +67,9 @@ export function PaneToolbar({ title, statusClass, onSplitRight, onSplitDown, onC
           type="button"
           className="grid size-[26px] cursor-pointer place-items-center rounded-md border border-transparent bg-transparent text-sm leading-none text-swath-muted [-webkit-app-region:no-drag] [app-region:no-drag] hover:border-swath-border hover:bg-swath-bg hover:text-swath-text"
           title="Split right"
-          onClick={(event) => split("vertical", event.shiftKey)}
+          aria-haspopup="menu"
+          aria-expanded={splitDirection === "vertical"}
+          onClick={(event) => { triggerRef.current = event.currentTarget; split("vertical", event.shiftKey); }}
         >
           <IconColumns width={15} height={15} className="block" />
         </button>
@@ -64,7 +77,9 @@ export function PaneToolbar({ title, statusClass, onSplitRight, onSplitDown, onC
           type="button"
           className="grid size-[26px] cursor-pointer place-items-center rounded-md border border-transparent bg-transparent text-sm leading-none text-swath-muted [-webkit-app-region:no-drag] [app-region:no-drag] hover:border-swath-border hover:bg-swath-bg hover:text-swath-text"
           title="Split down"
-          onClick={(event) => split("horizontal", event.shiftKey)}
+          aria-haspopup="menu"
+          aria-expanded={splitDirection === "horizontal"}
+          onClick={(event) => { triggerRef.current = event.currentTarget; split("horizontal", event.shiftKey); }}
         >
           <IconRows width={15} height={15} className="block" />
         </button>
@@ -77,11 +92,12 @@ export function PaneToolbar({ title, statusClass, onSplitRight, onSplitDown, onC
           <IconClose width={15} height={15} className="block" />
         </button>
         {splitDirection ? (
-          <div className="absolute right-0 top-full z-[100] mt-1 flex min-w-[140px] flex-col gap-0.5 rounded-md border border-swath-border bg-[#1a1a1a] p-1 shadow-swath-float">
+          <div ref={menuRef} role="menu" aria-label="Choose pane type" onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); closeMenu(); } }} className="absolute right-0 top-full z-[100] mt-1 flex min-w-[140px] flex-col gap-0.5 rounded-md border border-swath-border bg-[#1a1a1a] p-1 shadow-swath-float">
             {getTabTypes().map((tabType) => (
               <button
                 key={tabType.kind}
                 type="button"
+                role="menuitem"
                 className="flex cursor-pointer items-center gap-2 rounded border-0 bg-transparent px-2.5 py-1.5 text-left text-[13px] text-swath-text [-webkit-app-region:no-drag] [app-region:no-drag] hover:bg-[#2a2a2a]"
                 onClick={() => selectSplitKind(tabType.kind)}
               >
