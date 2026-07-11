@@ -35,7 +35,7 @@ export interface TerminalSessionExitEvent {
 
 export interface TerminalClipboardPayload {
   text: string;
-  imagePath: string | null;
+  hasImage: boolean;
 }
 
 export interface TerminalPastePermissionStatus {

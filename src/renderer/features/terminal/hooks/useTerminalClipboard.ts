@@ -1,7 +1,8 @@
-import { formatPathPaste } from "../../../utils/terminalPaste";
+export interface TerminalPastePayload {
+  text: string;
+  hasImage: boolean;
+}
 
-export async function readTerminalPastePayload(shellCommand?: string): Promise<string> {
-  const payload = await window.swath.clipboard.readForTerminal();
-  if (payload.text) return payload.text;
-  return payload.imagePath ? formatPathPaste([payload.imagePath], shellCommand) : "";
+export async function readTerminalPastePayload(): Promise<TerminalPastePayload> {
+  return window.swath.clipboard.readForTerminal();
 }

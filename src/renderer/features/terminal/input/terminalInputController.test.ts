@@ -154,7 +154,7 @@ describe("createTerminalInputController", () => {
     expect(writeTerminalData).not.toHaveBeenCalled();
   });
 
-  it("forwards empty context-menu paste as Ctrl+V", async () => {
+  it("does not inject a shortcut when the native clipboard is empty", async () => {
     const terminal = createFakeTerminal();
     const writeTerminalData = vi.fn();
     const controller = createTerminalInputController({
@@ -168,7 +168,7 @@ describe("createTerminalInputController", () => {
 
     await controller.pasteFromClipboard();
 
-    expect(writeTerminalData).toHaveBeenCalledWith("\x16");
+    expect(writeTerminalData).not.toHaveBeenCalled();
   });
 
 

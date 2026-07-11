@@ -88,7 +88,7 @@ function createStubSwath(): SwathApi {
       confirm: async (request) => window.confirm(request.detail ? `${request.message}\n\n${request.detail}` : request.message),
     },
     clipboard: {
-      readForTerminal: async () => ({ text: "", imagePath: null }),
+      readForTerminal: async () => ({ text: "", hasImage: false }),
       writeText: async () => {},
     },
     browser: {

@@ -1,4 +1,5 @@
 import type { ShellProfile } from "../../../../shared/types";
+import type { TerminalPastePayload } from "../hooks/useTerminalClipboard";
 import { formatPathPaste } from "../../../utils/terminalPaste";
 import { getModifiedEnterSequence, getTerminalKeyAction, shouldXtermHandleKeyEvent, type TerminalKeyEvent } from "../utils/terminalKeyboard";
 
@@ -43,7 +44,9 @@ export interface TerminalInputTerminal {
 export interface TerminalInputControllerOptions {
   terminal: TerminalInputTerminal;
   shellProfile: ShellProfile | null;
-  readClipboardText: () => Promise<string>;
+  readClipboard?: () => Promise<TerminalPastePayload>;
+  /** @deprecated Use readClipboard. */
+  readClipboardText?: () => Promise<string>;
   writeClipboardText: (text: string) => Promise<void>;
   writeTerminalData?: (data: string) => void;
   openSearch: () => void;
@@ -86,14 +89,6 @@ function getClipboardEventFilePaths(event: TerminalInputClipboardEvent): string[
     .filter((path): path is string => Boolean(path));
 }
 
-function getPasteEventData(event: TerminalInputClipboardEvent, shellCommand: string | undefined): string {
-  const text = getClipboardEventText(event);
-  if (text) return text;
-
-  const filePaths = getClipboardEventFilePaths(event);
-  return filePaths.length > 0 ? formatPathPaste(filePaths, shellCommand) : "";
-}
-
 function stopClipboardEvent(event: TerminalInputClipboardEvent): void {
   event.preventDefault();
   event.stopPropagation?.();
@@ -107,6 +102,7 @@ function isShiftEnter(event: TerminalKeyEvent): boolean {
 export function createTerminalInputController({
   terminal,
   shellProfile,
+  readClipboard,
   readClipboardText,
   writeClipboardText,
   writeTerminalData,
@@ -171,7 +167,17 @@ export function createTerminalInputController({
   };
 
   const pastePaths = (paths: string[]): void => {
-    pasteText(formatPathPaste(paths, shellCommand));
+    const imagePaths = paths.filter((path) => /\.(?:png|jpe?g|gif|webp)$/i.test(path));
+    const otherPaths = paths.filter((path) => !imagePaths.includes(path));
+    for (const path of imagePaths) {
+      if (writeTerminalData) {
+        const encodedPath = btoa(String.fromCharCode(...new TextEncoder().encode(path)));
+        writeTerminalData(`\x1b]777;swath-image=${encodedPath}\x07`);
+      } else {
+        pasteText(formatPathPaste([path], shellCommand));
+      }
+    }
+    if (otherPaths.length > 0) pasteText(formatPathPaste(otherPaths, shellCommand));
   };
 
   const getCopySelection = (allowRecentSelection: boolean): string => {
@@ -189,10 +195,12 @@ export function createTerminalInputController({
 
   const pasteFromClipboard = async (): Promise<void> => {
     try {
-      const text = await readClipboardText();
-      if (text) {
-        pasteText(text);
-      } else {
+      const payload = readClipboard
+        ? await readClipboard()
+        : { text: (await readClipboardText?.()) ?? "", hasImage: false };
+      if (payload.text) {
+        pasteText(payload.text);
+      } else if (payload.hasImage) {
         forwardPasteShortcutToTerminal();
       }
     } catch (error) {
@@ -203,10 +211,13 @@ export function createTerminalInputController({
   const handlePasteEvent = (event: TerminalInputClipboardEvent): boolean => {
     if (isEditableTarget(event.target)) return false;
 
-    const data = getPasteEventData(event, shellCommand);
+    const text = getClipboardEventText(event);
+    const filePaths = text ? [] : getClipboardEventFilePaths(event);
     stopClipboardEvent(event);
-    if (data) {
-      pasteText(data);
+    if (text) {
+      pasteText(text);
+    } else if (filePaths.length > 0) {
+      pastePaths(filePaths);
     } else {
       // Image-only clipboard paste events do not expose text/files to the webview.
       // Forward Ctrl+V to the terminal app so tools such as Pi extensions can read

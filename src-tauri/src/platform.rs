@@ -2,14 +2,8 @@ use crate::types::{
     ConfirmDialogRequest, FolderSelectResult, TerminalClipboardPayload,
     TerminalPastePermissionStatus,
 };
-use anyhow::{anyhow, Context, Result};
-use std::{
-    fs,
-    io::BufWriter,
-    sync::atomic::{AtomicU64, Ordering},
-    time::{SystemTime, UNIX_EPOCH},
-};
-use tauri::{AppHandle, Manager};
+use anyhow::{anyhow, Result};
+use tauri::AppHandle;
 use tauri_plugin_clipboard_manager::ClipboardExt;
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 
@@ -66,58 +60,20 @@ pub async fn confirm(app: AppHandle, request: ConfirmDialogRequest) -> Result<bo
         .blocking_show())
 }
 
-static CLIPBOARD_IMAGE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
-
 pub fn read_clipboard_for_terminal(app: AppHandle) -> Result<TerminalClipboardPayload> {
     if let Ok(text) = app.clipboard().read_text() {
         if !text.is_empty() {
             return Ok(TerminalClipboardPayload {
                 text,
-                image_path: None,
+                has_image: false,
             });
         }
     }
 
-    let image_path = match app.clipboard().read_image() {
-        Ok(image) => Some(write_clipboard_image(&app, &image)?),
-        Err(_) => None,
-    };
-
     Ok(TerminalClipboardPayload {
         text: String::new(),
-        image_path,
+        has_image: app.clipboard().read_image().is_ok(),
     })
-}
-
-fn write_clipboard_image(app: &AppHandle, image: &tauri::image::Image<'_>) -> Result<String> {
-    let directory = app
-        .path()
-        .app_cache_dir()
-        .unwrap_or_else(|_| std::env::temp_dir().join("swath"))
-        .join("clipboard");
-    fs::create_dir_all(&directory).context("create clipboard image cache")?;
-
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis();
-    let sequence = CLIPBOARD_IMAGE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-    let path = directory.join(format!(
-        "clipboard-{timestamp}-{}-{sequence}.png",
-        std::process::id()
-    ));
-    let file = fs::File::create(&path).context("create clipboard image")?;
-    let writer = BufWriter::new(file);
-    let mut encoder = png::Encoder::new(writer, image.width(), image.height());
-    encoder.set_color(png::ColorType::Rgba);
-    encoder.set_depth(png::BitDepth::Eight);
-    encoder
-        .write_header()
-        .context("initialize clipboard PNG")?
-        .write_image_data(image.rgba())
-        .context("write clipboard PNG")?;
-
-    Ok(path.to_string_lossy().to_string())
 }
 
 pub fn write_clipboard_text(app: AppHandle, text: String) -> Result<()> {

@@ -142,7 +142,7 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
     inputControllerRef.current = createTerminalInputController({
       terminal,
       shellProfile: paneShellProfile,
-      readClipboardText: () => readTerminalPastePayload(paneShellProfile?.command),
+      readClipboard: readTerminalPastePayload,
       writeClipboardText: (text) => window.swath.clipboard.writeText(text),
       writeTerminalData: (data) => terminalClient.write(paneId, data),
       openSearch: () => setSearchOpen(true),

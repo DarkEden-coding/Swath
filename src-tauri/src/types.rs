@@ -242,7 +242,7 @@ pub struct TerminalExitEventPayload {
 #[serde(rename_all = "camelCase")]
 pub struct TerminalClipboardPayload {
     pub text: String,
-    pub image_path: Option<String>,
+    pub has_image: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
