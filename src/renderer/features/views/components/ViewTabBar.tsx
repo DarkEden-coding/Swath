@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useRef, useState, type DragEvent, type DragEventHandler, type MouseEvent as ReactMouseEvent } from "react";
+import { Fragment, useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import type { PaneKind, ViewHealth, Workspace } from "../../../../shared/types";
 import * as appActions from "../../../app/appActions";
 import { IconChevronsLeft, IconClose, IconGitBranch, IconPlus, IconTerminal } from "../../shell/icons";
@@ -52,11 +52,6 @@ export function ViewTabBar({ workspace, sidebarCollapsed, onToggleSidebar }: Vie
     finishDrag();
   }
 
-  function moveDraggedView(event: DragEvent): void {
-    event.preventDefault();
-    moveViewById(event.dataTransfer.getData("text/plain") || draggedViewId, dropIndex ?? getDropIndex(event.clientX));
-  }
-
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
       if (selectorRef.current && !selectorRef.current.contains(event.target as Node)) {
@@ -86,16 +81,6 @@ export function ViewTabBar({ workspace, sidebarCollapsed, onToggleSidebar }: Vie
       <div
         ref={tabStripRef}
         className="flex min-w-0 flex-1 items-stretch overflow-x-auto [-webkit-app-region:no-drag] [app-region:no-drag]"
-        onDragOver={(event) => {
-          if (!draggedViewId) return;
-          event.preventDefault();
-          event.dataTransfer.dropEffect = "move";
-          setDropIndex(getDropIndex(event.clientX));
-        }}
-        onDrop={moveDraggedView}
-        onDragLeave={(event) => {
-          if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDropIndex(null);
-        }}
       >
         {workspace.views.map((tab, index) => (
           <Fragment key={tab.id}>
@@ -110,13 +95,6 @@ export function ViewTabBar({ workspace, sidebarCollapsed, onToggleSidebar }: Vie
             onSelect={() => appActions.selectView(workspace.id, tab.id)}
             onClose={() => appActions.closeView(workspace.id, tab.id)}
             onRename={(nextTitle) => appActions.renameView(workspace.id, tab.id, nextTitle)}
-            onDragStart={(event) => {
-              setDraggedViewId(tab.id);
-              setDropIndex(index);
-              event.dataTransfer.effectAllowed = "move";
-              event.dataTransfer.setData("text/plain", tab.id);
-            }}
-            onDragEnd={finishDrag}
             onMouseDragStart={(event) => {
               if (event.button !== 0) return;
               const startX = event.clientX;
@@ -210,12 +188,10 @@ interface WorkspaceViewButtonProps {
   onSelect: () => void;
   onClose: () => void;
   onRename: (title: string) => void;
-  onDragStart: DragEventHandler<HTMLDivElement>;
-  onDragEnd: DragEventHandler<HTMLDivElement>;
   onMouseDragStart: (event: ReactMouseEvent<HTMLDivElement>) => void;
 }
 
-function WorkspaceViewButton({ id, title, health, active, canClose, dragging, onSelect, onClose, onRename, onDragStart, onDragEnd, onMouseDragStart }: WorkspaceViewButtonProps): JSX.Element {
+function WorkspaceViewButton({ id, title, health, active, canClose, dragging, onSelect, onClose, onRename, onMouseDragStart }: WorkspaceViewButtonProps): JSX.Element {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(title);
 
@@ -227,7 +203,6 @@ function WorkspaceViewButton({ id, title, health, active, canClose, dragging, on
     <div
       role="tab"
       tabIndex={0}
-      draggable={!editing}
       aria-selected={active}
       aria-grabbed={dragging}
       data-view-id={id}
@@ -240,8 +215,6 @@ function WorkspaceViewButton({ id, title, health, active, canClose, dragging, on
           onSelect();
         }
       }}
-      onDragStart={onDragStart}
-      onDragEnd={onDragEnd}
       onMouseDown={onMouseDragStart}
     >
       <span className={healthClass(health)} title={health ?? "healthy"} aria-hidden />
