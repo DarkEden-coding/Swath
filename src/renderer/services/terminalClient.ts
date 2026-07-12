@@ -7,8 +7,8 @@ import type {
 import { subscribeTerminalData, subscribeTerminalExit } from "./terminalEventHub";
 
 export const terminalClient = {
-  create: (request: TerminalSessionStartRequest): void => window.swath.terminal.create(request),
-  write: (sessionId: string, data: string): void => window.swath.terminal.write(sessionId, data),
+  create: (request: TerminalSessionStartRequest): Promise<void> => window.swath.terminal.create(request),
+  write: (sessionId: string, data: string): Promise<void> => window.swath.terminal.write(sessionId, data),
   resize: (request: PtyResizeRequest): void => window.swath.terminal.resize(request),
   kill: (sessionId: string): void => window.swath.terminal.kill(sessionId),
   attach: (request: TerminalSessionAttachRequest): Promise<TerminalSessionStatus | undefined> => window.swath.terminal.attach(request),

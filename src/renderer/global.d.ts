@@ -35,8 +35,8 @@ interface SwathApi {
     ensureTerminalPaste: () => Promise<import("../shared/types").TerminalPastePermissionStatus>;
   };
   terminal: {
-    create: (request: import("../shared/types").TerminalSessionStartRequest) => void;
-    write: (sessionId: string, data: string) => void;
+    create: (request: import("../shared/types").TerminalSessionStartRequest) => Promise<void>;
+    write: (sessionId: string, data: string) => Promise<void>;
     resize: (request: import("../shared/types").PtyResizeRequest) => void;
     kill: (sessionId: string) => void;
     attach: (request: import("../shared/types").TerminalSessionAttachRequest) => Promise<import("../shared/types").TerminalSessionStatus | undefined>;

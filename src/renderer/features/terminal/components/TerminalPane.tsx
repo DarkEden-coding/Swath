@@ -155,20 +155,29 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
 
     const currentCwd = paneMeta?.cwd ?? paneMeta?.metadata?.cwd ?? workspace.path;
 
-    const startPty = (): void => {
-      if (startedSessions.has(paneId) || !termRef.current) return;
+    const startPty = async (): Promise<void> => {
+      if (startedSessions.has(paneId)) return;
       startedSessions.add(paneId);
       const entry = terminalCache.get(paneId);
       if (entry) entry.stopped = false;
       exitStateSetters.get(paneId)?.(false);
-      terminalClient.create({
-        sessionId: paneId,
-        cwd: currentCwd,
-        cols: termRef.current.cols,
-        rows: termRef.current.rows,
-        shellProfile: paneShellProfile,
-        env: paneMeta?.env ?? normalizeEnv(paneMeta?.metadata?.env) ?? initialSettingsRef.current.globalEnv,
-      });
+
+      try {
+        await terminalClient.create({
+          sessionId: paneId,
+          cwd: currentCwd,
+          cols: terminal.cols,
+          rows: terminal.rows,
+          shellProfile: paneShellProfile,
+          env: paneMeta?.env ?? normalizeEnv(paneMeta?.metadata?.env) ?? initialSettingsRef.current.globalEnv,
+        });
+      } catch (error) {
+        startedSessions.delete(paneId);
+        if (entry) entry.stopped = true;
+        exitStateSetters.get(paneId)?.(true);
+        terminal.write(`\r\n\x1b[31mFailed to start terminal: ${String(error)}\x1b[0m\r\n`);
+        throw error;
+      }
     };
 
     const fitAndResize = (): void => {
@@ -216,9 +225,11 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
 
           if (data === "\r") {
             terminal.write("\r\x1b[K");
-            startPty();
-            terminalClient.write(paneId, dormantInputRef.current + "\r");
+            const dormantInput = dormantInputRef.current + "\r";
             dormantInputRef.current = "";
+            void startPty()
+              .then(() => terminalClient.write(paneId, dormantInput))
+              .catch(() => undefined);
           } else if (data === "\x7f") {
             if (dormantInputRef.current.length > 0) {
               dormantInputRef.current = dormantInputRef.current.slice(0, -1);

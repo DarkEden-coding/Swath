@@ -100,8 +100,8 @@ function createStubSwath(): SwathApi {
       ensureTerminalPaste: async () => ({ accessibility: "unavailable" }),
     },
     terminal: {
-      create: () => {},
-      write: () => {},
+      create: async () => {},
+      write: async () => {},
       resize: () => {},
       kill: () => {},
       attach: async () => ({ sessionId: "", running: false }),
@@ -214,8 +214,8 @@ function createTauriSwath(): SwathApi {
       ensureTerminalPaste: () => invoke("permissions_ensure_terminal_paste"),
     },
     terminal: {
-      create: (request) => { void invoke("terminal_create", { request }); },
-      write: (sessionId, data) => { void invoke("terminal_write", { sessionId, data }); },
+      create: (request) => invoke("terminal_create", { request }),
+      write: (sessionId, data) => invoke("terminal_write", { sessionId, data }),
       resize: (request) => { void invoke("terminal_resize", { request }); },
       kill: (sessionId) => { void invoke("terminal_kill", { sessionId }); },
       attach: (request) => invoke("terminal_attach", { request }),
