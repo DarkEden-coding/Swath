@@ -15,6 +15,48 @@ export function changePaths(status: GitStatusResult): string[] {
   );
 }
 
+/**
+ * Appends git CLI output while honoring carriage-return progress updates.
+ *
+ * Git prints progress as `Counting objects: 1%\rCounting objects: 2%\r...done.\n`.
+ * A real terminal overwrites the line on each `\r`; this keeps the same behavior
+ * so the log shows the latest progress line instead of every percentage.
+ */
+export function appendGitTerminalText(previous: string, chunk: string): string {
+  if (!chunk) return previous;
+
+  const lastNewline = previous.lastIndexOf("\n");
+  let completed = lastNewline >= 0 ? previous.slice(0, lastNewline + 1) : "";
+  let current = lastNewline >= 0 ? previous.slice(lastNewline + 1) : previous;
+
+  for (let index = 0; index < chunk.length; index += 1) {
+    const char = chunk[index];
+    if (char === "\r") {
+      if (chunk[index + 1] === "\n") {
+        completed += `${current.replace(/\s+$/u, "")}\n`;
+        current = "";
+        index += 1;
+      } else {
+        current = "";
+      }
+      continue;
+    }
+    if (char === "\n") {
+      completed += `${current.replace(/\s+$/u, "")}\n`;
+      current = "";
+      continue;
+    }
+    current += char;
+  }
+
+  return completed + current;
+}
+
+/** Collapses carriage-return progress sequences in a finished git output blob. */
+export function normalizeGitTerminalText(text: string): string {
+  return appendGitTerminalText("", text);
+}
+
 /** Selects the file-extension accent used by change rows. */
 export function extAccentClass(path: string): string {
   const lower = path.toLowerCase();

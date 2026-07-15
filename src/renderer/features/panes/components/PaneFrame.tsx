@@ -39,11 +39,15 @@ export function PaneFrame({
     ? "border-[rgba(56,139,253,0.65)] shadow-[0_0_0_1px_rgba(56,139,253,0.12)]"
     : "border-swath-border";
 
+  const activateIfNeeded = (): void => {
+    if (!active) onActivate();
+  };
+
   return (
     <div
       className={`relative grid h-full w-full min-h-0 min-w-0 grid-rows-[34px_1fr] overflow-hidden rounded-md border bg-swath-bg ${ring}`}
-      onMouseDown={onActivate}
-      onFocusCapture={onActivate}
+      onMouseDown={activateIfNeeded}
+      onFocusCapture={activateIfNeeded}
       onKeyDown={onKeyDown}
       onCopyCapture={onCopyCapture}
       onPasteCapture={onPasteCapture}

@@ -6,7 +6,7 @@ import { gitClient, type GitLogEntry, type GitRunResult, type GitStatusResult } 
 import { PaneFrame } from "../../panes/components/PaneFrame";
 import type { PaneComponentProps } from "../../panes/paneTypes";
 import { GitChangesSection, GitHistorySection } from "./GitManagerSections";
-import { changePaths, uniqueSortedPaths } from "./gitManagerUtils";
+import { changePaths, uniqueSortedPaths, appendGitTerminalText, normalizeGitTerminalText } from "./gitManagerUtils";
 import { useOnClickOutside } from "./useOnClickOutside";
 import {
   IconArrowDown,
@@ -56,7 +56,7 @@ export function GitManagerPane({ workspace, view, pane }: PaneComponentProps): J
     return gitClient.onData((runId, data) => {
       if (activeRunIdRef.current !== runId) return;
       streamReceivedRef.current = true;
-      setLog((prev) => prev + data);
+      setLog((prev) => appendGitTerminalText(prev, data));
     });
   }, []);
 
@@ -137,7 +137,9 @@ export function GitManagerPane({ workspace, view, pane }: PaneComponentProps): J
     result: { exitCode: number; stdout: string; stderr: string },
   ): void => {
     const parts = [result.stderr, result.stdout].filter((s) => s.trim().length > 0);
-    const body = parts.join("\n").trim() || (result.exitCode === 0 ? "Done." : "(no output)");
+    const body =
+      normalizeGitTerminalText(parts.join("\n")).trim() ||
+      (result.exitCode === 0 ? "Done." : "(no output)");
     setLog(`${label}${result.exitCode !== 0 ? ` (exit ${result.exitCode})` : ""}\n${body}`);
   };
 
@@ -166,7 +168,8 @@ export function GitManagerPane({ workspace, view, pane }: PaneComponentProps): J
       if (!streamed) {
         const parts = [result.stderr, result.stdout].filter((s) => s.trim().length > 0);
         const body =
-          parts.join("\n").trim() || (result.exitCode === 0 ? "Done." : "(no output)");
+          normalizeGitTerminalText(parts.join("\n")).trim() ||
+          (result.exitCode === 0 ? "Done." : "(no output)");
         const suffix = result.exitCode !== 0 ? ` (exit ${result.exitCode})` : "";
         if (options.append) {
           setLog((prev) => `${prev.replace(/\n+$/, "")}${suffix}\n${body}\n`);
