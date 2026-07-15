@@ -74,6 +74,7 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
   const scrollbarHideTimerRef = useRef<number | null>(null);
   const webLinksDisposableRef = useRef<{ dispose: () => void } | null>(null);
   const [exited, setExited] = useState(false);
+  const [running, setRunning] = useState(() => startedSessions.has(pane.id));
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
@@ -107,6 +108,7 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
 
     const cachedEntry = terminalCache.get(paneId);
     setExited(cachedEntry?.stopped ?? false);
+    setRunning(startedSessions.has(paneId));
 
     const terminal =
       cachedEntry?.terminal ??
@@ -147,6 +149,7 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
       if (sessionReady) return sessionReady;
 
       startedSessions.add(paneId);
+      setRunning(true);
       const entry = terminalCache.get(paneId);
       if (entry) entry.stopped = false;
       exitStateSetters.get(paneId)?.(false);
@@ -168,6 +171,7 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
         })
         .catch((error: unknown) => {
           startedSessions.delete(paneId);
+          setRunning(false);
           sessionReady = null;
           if (entry) entry.stopped = true;
           exitStateSetters.get(paneId)?.(true);
@@ -277,6 +281,7 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
       : terminalClient.onExit((sessionId) => {
           if (sessionId !== paneId) return;
           startedSessions.delete(sessionId);
+          setRunning(false);
           exitStateSetters.get(paneId)?.(true);
           const entry = terminalCache.get(paneId);
           if (entry) entry.stopped = true;
@@ -398,6 +403,7 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
 
   const restart = (): void => {
     startedSessions.add(paneId);
+    setRunning(true);
     termRef.current?.reset();
     const entry = terminalCache.get(paneId);
     if (entry) entry.stopped = false;
@@ -488,7 +494,7 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
     <PaneFrame
       active={isActive}
       title={headerLine}
-      statusClass={exited ? "exited" : startedSessions.has(paneId) ? "running" : "dormant"}
+      statusClass={exited ? "exited" : running ? "running" : "dormant"}
       onActivate={() => appActions.setActivePane(workspace.id, view.id, paneId)}
       onSplitRight={(kind) => appActions.splitPane(workspace.id, view.id, paneId, "vertical", kind)}
       onSplitDown={(kind) =>
