@@ -62,6 +62,13 @@ a {
   app-region: no-drag;
 }
 
+/* Suppress text selection while reordering projects/tabs (incl. over terminals). */
+body.is-reordering,
+body.is-reordering * {
+  user-select: none !important;
+  -webkit-user-select: none !important;
+}
+
 /* xterm viewport scrollbar (WebKit) */
 .xterm-viewport::-webkit-scrollbar {
   width: 12px;

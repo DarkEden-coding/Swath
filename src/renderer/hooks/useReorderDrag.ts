@@ -28,6 +28,16 @@ export interface ReorderDragBindings {
   startPointerDrag: (event: ReactMouseEvent, id: string) => void;
 }
 
+/** Suppresses page/terminal text selection for the duration of a reorder gesture. */
+function lockTextSelection(): void {
+  document.body.classList.add("is-reordering");
+  window.getSelection()?.removeAllRanges();
+}
+
+function unlockTextSelection(): void {
+  document.body.classList.remove("is-reordering");
+}
+
 /**
  * Shares reorder gesture mechanics while leaving item markup and indicators to
  * the caller. Supports HTML drag-and-drop and a mouse fallback after a 5px
@@ -53,6 +63,7 @@ export function useReorderDrag(options: UseReorderDragOptions): ReorderDragBindi
   );
 
   const finishDrag = useCallback((): void => {
+    unlockTextSelection();
     setDraggedId(null);
     setDropIndex(null);
   }, []);
@@ -72,6 +83,7 @@ export function useReorderDrag(options: UseReorderDragOptions): ReorderDragBindi
 
   const startNativeDrag = useCallback(
     (event: DragEvent, id: string, initialIndex: number): void => {
+      lockTextSelection();
       setDraggedId(id);
       setDropIndex(initialIndex);
       event.dataTransfer.effectAllowed = "move";
@@ -105,6 +117,8 @@ export function useReorderDrag(options: UseReorderDragOptions): ReorderDragBindi
   const startPointerDrag = useCallback(
     (event: ReactMouseEvent, id: string): void => {
       if (event.button !== 0) return;
+      // Lock immediately on mousedown so dragging over terminals cannot select text.
+      lockTextSelection();
       const startX = event.clientX;
       const startY = event.clientY;
       let active = false;
@@ -114,7 +128,6 @@ export function useReorderDrag(options: UseReorderDragOptions): ReorderDragBindi
         if (!active) {
           active = true;
           setDraggedId(id);
-          document.body.style.userSelect = "none";
         }
         moveEvent.preventDefault();
         setDropIndex(getDropIndex(axis === "horizontal" ? moveEvent.clientX : moveEvent.clientY));
@@ -122,10 +135,12 @@ export function useReorderDrag(options: UseReorderDragOptions): ReorderDragBindi
       const onUp = (upEvent: MouseEvent): void => {
         window.removeEventListener("mousemove", onMove);
         window.removeEventListener("mouseup", onUp);
-        if (!active) return;
+        if (!active) {
+          unlockTextSelection();
+          return;
+        }
         upEvent.preventDefault();
         moveById(id, getDropIndex(axis === "horizontal" ? upEvent.clientX : upEvent.clientY));
-        document.body.style.userSelect = "";
       };
       window.addEventListener("mousemove", onMove);
       window.addEventListener("mouseup", onUp);
