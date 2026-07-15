@@ -231,6 +231,13 @@ pub struct TerminalDataEvent {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct GitDataEvent {
+    pub run_id: String,
+    pub data: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TerminalExitEventPayload {
     pub session_id: String,
     pub exit_code: i32,

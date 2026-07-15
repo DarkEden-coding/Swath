@@ -19,6 +19,7 @@ export const IpcChannels = {
   terminalExit: "terminal:exit",
   appCommand: "app:command",
   gitRpc: "git:rpc",
+  gitData: "git:data",
   browserOpenExternal: "browser:open-external",
 } as const;
 

@@ -63,5 +63,8 @@ export interface SwathApi {
     ): () => void;
   };
   app: { onCommand(callback: (command: string) => void): () => void };
-  git: { rpc(request: GitRpcRequest): Promise<unknown> };
+  git: {
+    rpc(request: GitRpcRequest): Promise<unknown>;
+    onData(callback: (runId: string, data: string) => void): () => void;
+  };
 }

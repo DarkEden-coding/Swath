@@ -152,8 +152,13 @@ pub fn terminal_is_busy(state: State<'_, AppState>, session_id: String) -> Comma
 }
 
 #[tauri::command]
-pub async fn git_rpc(request: serde_json::Value) -> CommandResult<serde_json::Value> {
-    tauri::async_runtime::spawn_blocking(move || git::rpc(request).map_err(|err| err.to_string()))
-        .await
-        .map_err(|err| err.to_string())?
+pub async fn git_rpc(
+    app: AppHandle,
+    request: serde_json::Value,
+) -> CommandResult<serde_json::Value> {
+    tauri::async_runtime::spawn_blocking(move || {
+        git::rpc(&app, request).map_err(|err| err.to_string())
+    })
+    .await
+    .map_err(|err| err.to_string())?
 }

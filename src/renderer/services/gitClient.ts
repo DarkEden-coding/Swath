@@ -43,6 +43,10 @@ export interface GitLogResult {
   stderr?: string;
 }
 
+export interface GitStreamOptions {
+  runId?: string;
+}
+
 function parsePathEntries(raw: unknown): GitPathEntry[] {
   if (!Array.isArray(raw)) return [];
   const out: GitPathEntry[] = [];
@@ -148,6 +152,11 @@ async function gitRpc(request: GitRpcRequest): Promise<unknown> {
   return window.swath.git.rpc(request);
 }
 
+function withRunId<T extends GitRpcRequest>(base: T, options?: GitStreamOptions): T {
+  const runId = options?.runId?.trim();
+  return runId ? { ...base, runId } : base;
+}
+
 export const gitClient = {
   getStatus(cwd: string): Promise<GitStatusResult> {
     return gitRpc({ op: "getStatus", cwd }).then(parseStatus);
@@ -161,17 +170,17 @@ export const gitClient = {
   discardPaths(cwd: string, paths: string[]): Promise<GitRunResult> {
     return gitRpc({ op: "discardPaths", cwd, paths }).then(parseRun);
   },
-  commit(cwd: string, message: string): Promise<GitRunResult> {
-    return gitRpc({ op: "commit", cwd, message }).then(parseRun);
+  commit(cwd: string, message: string, options?: GitStreamOptions): Promise<GitRunResult> {
+    return gitRpc(withRunId({ op: "commit", cwd, message }, options)).then(parseRun);
   },
-  pull(cwd: string): Promise<GitRunResult> {
-    return gitRpc({ op: "pull", cwd }).then(parseRun);
+  pull(cwd: string, options?: GitStreamOptions): Promise<GitRunResult> {
+    return gitRpc(withRunId({ op: "pull", cwd }, options)).then(parseRun);
   },
-  push(cwd: string): Promise<GitRunResult> {
-    return gitRpc({ op: "push", cwd }).then(parseRun);
+  push(cwd: string, options?: GitStreamOptions): Promise<GitRunResult> {
+    return gitRpc(withRunId({ op: "push", cwd }, options)).then(parseRun);
   },
-  sync(cwd: string): Promise<GitRunResult & { steps?: string[] }> {
-    return gitRpc({ op: "sync", cwd }).then((raw) => {
+  sync(cwd: string, options?: GitStreamOptions): Promise<GitRunResult & { steps?: string[] }> {
+    return gitRpc(withRunId({ op: "sync", cwd }, options)).then((raw) => {
       const base = parseRun(raw);
       const steps =
         isRecord(raw) && Array.isArray(raw.steps)
@@ -188,5 +197,8 @@ export const gitClient = {
   },
   checkoutBranch(cwd: string, branch: string): Promise<GitRunResult> {
     return gitRpc({ op: "checkoutBranch", cwd, branch }).then(parseRun);
+  },
+  onData(callback: (runId: string, data: string) => void): () => void {
+    return window.swath.git.onData(callback);
   },
 };

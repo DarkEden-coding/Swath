@@ -137,32 +137,22 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
     termRef.current = terminal;
     fitRef.current = fit;
     searchRef.current = null;
-    inputControllerRef.current?.dispose();
-    inputControllerRef.current = createTerminalInputController({
-      terminal,
-      shellProfile: paneShellProfile,
-      readClipboard: readTerminalPastePayload,
-      writeClipboardText: (text) => window.swath.clipboard.writeText(text),
-      writeTerminalData: (data) => terminalClient.write(paneId, data),
-      openSearch: () => setSearchOpen(true),
-      platform: window.swath.platform,
-      onPasteError: (error) => {
-        console.error("Unable to read the clipboard", error);
-        terminal.write("\r\n\x1b[31m[clipboard paste failed]\x1b[0m\r\n");
-      },
-    });
 
     const currentCwd = paneMeta?.cwd ?? paneMeta?.metadata?.cwd ?? workspace.path;
 
-    const startPty = async (): Promise<void> => {
-      if (startedSessions.has(paneId)) return;
+    let sessionReady: Promise<void> | null = null;
+
+    const startPty = (): Promise<void> => {
+      if (startedSessions.has(paneId)) return sessionReady ?? Promise.resolve();
+      if (sessionReady) return sessionReady;
+
       startedSessions.add(paneId);
       const entry = terminalCache.get(paneId);
       if (entry) entry.stopped = false;
       exitStateSetters.get(paneId)?.(false);
 
-      try {
-        await terminalClient.create({
+      sessionReady = terminalClient
+        .create({
           sessionId: paneId,
           cwd: currentCwd,
           cols: terminal.cols,
@@ -172,15 +162,48 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
             paneMeta?.env ??
             normalizeEnv(paneMeta?.metadata?.env) ??
             initialSettingsRef.current.globalEnv,
+        })
+        .then(() => {
+          sessionReady = null;
+        })
+        .catch((error: unknown) => {
+          startedSessions.delete(paneId);
+          sessionReady = null;
+          if (entry) entry.stopped = true;
+          exitStateSetters.get(paneId)?.(true);
+          terminal.write(`\r\n\x1b[31mFailed to start terminal: ${String(error)}\x1b[0m\r\n`);
+          throw error;
         });
-      } catch (error) {
-        startedSessions.delete(paneId);
-        if (entry) entry.stopped = true;
-        exitStateSetters.get(paneId)?.(true);
-        terminal.write(`\r\n\x1b[31mFailed to start terminal: ${String(error)}\x1b[0m\r\n`);
-        throw error;
-      }
+
+      return sessionReady;
     };
+
+    const writeToSession = (data: string): void => {
+      if (!startedSessions.has(paneId)) void startPty();
+      const ready = sessionReady;
+      if (ready) {
+        void ready
+          .then(() => terminalClient.write(paneId, data))
+          .catch(() => undefined);
+        return;
+      }
+      void terminalClient.write(paneId, data);
+    };
+
+    inputControllerRef.current?.dispose();
+    inputControllerRef.current = createTerminalInputController({
+      terminal,
+      shellProfile: paneShellProfile,
+      readClipboard: readTerminalPastePayload,
+      writeClipboardText: (text) => window.swath.clipboard.writeText(text),
+      writeTerminalData: writeToSession,
+      openSearch: () => setSearchOpen(true),
+      platform: window.swath.platform,
+      onPasteError: (error) => {
+        console.error("Unable to read the clipboard", error);
+        terminal.write("\r\n\x1b[31m[clipboard paste failed]\x1b[0m\r\n");
+      },
+    });
 
     const fitAndResize = (): void => {
       if (!termRef.current || !fitRef.current) return;
@@ -220,7 +243,7 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
       ? null
       : terminal.onData((data) => {
           if (startedSessions.has(paneId)) {
-            terminalClient.write(paneId, data);
+            writeToSession(data);
             return;
           }
 
@@ -228,9 +251,11 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
 
           if (data === "\r") {
             terminal.write("\r\x1b[K");
-            startPty();
-            terminalClient.write(paneId, dormantInputRef.current + "\r");
+            const dormantInput = dormantInputRef.current + "\r";
             dormantInputRef.current = "";
+            // Queue write behind PTY create — firing write immediately races spawn
+            // on macOS and drops activation input ("terminal session not found").
+            writeToSession(dormantInput);
           } else if (data === "\x7f") {
             if (dormantInputRef.current.length > 0) {
               dormantInputRef.current = dormantInputRef.current.slice(0, -1);

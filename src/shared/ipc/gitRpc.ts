@@ -3,10 +3,10 @@ export type GitRpcRequest =
   | { op: "stagePaths"; cwd: string; paths: string[] }
   | { op: "unstagePaths"; cwd: string; paths: string[] }
   | { op: "discardPaths"; cwd: string; paths: string[] }
-  | { op: "commit"; cwd: string; message: string }
-  | { op: "pull"; cwd: string }
-  | { op: "push"; cwd: string }
-  | { op: "sync"; cwd: string }
+  | { op: "commit"; cwd: string; message: string; runId?: string }
+  | { op: "pull"; cwd: string; runId?: string }
+  | { op: "push"; cwd: string; runId?: string }
+  | { op: "sync"; cwd: string; runId?: string }
   | { op: "getLog"; cwd: string }
   | { op: "listBranches"; cwd: string }
   | { op: "checkoutBranch"; cwd: string; branch: string };
@@ -45,9 +45,25 @@ export function parseGitRpcRequest(raw: unknown): GitRpcRequest | null {
     const cwd = stringField(raw, "cwd");
     const message = stringField(raw, "message");
     if (!cwd?.trim() || message === null) return null;
-    return { op: "commit", cwd: cwd.trim(), message };
+    const runId = stringField(raw, "runId");
+    return {
+      op: "commit",
+      cwd: cwd.trim(),
+      message,
+      ...(runId?.trim() ? { runId: runId.trim() } : {}),
+    };
   }
-  if (op === "pull" || op === "push" || op === "sync" || op === "getLog" || op === "listBranches") {
+  if (op === "pull" || op === "push" || op === "sync") {
+    const cwd = stringField(raw, "cwd");
+    if (cwd === null || !cwd.trim()) return null;
+    const runId = stringField(raw, "runId");
+    return {
+      op,
+      cwd: cwd.trim(),
+      ...(runId?.trim() ? { runId: runId.trim() } : {}),
+    };
+  }
+  if (op === "getLog" || op === "listBranches") {
     const cwd = stringField(raw, "cwd");
     return cwd !== null && cwd.trim() ? { op, cwd: cwd.trim() } : null;
   }

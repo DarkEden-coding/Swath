@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as appActions from "../../../app/appActions";
 import { findPane } from "../../../domain/layout/layoutTree";
 import { useUiStore } from "../../../state/uiStore";
-import { gitClient, type GitLogEntry, type GitStatusResult } from "../../../services/gitClient";
+import { gitClient, type GitLogEntry, type GitRunResult, type GitStatusResult } from "../../../services/gitClient";
 import { PaneFrame } from "../../panes/components/PaneFrame";
 import type { PaneComponentProps } from "../../panes/paneTypes";
 import { GitChangesSection, GitHistorySection } from "./GitManagerSections";
@@ -45,9 +45,26 @@ export function GitManagerPane({ workspace, view, pane }: PaneComponentProps): J
 
   const overflowRef = useRef<HTMLDivElement>(null);
   const fileMenuRef = useRef<HTMLDivElement>(null);
+  const logScrollRef = useRef<HTMLDivElement>(null);
+  const activeRunIdRef = useRef<string | null>(null);
+  const streamReceivedRef = useRef(false);
 
   useOnClickOutside(overflowRef, () => setOverflowOpen(false), overflowOpen);
   useOnClickOutside(fileMenuRef, () => setFileMenu(null), fileMenu !== null);
+
+  useEffect(() => {
+    return gitClient.onData((runId, data) => {
+      if (activeRunIdRef.current !== runId) return;
+      streamReceivedRef.current = true;
+      setLog((prev) => prev + data);
+    });
+  }, []);
+
+  useEffect(() => {
+    const el = logScrollRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+  }, [log]);
 
   const refresh = useCallback(
     async (options: { includeLog?: boolean } = {}) => {
@@ -124,6 +141,47 @@ export function GitManagerPane({ workspace, view, pane }: PaneComponentProps): J
     setLog(`${label}${result.exitCode !== 0 ? ` (exit ${result.exitCode})` : ""}\n${body}`);
   };
 
+  /** Runs a git command while streaming stdout/stderr into the bottom terminal. */
+  const runWithLiveOutput = async (
+    label: string,
+    execute: (runId: string) => Promise<GitRunResult>,
+    options: { append?: boolean } = {},
+  ): Promise<GitRunResult> => {
+    const runId = crypto.randomUUID();
+    activeRunIdRef.current = runId;
+    streamReceivedRef.current = false;
+    if (options.append) {
+      setLog((prev) => `${prev.replace(/\n+$/, "")}\n\n${label}\n`);
+    } else {
+      setLog(`${label}\n`);
+    }
+    try {
+      const result = await execute(runId);
+      // Let any in-flight git:data events land before deciding on a fallback.
+      await new Promise<void>((resolve) => {
+        window.setTimeout(resolve, 0);
+      });
+      const streamed = streamReceivedRef.current;
+      activeRunIdRef.current = null;
+      if (!streamed) {
+        const parts = [result.stderr, result.stdout].filter((s) => s.trim().length > 0);
+        const body =
+          parts.join("\n").trim() || (result.exitCode === 0 ? "Done." : "(no output)");
+        const suffix = result.exitCode !== 0 ? ` (exit ${result.exitCode})` : "";
+        if (options.append) {
+          setLog((prev) => `${prev.replace(/\n+$/, "")}${suffix}\n${body}\n`);
+        } else {
+          setLog(`${label}${suffix}\n${body}`);
+        }
+      } else if (result.exitCode !== 0) {
+        setLog((prev) => `${prev.replace(/\n+$/, "")}\n(exit ${result.exitCode})\n`);
+      }
+      return result;
+    } finally {
+      if (activeRunIdRef.current === runId) activeRunIdRef.current = null;
+    }
+  };
+
   const runStage = async (paths?: string[]): Promise<void> => {
     const list = paths ?? [...selected];
     if (!cwd || list.length === 0) return;
@@ -179,8 +237,9 @@ export function GitManagerPane({ workspace, view, pane }: PaneComponentProps): J
     }
     setBusy(true);
     try {
-      const r = await gitClient.commit(cwd, trimmed);
-      appendLog("git commit", r);
+      const r = await runWithLiveOutput("$ git commit", (runId) =>
+        gitClient.commit(cwd, trimmed, { runId }),
+      );
       if (r.exitCode === 0) setMessage("");
       await refresh();
     } finally {
@@ -197,24 +256,20 @@ export function GitManagerPane({ workspace, view, pane }: PaneComponentProps): J
     }
     setBusy(true);
     try {
-      const commitResult = await gitClient.commit(cwd, trimmed);
+      const commitResult = await runWithLiveOutput("$ git commit", (runId) =>
+        gitClient.commit(cwd, trimmed, { runId }),
+      );
       if (commitResult.exitCode !== 0) {
-        appendLog("git commit", commitResult);
         await refresh();
         return;
       }
 
       setMessage("");
-      const syncResult = await gitClient.sync(cwd);
-      appendLog("git commit && git pull && git push", {
-        exitCode: syncResult.exitCode,
-        stdout: [commitResult.stdout, syncResult.stdout]
-          .filter((s) => s.trim().length > 0)
-          .join("\n"),
-        stderr: [commitResult.stderr, syncResult.stderr]
-          .filter((s) => s.trim().length > 0)
-          .join("\n"),
-      });
+      await runWithLiveOutput(
+        "$ git pull --progress && git push --progress",
+        (runId) => gitClient.sync(cwd, { runId }),
+        { append: true },
+      );
       await refresh();
     } finally {
       setBusy(false);
@@ -225,8 +280,7 @@ export function GitManagerPane({ workspace, view, pane }: PaneComponentProps): J
     if (!cwd) return;
     setBusy(true);
     try {
-      const r = await gitClient.pull(cwd);
-      appendLog("git pull", r);
+      await runWithLiveOutput("$ git pull --progress", (runId) => gitClient.pull(cwd, { runId }));
       await refresh();
     } finally {
       setBusy(false);
@@ -237,8 +291,7 @@ export function GitManagerPane({ workspace, view, pane }: PaneComponentProps): J
     if (!cwd) return;
     setBusy(true);
     try {
-      const r = await gitClient.push(cwd);
-      appendLog("git push", r);
+      await runWithLiveOutput("$ git push --progress", (runId) => gitClient.push(cwd, { runId }));
       await refresh();
     } finally {
       setBusy(false);
@@ -249,8 +302,9 @@ export function GitManagerPane({ workspace, view, pane }: PaneComponentProps): J
     if (!cwd) return;
     setBusy(true);
     try {
-      const r = await gitClient.sync(cwd);
-      appendLog("git pull && git push", r);
+      await runWithLiveOutput("$ git pull --progress && git push --progress", (runId) =>
+        gitClient.sync(cwd, { runId }),
+      );
       await refresh();
     } finally {
       setBusy(false);
@@ -528,7 +582,20 @@ export function GitManagerPane({ workspace, view, pane }: PaneComponentProps): J
         </div>
 
         {log ? (
-          <div className="max-h-[26%] shrink-0 overflow-y-auto border-t border-swath-border bg-swath-panel px-2 py-1.5 font-mono text-[11px] text-swath-muted-2">
+          <div
+            ref={logScrollRef}
+            className="max-h-[32%] min-h-[4.5rem] shrink-0 overflow-y-auto border-t border-swath-border bg-[#0d1117] px-2.5 py-2 font-mono text-[11px] text-[#c9d1d9]"
+            aria-live="polite"
+            aria-label="Git command output"
+          >
+            <div className="mb-1 flex items-center justify-between gap-2">
+              <span className="text-[10px] font-semibold uppercase tracking-wide text-swath-muted">
+                Terminal
+              </span>
+              {busy ? (
+                <span className="text-[10px] text-swath-accent">running…</span>
+              ) : null}
+            </div>
             <pre className="m-0 whitespace-pre-wrap break-words">{log}</pre>
           </div>
         ) : null}

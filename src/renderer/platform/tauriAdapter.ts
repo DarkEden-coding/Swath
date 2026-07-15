@@ -102,6 +102,20 @@ export function createTauriSwath(): SwathApi {
     },
     git: {
       rpc: (request: GitRpcRequest) => invoke(TauriCommands.gitRpc, { request }),
+      onData: (callback) => {
+        let disposed = false;
+        let unsubscribe: (() => void) | undefined;
+        void listen<{ runId: string; data: string }>(IpcChannels.gitData, (event) => {
+          callback(event.payload.runId, event.payload.data);
+        }).then((unlisten) => {
+          unsubscribe = unlisten;
+          if (disposed) unlisten();
+        });
+        return () => {
+          disposed = true;
+          unsubscribe?.();
+        };
+      },
     },
   };
 }

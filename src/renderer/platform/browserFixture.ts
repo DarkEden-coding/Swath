@@ -204,6 +204,7 @@ export function createBrowserStubSwath(): SwathApi {
         }
         return { exitCode: 1, stdout: "", stderr: "Unavailable" };
       },
+      onData: () => () => {},
     },
   };
 }

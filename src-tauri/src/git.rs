@@ -1,9 +1,10 @@
-use crate::types::GIT_RUN_MAX_BUFFER_BYTES;
+use crate::types::{GitDataEvent, GIT_RUN_MAX_BUFFER_BYTES};
 use serde_json::{json, Value};
 use std::error::Error;
 use std::io::Read;
 use std::process::{Command, Stdio};
 use std::thread;
+use tauri::{AppHandle, Emitter};
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
@@ -14,6 +15,7 @@ use std::time::{Duration, Instant};
 
 const RS: char = '\x1f';
 const GIT_TIMEOUT: Duration = Duration::from_secs(300);
+const GIT_DATA_EVENT: &str = "git:data";
 
 type GitResult<T> = Result<T, Box<dyn Error + Send + Sync>>;
 
@@ -23,8 +25,32 @@ struct RunGitResult {
     stderr: String,
 }
 
+/// Optional live-output sink for a single git RPC run.
+struct StreamTarget {
+    app: AppHandle,
+    run_id: String,
+}
+
+impl StreamTarget {
+    fn emit(&self, data: &str) {
+        if data.is_empty() {
+            return;
+        }
+        let _ = self.app.emit(
+            GIT_DATA_EVENT,
+            GitDataEvent {
+                run_id: self.run_id.clone(),
+                data: data.to_string(),
+            },
+        );
+    }
+}
+
 /// Drains a child-process stream while retaining at most the configured limit.
-fn read_capped<R: Read + Send + 'static>(mut reader: R) -> thread::JoinHandle<String> {
+fn read_capped<R: Read + Send + 'static>(
+    mut reader: R,
+    stream: Option<StreamTarget>,
+) -> thread::JoinHandle<String> {
     thread::spawn(move || {
         let mut out = Vec::new();
         let mut buf = [0u8; 8192];
@@ -32,9 +58,13 @@ fn read_capped<R: Read + Send + 'static>(mut reader: R) -> thread::JoinHandle<St
             match reader.read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
+                    let chunk = &buf[..n];
                     let remaining = GIT_RUN_MAX_BUFFER_BYTES.saturating_sub(out.len());
                     if remaining > 0 {
-                        out.extend_from_slice(&buf[..n.min(remaining)]);
+                        out.extend_from_slice(&chunk[..n.min(remaining)]);
+                    }
+                    if let Some(ref target) = stream {
+                        target.emit(&String::from_utf8_lossy(chunk));
                     }
                 }
                 Err(_) => break,
@@ -52,14 +82,16 @@ fn git_command(cwd: &str, args: &[&str]) -> Command {
         .current_dir(cwd)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .stderr(Stdio::piped())
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_PROGRESS_DELAY", "0");
     #[cfg(windows)]
     command.creation_flags(CREATE_NO_WINDOW);
     command
 }
 
 /// Runs Git with bounded output and a fixed timeout.
-fn run_git(cwd: &str, args: &[&str]) -> RunGitResult {
+fn run_git(cwd: &str, args: &[&str], stream: Option<&StreamTarget>) -> RunGitResult {
     let mut child = match git_command(cwd, args).spawn() {
         Ok(child) => child,
         Err(err) => {
@@ -68,16 +100,36 @@ fn run_git(cwd: &str, args: &[&str]) -> RunGitResult {
             } else {
                 1
             };
+            let stderr = err.to_string();
+            if let Some(target) = stream {
+                target.emit(&stderr);
+            }
             return RunGitResult {
                 exit_code,
                 stdout: String::new(),
-                stderr: err.to_string(),
+                stderr,
             };
         }
     };
 
-    let stdout_handle = child.stdout.take().map(read_capped);
-    let stderr_handle = child.stderr.take().map(read_capped);
+    let stdout_handle = child.stdout.take().map(|stdout| {
+        read_capped(
+            stdout,
+            stream.map(|s| StreamTarget {
+                app: s.app.clone(),
+                run_id: s.run_id.clone(),
+            }),
+        )
+    });
+    let stderr_handle = child.stderr.take().map(|stderr| {
+        read_capped(
+            stderr,
+            stream.map(|s| StreamTarget {
+                app: s.app.clone(),
+                run_id: s.run_id.clone(),
+            }),
+        )
+    });
     let start = Instant::now();
     let mut timed_out = false;
     let exit_code = loop {
@@ -106,6 +158,9 @@ fn run_git(cwd: &str, args: &[&str]) -> RunGitResult {
         .unwrap_or_default();
     if timed_out && stderr.trim().is_empty() {
         stderr = "git command timed out".to_string();
+        if let Some(target) = stream {
+            target.emit(&stderr);
+        }
     }
     RunGitResult {
         exit_code,
@@ -114,8 +169,8 @@ fn run_git(cwd: &str, args: &[&str]) -> RunGitResult {
     }
 }
 
-fn run_json(cwd: &str, args: &[&str]) -> Value {
-    let r = run_git(cwd.trim(), args);
+fn run_json(cwd: &str, args: &[&str], stream: Option<&StreamTarget>) -> Value {
+    let r = run_git(cwd.trim(), args, stream);
     json!({ "exitCode": r.exit_code, "stdout": r.stdout, "stderr": r.stderr })
 }
 
@@ -129,6 +184,17 @@ fn paths_field(v: &Value) -> Option<Vec<String>> {
         .iter()
         .map(|x| x.as_str().map(ToOwned::to_owned))
         .collect()
+}
+
+fn stream_from_request(app: &AppHandle, request: &Value) -> Option<StreamTarget> {
+    let run_id = str_field(request, "runId")?.trim();
+    if run_id.is_empty() {
+        return None;
+    }
+    Some(StreamTarget {
+        app: app.clone(),
+        run_id: run_id.to_string(),
+    })
 }
 
 /// Parses NUL-delimited porcelain v1 status into UI-facing collections.
@@ -184,6 +250,7 @@ fn get_status(cwd: &str) -> Value {
             "-b",
             "--untracked-files=all",
         ],
+        None,
     );
     if r.exit_code != 0 {
         return json!({ "ok": false, "branch": null, "staged": [], "unstaged": [], "untracked": [], "error": if r.stderr.trim().is_empty() { "Not a Git repository" } else { r.stderr.trim() }, "stderr": r.stderr });
@@ -199,7 +266,7 @@ fn discard_paths(cwd: &str, paths: &[String]) -> Value {
     let mut tracked = Vec::new();
     let mut untracked = Vec::new();
     for p in paths {
-        if run_git(cwd, &["ls-files", "--error-unmatch", "--", p]).exit_code == 0 {
+        if run_git(cwd, &["ls-files", "--error-unmatch", "--", p], None).exit_code == 0 {
             tracked.push(p.as_str());
         } else {
             untracked.push(p.as_str());
@@ -211,7 +278,7 @@ fn discard_paths(cwd: &str, paths: &[String]) -> Value {
     if !untracked.is_empty() {
         let mut args = vec!["clean", "-f", "-q", "--"];
         args.extend(untracked);
-        let r = run_git(cwd, &args);
+        let r = run_git(cwd, &args, None);
         exit_code = r.exit_code;
         out.push(r.stdout);
         err.push(r.stderr);
@@ -219,7 +286,7 @@ fn discard_paths(cwd: &str, paths: &[String]) -> Value {
     if !tracked.is_empty() && exit_code == 0 {
         let mut args = vec!["restore", "--worktree", "--"];
         args.extend(tracked);
-        let r = run_git(cwd, &args);
+        let r = run_git(cwd, &args, None);
         exit_code = r.exit_code;
         out.push(r.stdout);
         err.push(r.stderr);
@@ -228,11 +295,11 @@ fn discard_paths(cwd: &str, paths: &[String]) -> Value {
 }
 
 fn get_log(cwd: &str) -> Value {
-    let wt = run_git(cwd, &["rev-parse", "--is-inside-work-tree"]);
+    let wt = run_git(cwd, &["rev-parse", "--is-inside-work-tree"], None);
     if wt.exit_code != 0 || wt.stdout.trim() != "true" {
         return json!({ "ok": false, "commits": [], "error": if wt.stderr.trim().is_empty() { "Not a Git repository" } else { wt.stderr.trim() } });
     }
-    if run_git(cwd, &["rev-parse", "-q", "--verify", "HEAD"]).exit_code != 0 {
+    if run_git(cwd, &["rev-parse", "-q", "--verify", "HEAD"], None).exit_code != 0 {
         return json!({ "ok": true, "commits": [] });
     }
     let fmt = format!("--pretty=format:%H{RS}%P{RS}%h{RS}%s{RS}%an{RS}%cr{RS}%D");
@@ -250,6 +317,7 @@ fn get_log(cwd: &str) -> Value {
             "--date=relative",
             &fmt,
         ],
+        None,
     );
     if r.exit_code != 0 {
         return json!({ "ok": false, "commits": [], "error": if r.stderr.trim().is_empty() { "git log failed" } else { r.stderr.trim() }, "stderr": r.stderr });
@@ -277,7 +345,7 @@ fn get_log(cwd: &str) -> Value {
 }
 
 fn list_branches(cwd: &str) -> Value {
-    let r = run_git(cwd, &["branch", "-a", "--format=%(refname:short)"]);
+    let r = run_git(cwd, &["branch", "-a", "--format=%(refname:short)"], None);
     if r.exit_code != 0 {
         return json!({ "ok": false, "branches": [], "error": if r.stderr.trim().is_empty() { "Unable to list branches" } else { r.stderr.trim() } });
     }
@@ -294,7 +362,7 @@ fn list_branches(cwd: &str) -> Value {
 }
 
 /// Dispatches a JSON Git request and returns its JSON response.
-pub fn rpc(request: Value) -> GitResult<Value> {
+pub fn rpc(app: &AppHandle, request: Value) -> GitResult<Value> {
     let op = str_field(&request, "op").unwrap_or("");
     let cwd = str_field(&request, "cwd").unwrap_or("").trim();
     if cwd.is_empty() {
@@ -302,6 +370,7 @@ pub fn rpc(request: Value) -> GitResult<Value> {
             json!({ "ok": false, "error": "Invalid git request", "exitCode": 1, "stdout": "", "stderr": "Invalid git request" }),
         );
     }
+    let stream = stream_from_request(app, &request);
     Ok(match op {
         "getStatus" => get_status(cwd),
         "stagePaths" => {
@@ -311,7 +380,7 @@ pub fn rpc(request: Value) -> GitResult<Value> {
             } else {
                 let mut a = vec!["add", "--"];
                 a.extend(p.iter().map(String::as_str));
-                run_json(cwd, &a)
+                run_json(cwd, &a, None)
             }
         }
         "unstagePaths" => {
@@ -321,7 +390,7 @@ pub fn rpc(request: Value) -> GitResult<Value> {
             } else {
                 let mut a = vec!["restore", "--staged", "--"];
                 a.extend(p.iter().map(String::as_str));
-                run_json(cwd, &a)
+                run_json(cwd, &a, None)
             }
         }
         "discardPaths" => discard_paths(cwd, &paths_field(&request).unwrap_or_default()),
@@ -330,17 +399,23 @@ pub fn rpc(request: Value) -> GitResult<Value> {
             if msg.is_empty() {
                 json!({ "exitCode": 1, "stdout": "", "stderr": "Commit message is required" })
             } else {
-                run_json(cwd, &["commit", "-m", msg])
+                run_json(cwd, &["commit", "-m", msg], stream.as_ref())
             }
         }
-        "pull" => run_json(cwd, &["pull"]),
-        "push" => run_json(cwd, &["push"]),
+        "pull" => run_json(cwd, &["pull", "--progress"], stream.as_ref()),
+        "push" => run_json(cwd, &["push", "--progress"], stream.as_ref()),
         "sync" => {
-            let pull = run_git(cwd, &["pull"]);
+            if let Some(ref target) = stream {
+                target.emit("$ git pull --progress\n");
+            }
+            let pull = run_git(cwd, &["pull", "--progress"], stream.as_ref());
             if pull.exit_code != 0 {
                 json!({ "ok": false, "exitCode": pull.exit_code, "stdout": pull.stdout, "stderr": pull.stderr, "steps": ["pull"] })
             } else {
-                let push = run_git(cwd, &["push"]);
+                if let Some(ref target) = stream {
+                    target.emit("\n$ git push --progress\n");
+                }
+                let push = run_git(cwd, &["push", "--progress"], stream.as_ref());
                 let stdout = format!("{}\n---\n{}", pull.stdout, push.stdout);
                 let stderr = [pull.stderr, push.stderr]
                     .into_iter()
@@ -355,6 +430,7 @@ pub fn rpc(request: Value) -> GitResult<Value> {
         "checkoutBranch" => run_json(
             cwd,
             &["switch", str_field(&request, "branch").unwrap_or("").trim()],
+            None,
         ),
         _ => json!({ "exitCode": 1, "stdout": "", "stderr": "Unknown git operation" }),
     })
