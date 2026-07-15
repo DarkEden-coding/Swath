@@ -23,6 +23,7 @@ struct RunGitResult {
     stderr: String,
 }
 
+/// Drains a child-process stream while retaining at most the configured limit.
 fn read_capped<R: Read + Send + 'static>(mut reader: R) -> thread::JoinHandle<String> {
     thread::spawn(move || {
         let mut out = Vec::new();
@@ -43,6 +44,7 @@ fn read_capped<R: Read + Send + 'static>(mut reader: R) -> thread::JoinHandle<St
     })
 }
 
+/// Builds a non-interactive Git command with captured output.
 fn git_command(cwd: &str, args: &[&str]) -> Command {
     let mut command = Command::new("git");
     command
@@ -56,9 +58,9 @@ fn git_command(cwd: &str, args: &[&str]) -> Command {
     command
 }
 
+/// Runs Git with bounded output and a fixed timeout.
 fn run_git(cwd: &str, args: &[&str]) -> RunGitResult {
     let mut child = match git_command(cwd, args).spawn() {
-
         Ok(child) => child,
         Err(err) => {
             let exit_code = if err.kind() == std::io::ErrorKind::NotFound {
@@ -129,7 +131,10 @@ fn paths_field(v: &Value) -> Option<Vec<String>> {
         .collect()
 }
 
+/// Parses NUL-delimited porcelain v1 status into UI-facing collections.
 fn parse_status_porcelain(stdout: &str) -> (Value, Vec<Value>, Vec<Value>, Vec<String>) {
+    // `-z` makes paths literal and places a rename/copy's source in the next field;
+    // the UI reports the destination path, so that source field is intentionally skipped.
     let mut branch = Value::Null;
     let mut staged = Vec::new();
     let mut unstaged = Vec::new();
@@ -137,11 +142,7 @@ fn parse_status_porcelain(stdout: &str) -> (Value, Vec<Value>, Vec<Value>, Vec<S
     let mut entries = stdout.split('\0').filter(|p| !p.is_empty()).peekable();
     while let Some(entry) = entries.next() {
         if let Some(head) = entry.strip_prefix("## ") {
-            let name = head
-                .split("...")
-                .next()
-                .unwrap_or(head)
-                .trim();
+            let name = head.split("...").next().unwrap_or(head).trim();
             if !name.is_empty() && name != "HEAD (no branch)" {
                 branch = json!(name);
             }
@@ -172,7 +173,18 @@ fn parse_status_porcelain(stdout: &str) -> (Value, Vec<Value>, Vec<Value>, Vec<S
 }
 
 fn get_status(cwd: &str) -> Value {
-    let r = run_git(cwd, &["-c", "core.quotepath=false", "status", "--porcelain=v1", "-z", "-b", "--untracked-files=all"]);
+    let r = run_git(
+        cwd,
+        &[
+            "-c",
+            "core.quotepath=false",
+            "status",
+            "--porcelain=v1",
+            "-z",
+            "-b",
+            "--untracked-files=all",
+        ],
+    );
     if r.exit_code != 0 {
         return json!({ "ok": false, "branch": null, "staged": [], "unstaged": [], "untracked": [], "error": if r.stderr.trim().is_empty() { "Not a Git repository" } else { r.stderr.trim() }, "stderr": r.stderr });
     }
@@ -244,6 +256,8 @@ fn get_log(cwd: &str) -> Value {
     }
     let mut commits = Vec::new();
     for line in r.stdout.lines().filter(|l| !l.trim().is_empty()) {
+        // Graph prefixes contain only decoration characters; the full 40-byte hash is
+        // therefore the first hexadecimal run and anchors the record-separated fields.
         let idx = match line.find(|c: char| c.is_ascii_hexdigit()) {
             Some(i) => i,
             None => continue,
@@ -279,6 +293,7 @@ fn list_branches(cwd: &str) -> Value {
     json!({ "ok": true, "branches": branches })
 }
 
+/// Dispatches a JSON Git request and returns its JSON response.
 pub fn rpc(request: Value) -> GitResult<Value> {
     let op = str_field(&request, "op").unwrap_or("");
     let cwd = str_field(&request, "cwd").unwrap_or("").trim();

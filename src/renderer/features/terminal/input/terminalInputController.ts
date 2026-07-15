@@ -1,7 +1,16 @@
 import type { ShellProfile } from "../../../../shared/types";
-import type { TerminalPastePayload } from "../hooks/useTerminalClipboard";
-import { formatPathPaste } from "../../../utils/terminalPaste";
-import { getModifiedEnterSequence, getTerminalKeyAction, shouldXtermHandleKeyEvent, type TerminalKeyEvent } from "../utils/terminalKeyboard";
+import {
+  formatPathPaste,
+  getClipboardEventFilePaths,
+  getClipboardEventText,
+  type TerminalPastePayload,
+} from "../../../utils/terminalPaste";
+import {
+  getModifiedEnterSequence,
+  getTerminalKeyAction,
+  shouldXtermHandleKeyEvent,
+  type TerminalKeyEvent,
+} from "../utils/terminalKeyboard";
 
 interface Disposable {
   dispose: () => void;
@@ -69,6 +78,7 @@ export interface TerminalInputController {
 
 const RECENT_SELECTION_MS = 2000;
 
+/** Return whether keyboard or clipboard input belongs to a regular editor control. */
 export function isEditableTarget(target: EventTarget | null | undefined): boolean {
   return (
     (typeof HTMLInputElement !== "undefined" && target instanceof HTMLInputElement) ||
@@ -78,17 +88,6 @@ export function isEditableTarget(target: EventTarget | null | undefined): boolea
   );
 }
 
-function getClipboardEventText(event: TerminalInputClipboardEvent): string {
-  return event.clipboardData?.getData("text/plain") ?? "";
-}
-
-function getClipboardEventFilePaths(event: TerminalInputClipboardEvent): string[] {
-  const files = Array.from(event.clipboardData?.files ?? []);
-  return files
-    .map((file) => (file as File & { path?: string }).path)
-    .filter((path): path is string => Boolean(path));
-}
-
 function stopClipboardEvent(event: TerminalInputClipboardEvent): void {
   event.preventDefault();
   event.stopPropagation?.();
@@ -96,9 +95,17 @@ function stopClipboardEvent(event: TerminalInputClipboardEvent): void {
 }
 
 function isShiftEnter(event: TerminalKeyEvent): boolean {
-  return event.type === "keydown" && event.key === "Enter" && Boolean(event.shiftKey) && !event.ctrlKey && !event.metaKey && !event.altKey;
+  return (
+    event.type === "keydown" &&
+    event.key === "Enter" &&
+    Boolean(event.shiftKey) &&
+    !event.ctrlKey &&
+    !event.metaKey &&
+    !event.altKey
+  );
 }
 
+/** Create the keyboard, selection, and clipboard controller for an xterm instance. */
 export function createTerminalInputController({
   terminal,
   shellProfile,
@@ -125,7 +132,9 @@ export function createTerminalInputController({
   disposables.push(() => selectionDisposable.dispose());
 
   const handleXtermKeyEvent = (event: KeyboardEvent): boolean => {
-    const modifiedEnterSequence = isShiftEnter(event) ? "\x1b[13;2u" : getModifiedEnterSequence(event);
+    const modifiedEnterSequence = isShiftEnter(event)
+      ? "\x1b[13;2u"
+      : getModifiedEnterSequence(event);
     if (modifiedEnterSequence) {
       event.preventDefault();
       if (writeTerminalData) {
@@ -138,7 +147,10 @@ export function createTerminalInputController({
 
     if (!shouldXtermHandleKeyEvent(event)) return false;
 
-    if (event.type === "keydown" && getTerminalKeyAction(event, Boolean(getCopySelection(true))) === "copy") {
+    if (
+      event.type === "keydown" &&
+      getTerminalKeyAction(event, Boolean(getCopySelection(true))) === "copy"
+    ) {
       event.preventDefault();
       void copy(true);
       return false;
@@ -183,7 +195,8 @@ export function createTerminalInputController({
   const getCopySelection = (allowRecentSelection: boolean): string => {
     const selection = terminal.getSelection();
     if (selection) return selection;
-    if (allowRecentSelection && now() - lastSelectionAt <= RECENT_SELECTION_MS) return lastSelection;
+    if (allowRecentSelection && now() - lastSelectionAt <= RECENT_SELECTION_MS)
+      return lastSelection;
     return "";
   };
 

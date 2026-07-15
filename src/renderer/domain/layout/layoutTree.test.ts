@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { closePane, collectPaneIds, createPaneLeaf, findPane, splitPaneWithId, updateSplitRatio } from "./layoutTree";
+import {
+  closePane,
+  collectPaneIds,
+  createPaneLeaf,
+  findPane,
+  splitPaneWithId,
+  updateSplitRatio,
+} from "./layoutTree";
 import type { LayoutNode } from "../../../shared/types";
 
 function sample(): LayoutNode {
@@ -9,7 +16,7 @@ function sample(): LayoutNode {
     direction: "vertical",
     ratio: 0.5,
     first: createPaneLeaf("terminal", "pane-1", { cwd: "/tmp", env: { A: "1" } }),
-    second: createPaneLeaf("terminal", "pane-2")
+    second: createPaneLeaf("terminal", "pane-2"),
   };
 }
 

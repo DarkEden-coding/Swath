@@ -10,7 +10,9 @@ import { useConfigStore } from "./state/configStore";
 import { useUiStore } from "./state/uiStore";
 
 const TerminalWorkspace = lazy(() =>
-  import("./features/shell/components/TerminalWorkspace").then((module) => ({ default: module.TerminalWorkspace })),
+  import("./features/shell/components/TerminalWorkspace").then((module) => ({
+    default: module.TerminalWorkspace,
+  })),
 );
 
 const bootScreenClass =
@@ -45,9 +47,12 @@ export function App(): JSX.Element {
 
   useAppBootstrap();
 
-  const activeWorkspace = config?.workspaces.find((workspace) => workspace.id === config.activeWorkspaceId) ?? null;
+  const activeWorkspace =
+    config?.workspaces.find((workspace) => workspace.id === config.activeWorkspaceId) ?? null;
   const activeView =
-    activeWorkspace?.views.find((tab) => tab.id === activeWorkspace.activeViewId) ?? activeWorkspace?.views[0] ?? null;
+    activeWorkspace?.views.find((tab) => tab.id === activeWorkspace.activeViewId) ??
+    activeWorkspace?.views[0] ??
+    null;
 
   useEffect(() => {
     document.documentElement.classList.add(`platform-${window.swath.platform}`);
@@ -98,7 +103,9 @@ export function App(): JSX.Element {
     return <div className={bootScreenClass}>Loading…</div>;
   }
 
-  const gridTemplateColumns = sidebarCollapsed ? "minmax(0,0px) minmax(0,1fr)" : `${sidebarWidthPx}px minmax(0,1fr)`;
+  const gridTemplateColumns = sidebarCollapsed
+    ? "minmax(0,0px) minmax(0,1fr)"
+    : `${sidebarWidthPx}px minmax(0,1fr)`;
 
   return (
     <main className="grid h-full min-h-0 w-full bg-swath-bg" style={{ gridTemplateColumns }}>
@@ -116,7 +123,9 @@ export function App(): JSX.Element {
             onKeyDown={(event) => {
               if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
               event.preventDefault();
-              useUiStore.getState().setSidebarWidthPx(sidebarWidthPx + (event.key === "ArrowRight" ? 10 : -10));
+              useUiStore
+                .getState()
+                .setSidebarWidthPx(sidebarWidthPx + (event.key === "ArrowRight" ? 10 : -10));
             }}
             className="group absolute inset-y-0 -right-[5px] z-[3] flex w-5 cursor-col-resize touch-none items-center justify-center [-webkit-app-region:no-drag] [app-region:no-drag] hover:bg-[rgba(56,139,253,0.08)]"
             onPointerDown={beginSidebarResize}
@@ -146,7 +155,10 @@ export function App(): JSX.Element {
               />
             </Suspense>
           ) : (
-            <EmptyState sidebarCollapsed={sidebarCollapsed} onToggleSidebar={() => toggleSidebarCollapsed()} />
+            <EmptyState
+              sidebarCollapsed={sidebarCollapsed}
+              onToggleSidebar={() => toggleSidebarCollapsed()}
+            />
           )}
         </section>
         <StatusBar />

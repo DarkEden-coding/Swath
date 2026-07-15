@@ -7,7 +7,7 @@ export default defineConfig({
   clearScreen: false,
   server: {
     port: 5173,
-    strictPort: true
+    strictPort: true,
   },
   envPrefix: ["VITE_", "TAURI_"],
   build: {
@@ -18,10 +18,15 @@ export default defineConfig({
       output: {
         manualChunks: {
           react: ["react", "react-dom"],
-          xterm: ["@xterm/xterm", "@xterm/addon-fit", "@xterm/addon-search", "@xterm/addon-web-links"],
-          state: ["zustand"]
-        }
-      }
-    }
-  }
+          xterm: [
+            "@xterm/xterm",
+            "@xterm/addon-fit",
+            "@xterm/addon-search",
+            "@xterm/addon-web-links",
+          ],
+          state: ["zustand"],
+        },
+      },
+    },
+  },
 });

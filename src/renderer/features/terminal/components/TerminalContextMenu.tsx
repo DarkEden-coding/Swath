@@ -31,7 +31,9 @@ export function TerminalContextMenu({ x, y, onAction }: TerminalContextMenuProps
   }, []);
 
   const moveFocus = (direction: number): void => {
-    const buttons = Array.from(menuRef.current?.querySelectorAll<HTMLButtonElement>("button") ?? []);
+    const buttons = Array.from(
+      menuRef.current?.querySelectorAll<HTMLButtonElement>("button") ?? [],
+    );
     const current = buttons.indexOf(document.activeElement as HTMLButtonElement);
     buttons[(current + direction + buttons.length) % buttons.length]?.focus();
   };
@@ -42,7 +44,10 @@ export function TerminalContextMenu({ x, y, onAction }: TerminalContextMenuProps
       role="menu"
       aria-label="Terminal actions"
       className="fixed z-40 min-w-[170px] rounded-lg border border-swath-border bg-[rgba(13,17,23,0.98)] p-1.5 shadow-swath [-webkit-app-region:no-drag] [app-region:no-drag]"
-      style={{ left: Math.max(4, Math.min(x, window.innerWidth - 182)), top: Math.max(4, Math.min(y, window.innerHeight - 390)) }}
+      style={{
+        left: Math.max(4, Math.min(x, window.innerWidth - 182)),
+        top: Math.max(4, Math.min(y, window.innerHeight - 390)),
+      }}
       onKeyDown={(event) => {
         if (event.key === "ArrowDown" || event.key === "ArrowUp") {
           event.preventDefault();
@@ -51,7 +56,13 @@ export function TerminalContextMenu({ x, y, onAction }: TerminalContextMenuProps
       }}
     >
       {terminalContextActions.map(([id, label]) => (
-        <button key={id} type="button" role="menuitem" className={menuBtn} onClick={() => onAction(id)}>
+        <button
+          key={id}
+          type="button"
+          role="menuitem"
+          className={menuBtn}
+          onClick={() => onAction(id)}
+        >
           {label}
         </button>
       ))}

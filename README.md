@@ -75,30 +75,30 @@ This runs Tauri with a Vite-powered renderer and a Rust backend.
 
 ## Useful Commands
 
-| Command | What it does |
-| --- | --- |
-| `npm run dev` | Starts Swath in Tauri development mode. |
-| `npm run dev:renderer` | Starts only the Vite renderer dev server. |
-| `npm run typecheck` | Runs TypeScript without emitting files. |
-| `npm test` | Runs the terminal paste test script. |
-| `npm run test:unit` | Runs Vitest unit tests. |
-| `npm run build:renderer` | Builds renderer assets into `dist/`. |
-| `npm run build` | Builds the Tauri app bundle. |
-| `npm run dist` | Builds distributable Tauri packages. |
-| `npm run install:mac` | Builds and installs Swath to `/Applications` on macOS. |
-| `npm run install:win` | Builds Swath and creates a Windows Start Menu shortcut. |
+| Command                  | What it does                                            |
+| ------------------------ | ------------------------------------------------------- |
+| `npm run dev`            | Starts Swath in Tauri development mode.                 |
+| `npm run dev:renderer`   | Starts only the Vite renderer dev server.               |
+| `npm run typecheck`      | Runs TypeScript without emitting files.                 |
+| `npm test`               | Runs the terminal paste test script.                    |
+| `npm run test:unit`      | Runs Vitest unit tests.                                 |
+| `npm run build:renderer` | Builds renderer assets into `dist/`.                    |
+| `npm run build`          | Builds the Tauri app bundle.                            |
+| `npm run dist`           | Builds distributable Tauri packages.                    |
+| `npm run install:mac`    | Builds and installs Swath to `/Applications` on macOS.  |
+| `npm run install:win`    | Builds Swath and creates a Windows Start Menu shortcut. |
 
 ## Keyboard Shortcuts
 
-| Shortcut | Action |
-| --- | --- |
-| `Cmd/Ctrl + Shift + O` | Add workspace |
-| `Cmd/Ctrl + T` | New terminal view |
-| `Cmd/Ctrl + W` | Close terminal view |
-| `Cmd/Ctrl + \` | Split active pane right |
-| `Cmd/Ctrl + Shift + \` | Split active pane down |
-| `Cmd/Ctrl + Shift + W` | Close active pane |
-| `Cmd/Ctrl + ,` | Open settings |
+| Shortcut               | Action                  |
+| ---------------------- | ----------------------- |
+| `Cmd/Ctrl + Shift + O` | Add workspace           |
+| `Cmd/Ctrl + T`         | New terminal view       |
+| `Cmd/Ctrl + W`         | Close terminal view     |
+| `Cmd/Ctrl + \`         | Split active pane right |
+| `Cmd/Ctrl + Shift + \` | Split active pane down  |
+| `Cmd/Ctrl + Shift + W` | Close active pane       |
+| `Cmd/Ctrl + ,`         | Open settings           |
 
 ## Persistence
 

@@ -19,7 +19,12 @@ export interface CommandContext {
   addWorkspaceFromFolder: () => void | Promise<void>;
   createView: (workspaceId?: string) => void;
   closeView: (workspaceId: string, viewId: string) => void;
-  splitPane: (workspaceId: string, viewId: string, paneId: string, direction: SplitDirection) => void;
+  splitPane: (
+    workspaceId: string,
+    viewId: string,
+    paneId: string,
+    direction: SplitDirection,
+  ) => void;
   closePane: (workspaceId: string, viewId: string, paneId: string) => void;
   openSettings: () => void;
 }
@@ -30,14 +35,22 @@ export function runAppCommand(command: string, context: CommandContext): void {
   if (command === "terminal:paste") window.dispatchEvent(new Event("swath:terminal-paste"));
   if (command === "workspace:add") void context.addWorkspaceFromFolder();
   if (command === "view:new" || command === "tab:new") context.createView();
-  if ((command === "view:close" || command === "tab:close") && workspace && view) context.closeView(workspace.id, view.id);
+  if ((command === "view:close" || command === "tab:close") && workspace && view)
+    context.closeView(workspace.id, view.id);
   runPaneCommand(command, context, workspace, view);
   if (command === "settings:open") context.openSettings();
 }
 
-function runPaneCommand(command: string, context: CommandContext, workspace: Workspace | null, view: WorkspaceView | null): void {
+function runPaneCommand(
+  command: string,
+  context: CommandContext,
+  workspace: Workspace | null,
+  view: WorkspaceView | null,
+): void {
   if (!workspace || !view || !context.activePaneId) return;
-  if (command === "pane:split-right") context.splitPane(workspace.id, view.id, context.activePaneId, "vertical");
-  if (command === "pane:split-down") context.splitPane(workspace.id, view.id, context.activePaneId, "horizontal");
+  if (command === "pane:split-right")
+    context.splitPane(workspace.id, view.id, context.activePaneId, "vertical");
+  if (command === "pane:split-down")
+    context.splitPane(workspace.id, view.id, context.activePaneId, "horizontal");
   if (command === "pane:close") context.closePane(workspace.id, view.id, context.activePaneId);
 }

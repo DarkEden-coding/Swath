@@ -35,7 +35,9 @@ function syncViewportDomScroll(entry: TerminalCacheEntry): void {
   }
 
   if (scrollState.scrollHeight > 0) {
-    viewport.scrollTop = Math.round((scrollState.scrollTop / scrollState.scrollHeight) * viewport.scrollHeight);
+    viewport.scrollTop = Math.round(
+      (scrollState.scrollTop / scrollState.scrollHeight) * viewport.scrollHeight,
+    );
   }
 }
 
@@ -70,7 +72,10 @@ export function restoreTerminalScrollState(entry: TerminalCacheEntry): void {
   window.setTimeout(() => syncViewportDomScroll(entry), 0);
 }
 
-export function detachCachedTerminalElement(entry: TerminalCacheEntry, host?: HTMLElement | null): void {
+export function detachCachedTerminalElement(
+  entry: TerminalCacheEntry,
+  host?: HTMLElement | null,
+): void {
   const element = entry.terminal.element;
   if (!element) return;
   if (host && element.parentElement !== host) return;

@@ -8,7 +8,10 @@ export function updateSettings(config: AppConfig, settings: Partial<AppSettings>
 export function addShellProfile(config: AppConfig, profile: Omit<ShellProfile, "id">): AppConfig {
   return {
     ...config,
-    settings: { ...config.settings, shellProfiles: [...config.settings.shellProfiles, { ...profile, id: createId("shell") }] }
+    settings: {
+      ...config.settings,
+      shellProfiles: [...config.settings.shellProfiles, { ...profile, id: createId("shell") }],
+    },
   };
 }
 
@@ -20,7 +23,10 @@ export function removeShellProfile(config: AppConfig, profileId: string): AppCon
     settings: {
       ...config.settings,
       shellProfiles,
-      defaultShellProfileId: config.settings.defaultShellProfileId === profileId ? shellProfiles[0]!.id : config.settings.defaultShellProfileId
-    }
+      defaultShellProfileId:
+        config.settings.defaultShellProfileId === profileId
+          ? shellProfiles[0]!.id
+          : config.settings.defaultShellProfileId,
+    },
   };
 }

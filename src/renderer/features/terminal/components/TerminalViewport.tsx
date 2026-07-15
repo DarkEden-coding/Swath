@@ -5,7 +5,10 @@ interface TerminalViewportProps {
   suspended?: boolean;
 }
 
-export function TerminalViewport({ hostRef, suspended = false }: TerminalViewportProps): JSX.Element {
+export function TerminalViewport({
+  hostRef,
+  suspended = false,
+}: TerminalViewportProps): JSX.Element {
   return (
     <div
       ref={hostRef}

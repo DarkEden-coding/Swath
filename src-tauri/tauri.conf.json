@@ -33,11 +33,7 @@
     "targets": ["app", "nsis", "appimage", "deb"],
     "shortDescription": "Terminal-first project/workspace manager",
     "longDescription": "A lightweight terminal-first project/workspace manager for coding agents.",
-    "icon": [
-      "icons/icon.png",
-      "icons/icon.ico",
-      "icons/icon.icns"
-    ],
+    "icon": ["icons/icon.png", "icons/icon.ico", "icons/icon.icns"],
     "macOS": {},
     "windows": {
       "webviewInstallMode": {

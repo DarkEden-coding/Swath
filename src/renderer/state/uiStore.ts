@@ -4,7 +4,10 @@ const SIDEBAR_WIDTH_MIN = 180;
 const SIDEBAR_WIDTH_HARD_MAX = 560;
 
 function clampSidebarWidthPx(width: number): number {
-  const max = Math.max(SIDEBAR_WIDTH_MIN, Math.min(SIDEBAR_WIDTH_HARD_MAX, Math.floor(window.innerWidth * 0.5)));
+  const max = Math.max(
+    SIDEBAR_WIDTH_MIN,
+    Math.min(SIDEBAR_WIDTH_HARD_MAX, Math.floor(window.innerWidth * 0.5)),
+  );
   return Math.round(Math.max(SIDEBAR_WIDTH_MIN, Math.min(max, width)));
 }
 
@@ -35,5 +38,5 @@ export const useUiStore = create<UiState>((set) => ({
   setActivePaneId: (activePaneId) => set({ activePaneId }),
   setSidebarCollapsed: (sidebarCollapsed) => set({ sidebarCollapsed }),
   toggleSidebarCollapsed: () => set((state) => ({ sidebarCollapsed: !state.sidebarCollapsed })),
-  setSidebarWidthPx: (width) => set({ sidebarWidthPx: clampSidebarWidthPx(width) })
+  setSidebarWidthPx: (width) => set({ sidebarWidthPx: clampSidebarWidthPx(width) }),
 }));

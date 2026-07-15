@@ -7,7 +7,7 @@ const stroke = {
   stroke: "currentColor",
   strokeWidth: 2,
   strokeLinecap: "round" as const,
-  strokeLinejoin: "round" as const
+  strokeLinejoin: "round" as const,
 };
 
 export function IconFolder(props: IconProps): JSX.Element {
@@ -20,7 +20,12 @@ export function IconFolder(props: IconProps): JSX.Element {
 
 export function IconSettings(props: IconProps): JSX.Element {
   const { strokeWidth: swProp, ...rest } = props;
-  const sw = typeof swProp === "number" ? swProp : typeof swProp === "string" ? Number.parseFloat(swProp) || 1.5 : 1.5;
+  const sw =
+    typeof swProp === "number"
+      ? swProp
+      : typeof swProp === "string"
+        ? Number.parseFloat(swProp) || 1.5
+        : 1.5;
   return (
     <svg
       viewBox="0 0 24 24"

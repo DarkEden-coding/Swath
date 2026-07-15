@@ -6,26 +6,53 @@ import { terminalClient } from "../../../services/terminalClient";
 import { createId } from "../../../utils/ids";
 import type { TabTypeRegistration } from "../types";
 
-const TerminalPane = lazy(() => import("./TerminalPane").then((module) => ({ default: module.TerminalPane })));
+const TerminalPane = lazy(() =>
+  import("./TerminalPane").then((module) => ({ default: module.TerminalPane })),
+);
 
 function shellFor(settings: AppSettings): ShellProfile | null {
-  return settings.shellProfiles.find((profile) => profile.id === settings.defaultShellProfileId) ?? settings.shellProfiles[0] ?? null;
+  return (
+    settings.shellProfiles.find((profile) => profile.id === settings.defaultShellProfileId) ??
+    settings.shellProfiles[0] ??
+    null
+  );
 }
 
-export function createTerminalPaneMeta(settings: AppSettings, cwd?: string): Partial<Omit<PaneLeaf, "type" | "id">> {
+export function createTerminalPaneMeta(
+  settings: AppSettings,
+  cwd?: string,
+): Partial<Omit<PaneLeaf, "type" | "id">> {
   const shellProfile = shellFor(settings);
   return {
     kind: "terminal",
     cwd,
     shellProfile,
     env: { ...(settings.globalEnv ?? {}) },
-    metadata: { cwd, shellProfileId: shellProfile?.id, shellProfile, env: { ...(settings.globalEnv ?? {}) } }
+    metadata: {
+      cwd,
+      shellProfileId: shellProfile?.id,
+      shellProfile,
+      env: { ...(settings.globalEnv ?? {}) },
+    },
   };
 }
 
-export function createTerminalView(title = "Terminal", cwd?: string, settings?: AppSettings): WorkspaceView {
-  const pane = createPaneNode(undefined, settings ? createTerminalPaneMeta(settings, cwd) : { kind: "terminal" });
-  return { id: createId("view"), type: "workspace-view", title, layout: pane, activePaneId: pane.id };
+export function createTerminalView(
+  title = "Terminal",
+  cwd?: string,
+  settings?: AppSettings,
+): WorkspaceView {
+  const pane = createPaneNode(
+    undefined,
+    settings ? createTerminalPaneMeta(settings, cwd) : { kind: "terminal" },
+  );
+  return {
+    id: createId("view"),
+    type: "workspace-view",
+    title,
+    layout: pane,
+    activePaneId: pane.id,
+  };
 }
 
 export const terminalTabType: TabTypeRegistration = {

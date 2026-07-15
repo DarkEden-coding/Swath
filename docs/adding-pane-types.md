@@ -12,7 +12,7 @@ A top-level workspace tab is a `WorkspaceView`; each split cell is a `PaneLeaf`.
 
 That is the full **renderer** checklist for a pane that only uses existing app actions and APIs.
 
-## What you usually do *not* edit
+## What you usually do _not_ edit
 
 - **`src/renderer/features/panes/paneRegistry.ts`** — built from `getTabTypes()`; adding a tab type updates it automatically.
 - **Split / new-tab chrome** — top tabs and pane split buttons already use `getTabTypes()` and shift-click type pickers; no extra wiring per kind.

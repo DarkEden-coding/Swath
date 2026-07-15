@@ -11,6 +11,7 @@ This project is a local Tauri app with three main layers:
 ## Folder map
 
 ### `src/shared/`
+
 Shared contracts.
 
 - `types/` — `AppConfig`, `Workspace`, `WorkspaceView`, `PaneLeaf`, `PaneKind`, settings, terminal, and workspace models.
@@ -18,6 +19,7 @@ Shared contracts.
 - `memoryLimits.ts` — shared limits for terminal scrollback/replay and git output.
 
 ### `src/renderer/`
+
 React app.
 
 - `main.tsx` — bootstraps React, loads CSS, and attaches the browser/Tauri adapter.
@@ -30,6 +32,7 @@ React app.
 - `features/` — UI features (shell layout, panes, tabs, settings, terminal, git manager).
 
 ### `src-tauri/`
+
 Native backend.
 
 - `src/config.rs` — SQLite persistence and config normalization.

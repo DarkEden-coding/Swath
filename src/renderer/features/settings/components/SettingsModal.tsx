@@ -29,20 +29,36 @@ export function SettingsModal(): JSX.Element | null {
   useEffect(() => {
     if (!open) return;
     const previousFocus = document.activeElement as HTMLElement | null;
-    requestAnimationFrame(() => dialogRef.current?.querySelector<HTMLElement>("button, input, select, [tabindex]:not([tabindex='-1'])")?.focus());
+    requestAnimationFrame(() =>
+      dialogRef.current
+        ?.querySelector<HTMLElement>("button, input, select, [tabindex]:not([tabindex='-1'])")
+        ?.focus(),
+    );
     const onKeyDown = (event: KeyboardEvent): void => {
       if (event.key === "Escape") appActions.closeSettings();
       if (event.key === "Tab" && dialogRef.current) {
-        const items = [...dialogRef.current.querySelectorAll<HTMLElement>("button, input, select, [tabindex]:not([tabindex='-1'])")].filter((item) => !item.hasAttribute("disabled"));
+        const items = [
+          ...dialogRef.current.querySelectorAll<HTMLElement>(
+            "button, input, select, [tabindex]:not([tabindex='-1'])",
+          ),
+        ].filter((item) => !item.hasAttribute("disabled"));
         if (!items.length) return;
         const first = items[0];
         const last = items[items.length - 1];
-        if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
-        else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+        if (event.shiftKey && document.activeElement === first) {
+          event.preventDefault();
+          last.focus();
+        } else if (!event.shiftKey && document.activeElement === last) {
+          event.preventDefault();
+          first.focus();
+        }
       }
     };
     window.addEventListener("keydown", onKeyDown);
-    return () => { window.removeEventListener("keydown", onKeyDown); previousFocus?.focus(); };
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      previousFocus?.focus();
+    };
   }, [open]);
 
   if (!open || !config) return null;
@@ -94,8 +110,12 @@ export function SettingsModal(): JSX.Element | null {
       >
         <header className="mb-[18px] flex items-center justify-between gap-3 [-webkit-app-region:drag] [app-region:drag]">
           <div>
-            <div className="text-[11px] font-bold uppercase leading-none tracking-[0.12em] text-swath-muted-2">Local Settings</div>
-            <h2 id="settings-title" className="mt-1 text-lg leading-snug">Terminal preferences</h2>
+            <div className="text-[11px] font-bold uppercase leading-none tracking-[0.12em] text-swath-muted-2">
+              Local Settings
+            </div>
+            <h2 id="settings-title" className="mt-1 text-lg leading-snug">
+              Terminal preferences
+            </h2>
           </div>
           <button
             type="button"
@@ -127,7 +147,8 @@ export function SettingsModal(): JSX.Element | null {
               value={settings.fontSize}
               onChange={(event) => {
                 const value = Number(event.target.value);
-                if (Number.isFinite(value)) appActions.updateSettings({ fontSize: Math.min(28, Math.max(9, value)) });
+                if (Number.isFinite(value))
+                  appActions.updateSettings({ fontSize: Math.min(28, Math.max(9, value)) });
               }}
             />
           </label>
@@ -143,7 +164,8 @@ export function SettingsModal(): JSX.Element | null {
               value={settings.lineHeight}
               onChange={(event) => {
                 const value = Number(event.target.value);
-                if (Number.isFinite(value)) appActions.updateSettings({ lineHeight: Math.min(2, Math.max(1, value)) });
+                if (Number.isFinite(value))
+                  appActions.updateSettings({ lineHeight: Math.min(2, Math.max(1, value)) });
               }}
             />
           </label>
@@ -153,7 +175,11 @@ export function SettingsModal(): JSX.Element | null {
             <select
               className={fieldInput}
               value={settings.cursorStyle}
-              onChange={(event) => appActions.updateSettings({ cursorStyle: event.target.value as "block" | "underline" | "bar" })}
+              onChange={(event) =>
+                appActions.updateSettings({
+                  cursorStyle: event.target.value as "block" | "underline" | "bar",
+                })
+              }
             >
               <option value="block">Block</option>
               <option value="bar">Bar</option>
@@ -176,7 +202,9 @@ export function SettingsModal(): JSX.Element | null {
               type="checkbox"
               className="w-auto [-webkit-app-region:no-drag] [app-region:no-drag]"
               checked={settings.confirmBeforeClosingPane}
-              onChange={(event) => appActions.updateSettings({ confirmBeforeClosingPane: event.target.checked })}
+              onChange={(event) =>
+                appActions.updateSettings({ confirmBeforeClosingPane: event.target.checked })
+              }
             />
             Confirm before closing panes
           </label>
@@ -184,7 +212,9 @@ export function SettingsModal(): JSX.Element | null {
 
         <section className="mt-6 border-t border-swath-border pt-[18px]">
           <h3 className="mb-1 text-[15px]">Global environment</h3>
-          <p className="mb-3 text-xs text-swath-muted-2">These key/value pairs are captured into new panes and passed to spawned shells.</p>
+          <p className="mb-3 text-xs text-swath-muted-2">
+            These key/value pairs are captured into new panes and passed to spawned shells.
+          </p>
           <div className="grid gap-2">
             {Object.entries(settings.globalEnv ?? {}).map(([key, value]) => (
               <div
@@ -192,7 +222,11 @@ export function SettingsModal(): JSX.Element | null {
                 key={key}
               >
                 <strong className="min-w-0 truncate text-[13px]">{key}</strong>
-                <input className={fieldInput} value={value} onChange={(event) => setEnvVar(key, event.target.value)} />
+                <input
+                  className={fieldInput}
+                  value={value}
+                  onChange={(event) => setEnvVar(key, event.target.value)}
+                />
                 <button type="button" className={shellRowBtn} onClick={() => setEnvVar(key, null)}>
                   Remove
                 </button>
@@ -220,7 +254,9 @@ export function SettingsModal(): JSX.Element | null {
 
         <section className="mt-6 border-t border-swath-border pt-[18px]">
           <h3 className="mb-1 text-[15px]">Shell profiles</h3>
-          <p className="mb-3 text-xs text-swath-muted-2">Profiles are spawned from the selected workspace folder.</p>
+          <p className="mb-3 text-xs text-swath-muted-2">
+            Profiles are spawned from the selected workspace folder.
+          </p>
 
           <div className="grid gap-2">
             {settings.shellProfiles.map((profile) => (
@@ -272,7 +308,13 @@ interface ShellProfileRowProps {
   onRemove: () => void;
 }
 
-function ShellProfileRow({ profile, active, canRemove, onDefault, onRemove }: ShellProfileRowProps): JSX.Element {
+function ShellProfileRow({
+  profile,
+  active,
+  canRemove,
+  onDefault,
+  onRemove,
+}: ShellProfileRowProps): JSX.Element {
   const rowRing = active ? "border-swath-accent" : "border-swath-border";
 
   return (
@@ -298,7 +340,5 @@ function ShellProfileRow({ profile, active, canRemove, onDefault, onRemove }: Sh
 }
 
 function splitArgs(value: string): string[] {
-  return value
-    .match(/(?:[^\s"]+|"[^"]*")+/g)
-    ?.map((arg) => arg.replace(/^"|"$/g, "")) ?? [];
+  return value.match(/(?:[^\s"]+|"[^"]*")+/g)?.map((arg) => arg.replace(/^"|"$/g, "")) ?? [];
 }

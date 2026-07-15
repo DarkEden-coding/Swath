@@ -24,5 +24,5 @@ export const useConfigStore = create<ConfigState>((set, get) => ({
   save: async (config) => {
     const target = config ?? get().config;
     if (target) await configClient.save(target);
-  }
+  },
 }));

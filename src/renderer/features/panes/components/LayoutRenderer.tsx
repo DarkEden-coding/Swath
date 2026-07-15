@@ -1,5 +1,12 @@
 import { Suspense, useRef, type PointerEvent as ReactPointerEvent } from "react";
-import type { AppSettings, LayoutNode, PaneLeaf, SplitNode, Workspace, WorkspaceView } from "../../../../shared/types";
+import type {
+  AppSettings,
+  LayoutNode,
+  PaneLeaf,
+  SplitNode,
+  Workspace,
+  WorkspaceView,
+} from "../../../../shared/types";
 import { setSplitRatio } from "../../../app/appActions";
 import { getPaneRegistration } from "../paneRegistry";
 
@@ -10,13 +17,28 @@ interface LayoutRendererProps {
   node: LayoutNode;
 }
 
-export function LayoutRenderer({ workspace, view, settings, node }: LayoutRendererProps): JSX.Element {
+export function LayoutRenderer({
+  workspace,
+  view,
+  settings,
+  node,
+}: LayoutRendererProps): JSX.Element {
   if (node.type === "pane") {
     const pane = node as PaneLeaf;
     const { Component } = getPaneRegistration(pane.kind);
     return (
-      <Suspense fallback={<div className="h-full w-full rounded-md border border-swath-border bg-swath-bg" />}>
-        <Component key={pane.id} workspace={workspace} view={view} pane={pane} settings={settings} />
+      <Suspense
+        fallback={
+          <div className="h-full w-full rounded-md border border-swath-border bg-swath-bg" />
+        }
+      >
+        <Component
+          key={pane.id}
+          workspace={workspace}
+          view={view}
+          pane={pane}
+          settings={settings}
+        />
       </Suspense>
     );
   }
@@ -86,7 +108,10 @@ function SplitRenderer({ workspace, view, settings, node }: SplitRendererProps):
           aria-hidden
         />
       </div>
-      <div className="flex min-h-20 min-w-24 overflow-hidden" style={{ flex: `${1 - node.ratio} 1 0` }}>
+      <div
+        className="flex min-h-20 min-w-24 overflow-hidden"
+        style={{ flex: `${1 - node.ratio} 1 0` }}
+      >
         <LayoutRenderer workspace={workspace} view={view} settings={settings} node={node.second} />
       </div>
     </div>

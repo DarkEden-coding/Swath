@@ -30,13 +30,19 @@ export function EmptyState({ sidebarCollapsed, onToggleSidebar }: EmptyStateProp
       ) : null}
       <div className="grid min-h-0 flex-1 place-items-center">
         <div className="w-[min(460px,calc(100%-48px))] rounded-xl border border-swath-border bg-swath-panel p-7 shadow-swath-lg">
-          <div className="text-xs font-semibold uppercase tracking-wide text-swath-accent">Swath</div>
+          <div className="text-xs font-semibold uppercase tracking-wide text-swath-accent">
+            Swath
+          </div>
           <h1 className="mt-2 text-[28px] font-semibold">Add a project</h1>
           <p className="my-3 leading-relaxed text-swath-muted">
-            Projects map to local folders. Tabs, splits, and shell sessions are tracked per project. Pick a folder to get started, or keep the
-            built-in demo workspaces from a fresh install.
+            Projects map to local folders. Tabs, splits, and shell sessions are tracked per project.
+            Pick a folder to get started, or keep the built-in demo workspaces from a fresh install.
           </p>
-          <button type="button" className={primaryBtn} onClick={() => void appActions.addWorkspaceFromFolder()}>
+          <button
+            type="button"
+            className={primaryBtn}
+            onClick={() => void appActions.addWorkspaceFromFolder()}
+          >
             Choose Folder
           </button>
         </div>

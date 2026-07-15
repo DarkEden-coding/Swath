@@ -136,7 +136,10 @@ export function CommitGraphSvg({
           const x2 = xForCol(path.toCol);
           const y2 = yForRow(path.toRow);
           const midY = y1 + (y2 - y1) / 2;
-          const d = x1 === x2 ? `M ${x1} ${y1} L ${x2} ${y2}` : `M ${x1} ${y1} C ${x1} ${midY}, ${x2} ${midY}, ${x2} ${y2}`;
+          const d =
+            x1 === x2
+              ? `M ${x1} ${y1} L ${x2} ${y2}`
+              : `M ${x1} ${y1} C ${x1} ${midY}, ${x2} ${midY}, ${x2} ${y2}`;
           return (
             <path
               key={path.key}

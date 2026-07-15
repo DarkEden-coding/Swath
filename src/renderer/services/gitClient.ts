@@ -61,10 +61,18 @@ function parsePathEntries(raw: unknown): GitPathEntry[] {
 
 function parseStatus(raw: unknown): GitStatusResult {
   if (!isRecord(raw)) {
-    return { ok: false, branch: null, staged: [], unstaged: [], untracked: [], error: "Invalid response" };
+    return {
+      ok: false,
+      branch: null,
+      staged: [],
+      unstaged: [],
+      untracked: [],
+      error: "Invalid response",
+    };
   }
   const ok = raw.ok === true;
-  const branch = typeof raw.branch === "string" || raw.branch === null ? (raw.branch as string | null) : null;
+  const branch =
+    typeof raw.branch === "string" || raw.branch === null ? (raw.branch as string | null) : null;
   const untrackedRaw = raw.untracked;
   const untracked: string[] = Array.isArray(untrackedRaw)
     ? untrackedRaw.filter((p): p is string => typeof p === "string")
@@ -76,7 +84,7 @@ function parseStatus(raw: unknown): GitStatusResult {
     unstaged: parsePathEntries(raw.unstaged),
     untracked,
     error: typeof raw.error === "string" ? raw.error : undefined,
-    stderr: typeof raw.stderr === "string" ? raw.stderr : undefined
+    stderr: typeof raw.stderr === "string" ? raw.stderr : undefined,
   };
 }
 
@@ -111,7 +119,7 @@ function parseLog(raw: unknown): GitLogResult {
         subject: typeof row.subject === "string" ? row.subject : "",
         author: typeof row.author === "string" ? row.author : "",
         date: typeof row.date === "string" ? row.date : "",
-        refs: typeof row.refs === "string" ? row.refs : ""
+        refs: typeof row.refs === "string" ? row.refs : "",
       });
     }
   }
@@ -119,15 +127,21 @@ function parseLog(raw: unknown): GitLogResult {
     ok,
     commits,
     error: typeof raw.error === "string" ? raw.error : undefined,
-    stderr: typeof raw.stderr === "string" ? raw.stderr : undefined
+    stderr: typeof raw.stderr === "string" ? raw.stderr : undefined,
   };
 }
 
 function parseBranches(raw: unknown): { ok: boolean; branches: string[]; error?: string } {
   if (!isRecord(raw)) return { ok: false, branches: [], error: "Invalid response" };
   const list = raw.branches;
-  const branches = Array.isArray(list) ? list.filter((b): b is string => typeof b === "string") : [];
-  return { ok: raw.ok === true, branches, error: typeof raw.error === "string" ? raw.error : undefined };
+  const branches = Array.isArray(list)
+    ? list.filter((b): b is string => typeof b === "string")
+    : [];
+  return {
+    ok: raw.ok === true,
+    branches,
+    error: typeof raw.error === "string" ? raw.error : undefined,
+  };
 }
 
 async function gitRpc(request: GitRpcRequest): Promise<unknown> {
@@ -159,7 +173,10 @@ export const gitClient = {
   sync(cwd: string): Promise<GitRunResult & { steps?: string[] }> {
     return gitRpc({ op: "sync", cwd }).then((raw) => {
       const base = parseRun(raw);
-      const steps = isRecord(raw) && Array.isArray(raw.steps) ? raw.steps.filter((s): s is string => typeof s === "string") : undefined;
+      const steps =
+        isRecord(raw) && Array.isArray(raw.steps)
+          ? raw.steps.filter((s): s is string => typeof s === "string")
+          : undefined;
       return { ...base, steps };
     });
   },
@@ -171,5 +188,5 @@ export const gitClient = {
   },
   checkoutBranch(cwd: string, branch: string): Promise<GitRunResult> {
     return gitRpc({ op: "checkoutBranch", cwd, branch }).then(parseRun);
-  }
+  },
 };

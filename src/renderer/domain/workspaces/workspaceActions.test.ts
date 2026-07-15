@@ -18,8 +18,8 @@ const config = (): AppConfig => ({
     defaultShellProfileId: "sh",
     shellProfiles: [{ id: "sh", name: "sh", command: "/bin/sh", args: [] }],
     globalEnv: {},
-    confirmBeforeClosingPane: false
-  }
+    confirmBeforeClosingPane: false,
+  },
 });
 
 describe("workspace/view/pane actions", () => {

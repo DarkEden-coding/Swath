@@ -5,7 +5,8 @@ import type { PaneComponentProps } from "../panes/paneTypes";
 export interface TabTypeRegistration {
   kind: PaneLeaf["kind"];
   label: string;
-  Component: ComponentType<PaneComponentProps> | LazyExoticComponent<ComponentType<PaneComponentProps>>;
+  Component:
+    ComponentType<PaneComponentProps> | LazyExoticComponent<ComponentType<PaneComponentProps>>;
   createPaneMeta: (settings: AppSettings, cwd?: string) => Partial<Omit<PaneLeaf, "type" | "id">>;
   createView: (title: string, cwd: string | undefined, settings: AppSettings) => WorkspaceView;
   isBusy?: (paneId: string) => Promise<boolean>;

@@ -1,7 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import { createTerminalInputController } from "./terminalInputController";
 
-function createPasteEvent(text: string, files: Array<{ path?: string }> = []): Event & {
+function createPasteEvent(
+  text: string,
+  files: Array<{ path?: string }> = [],
+): Event & {
   clipboardData: { getData: (type: string) => string; files: Array<{ path?: string }> };
   preventDefault: () => void;
   stopPropagation: () => void;
@@ -171,7 +174,6 @@ describe("createTerminalInputController", () => {
     expect(writeTerminalData).not.toHaveBeenCalled();
   });
 
-
   it("copies current and recent terminal selections through the injected clipboard writer", async () => {
     let now = 1000;
     const terminal = createFakeTerminal();
@@ -223,8 +225,16 @@ describe("createTerminalInputController", () => {
       writeClipboardText: async () => {},
       openSearch: vi.fn(),
     });
-    const xtermKeyHandlerWithoutSelection = terminalWithoutSelection.attachCustomKeyEventHandler.mock.calls[0][0];
-    expect(xtermKeyHandlerWithoutSelection({ type: "keydown", key: "c", ctrlKey: true, preventDefault: vi.fn() })).toBe(true);
+    const xtermKeyHandlerWithoutSelection =
+      terminalWithoutSelection.attachCustomKeyEventHandler.mock.calls[0][0];
+    expect(
+      xtermKeyHandlerWithoutSelection({
+        type: "keydown",
+        key: "c",
+        ctrlKey: true,
+        preventDefault: vi.fn(),
+      }),
+    ).toBe(true);
 
     const preventDefault = vi.fn();
     controller.handleKeyDown({ key: "f", ctrlKey: true, preventDefault });

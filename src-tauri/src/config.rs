@@ -1,11 +1,12 @@
 use crate::types::*;
 use anyhow::{anyhow, Context, Result};
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use std::{collections::HashMap, fs, path::PathBuf};
 use tauri::{AppHandle, Manager};
 
 const DB_FILE: &str = "swath.sqlite3";
 
+/// Resolves and creates the application data directory for the config database.
 fn db_path(app: &AppHandle) -> Result<PathBuf> {
     let dir = app
         .path()
@@ -15,6 +16,7 @@ fn db_path(app: &AppHandle) -> Result<PathBuf> {
     Ok(dir.join(DB_FILE))
 }
 
+/// Opens the config database and ensures its schema is ready.
 fn connection(app: &AppHandle) -> Result<Connection> {
     let file = db_path(app)?;
     migrate_legacy_sqlite_db(app, &file).ok();
@@ -32,6 +34,7 @@ fn connection(app: &AppHandle) -> Result<Connection> {
     Ok(conn)
 }
 
+/// Copies a legacy database into the current app data directory when needed.
 fn migrate_legacy_sqlite_db(_app: &AppHandle, new_path: &PathBuf) -> Result<()> {
     if new_path.exists() {
         return Ok(());
@@ -73,6 +76,7 @@ fn legacy_user_data_path() -> Option<PathBuf> {
     }
 }
 
+/// Loads and normalizes the persisted application configuration.
 pub fn load(app: &AppHandle) -> Result<AppConfig> {
     let conn = connection(app)?;
     let json: Option<String> = conn
@@ -91,6 +95,7 @@ pub fn load(app: &AppHandle) -> Result<AppConfig> {
     Ok(config)
 }
 
+/// Normalizes and persists the application configuration.
 pub fn save(app: &AppHandle, config: &AppConfig) -> Result<()> {
     let conn = connection(app)?;
     let mut normalized = config.clone();
@@ -107,20 +112,7 @@ pub fn save(app: &AppHandle, config: &AppConfig) -> Result<()> {
     Ok(())
 }
 
-trait OptionalRow<T> {
-    fn optional(self) -> rusqlite::Result<Option<T>>;
-}
-
-impl<T> OptionalRow<T> for rusqlite::Result<T> {
-    fn optional(self) -> rusqlite::Result<Option<T>> {
-        match self {
-            Ok(value) => Ok(Some(value)),
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-            Err(err) => Err(err),
-        }
-    }
-}
-
+/// Repairs defaults and removes workspaces whose paths no longer exist.
 fn normalize_config(config: &mut AppConfig) {
     config.version = 2;
     let mut changed_active = false;
@@ -153,6 +145,7 @@ fn normalize_config(config: &mut AppConfig) {
     }
 }
 
+/// Builds the default application configuration.
 pub fn default_config() -> AppConfig {
     AppConfig {
         version: 2,
@@ -162,6 +155,7 @@ pub fn default_config() -> AppConfig {
     }
 }
 
+/// Builds platform-appropriate default application settings.
 pub fn default_settings() -> AppSettings {
     let shell_profiles = default_shell_profiles();
     AppSettings {
@@ -184,6 +178,7 @@ pub fn default_settings() -> AppSettings {
     }
 }
 
+/// Returns the built-in shell profiles for the current platform.
 pub fn default_shell_profiles() -> Vec<ShellProfile> {
     if cfg!(target_os = "windows") {
         return vec![

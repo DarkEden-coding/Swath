@@ -1,4 +1,12 @@
-import { useEffect, useRef, useState, type ClipboardEvent, type DragEvent, type KeyboardEvent, type MouseEvent } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type ClipboardEvent,
+  type DragEvent,
+  type KeyboardEvent,
+  type MouseEvent,
+} from "react";
 import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
 import { WebLinksAddon } from "@xterm/addon-web-links";
@@ -13,9 +21,12 @@ import type { PaneComponentProps } from "../../panes/paneTypes";
 import { TerminalContextMenu } from "./TerminalContextMenu";
 import { TerminalSearchBar } from "./TerminalSearchBar";
 import { TerminalViewport } from "./TerminalViewport";
-import { TERMINAL_COL_RESERVE } from "../hooks/useTerminalInstance";
-import { readTerminalPastePayload } from "../hooks/useTerminalClipboard";
-import { createTerminalInputController, type TerminalInputController } from "../input/terminalInputController";
+import { readTerminalPastePayload } from "../../../utils/terminalPaste";
+import { TERMINAL_COL_RESERVE, TERMINAL_THEME } from "../runtime/terminalConfig";
+import {
+  createTerminalInputController,
+  type TerminalInputController,
+} from "../input/terminalInputController";
 import { TERMINAL_SCROLLBACK_LINES } from "../../../../shared/memoryLimits";
 import {
   captureTerminalScrollState,
@@ -27,31 +38,12 @@ import {
   terminalCache,
 } from "../runtime/terminalCache";
 
-const TERMINAL_THEME = {
-  background: "#0d1117",
-  foreground: "#c9d1d9",
-  cursor: "#58a6ff",
-  selectionBackground: "#264f78",
-  black: "#0d1117",
-  red: "#ff7b72",
-  green: "#3fb950",
-  yellow: "#d29922",
-  blue: "#58a6ff",
-  magenta: "#bc8cff",
-  cyan: "#39c5cf",
-  white: "#c9d1d9",
-  brightBlack: "#6e7681",
-  brightRed: "#ffa198",
-  brightGreen: "#56d364",
-  brightYellow: "#e3b341",
-  brightBlue: "#79c0ff",
-  brightMagenta: "#d2a8ff",
-  brightCyan: "#56d4dd",
-  brightWhite: "#f0f6fc",
-} as const;
-
 function shellFor(settings: AppSettings): ShellProfile | null {
-  return settings.shellProfiles.find((profile) => profile.id === settings.defaultShellProfileId) ?? settings.shellProfiles[0] ?? null;
+  return (
+    settings.shellProfiles.find((profile) => profile.id === settings.defaultShellProfileId) ??
+    settings.shellProfiles[0] ??
+    null
+  );
 }
 
 function normalizeEnv(env: unknown): Record<string, string> | undefined {
@@ -60,13 +52,17 @@ function normalizeEnv(env: unknown): Record<string, string> | undefined {
   return env as Record<string, string>;
 }
 
-function removeForeignTerminalElements(host: HTMLElement, currentElement: HTMLElement | undefined): void {
+function removeForeignTerminalElements(
+  host: HTMLElement,
+  currentElement: HTMLElement | undefined,
+): void {
   Array.from(host.children).forEach((child) => {
     if (child === currentElement) return;
     if (child.classList.contains("xterm")) host.removeChild(child);
   });
 }
 
+/** Render and manage the cached xterm instance for a workspace pane. */
 export function TerminalPane({ workspace, view, pane, settings }: PaneComponentProps): JSX.Element {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<Terminal | null>(null);
@@ -85,11 +81,13 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
   const paneId = pane.id;
 
   const initialSettingsRef = useRef(settings);
-  const initialShellProfileRef = useRef<ShellProfile | null>(shellFor(settings));
+  const [initialShellProfile] = useState<ShellProfile | null>(() => shellFor(settings));
 
   const paneMeta = findPane(view.layout, paneId);
-  const headerLine = paneMeta?.title ?? paneMeta?.metadata?.title ?? paneMeta?.promptLabel ?? `${workspace.name}`;
-  const paneShellProfile = paneMeta?.shellProfile ?? paneMeta?.metadata?.shellProfile ?? initialShellProfileRef.current;
+  const headerLine =
+    paneMeta?.title ?? paneMeta?.metadata?.title ?? paneMeta?.promptLabel ?? `${workspace.name}`;
+  const paneShellProfile =
+    paneMeta?.shellProfile ?? paneMeta?.metadata?.shellProfile ?? initialShellProfile;
 
   const isActive = activePaneId === paneId || view.activePaneId === paneId;
 
@@ -128,7 +126,8 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
     if (cachedEntry) {
       const terminalElement = terminal.element;
       removeForeignTerminalElements(host, terminalElement);
-      if (terminalElement && terminalElement.parentElement !== host) host.appendChild(terminalElement);
+      if (terminalElement && terminalElement.parentElement !== host)
+        host.appendChild(terminalElement);
     } else {
       removeForeignTerminalElements(host, undefined);
       terminal.loadAddon(fit);
@@ -169,7 +168,10 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
           cols: terminal.cols,
           rows: terminal.rows,
           shellProfile: paneShellProfile,
-          env: paneMeta?.env ?? normalizeEnv(paneMeta?.metadata?.env) ?? initialSettingsRef.current.globalEnv,
+          env:
+            paneMeta?.env ??
+            normalizeEnv(paneMeta?.metadata?.env) ??
+            initialSettingsRef.current.globalEnv,
         });
       } catch (error) {
         startedSessions.delete(paneId);
@@ -189,7 +191,8 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
       if (terminal.cols !== cols || terminal.rows !== dimensions.rows) {
         terminal.resize(cols, dimensions.rows);
       }
-      if (startedSessions.has(paneId)) terminalClient.resize({ sessionId: paneId, cols: terminal.cols, rows: terminal.rows });
+      if (startedSessions.has(paneId))
+        terminalClient.resize({ sessionId: paneId, cols: terminal.cols, rows: terminal.rows });
     };
 
     const observer = new ResizeObserver(() => fitAndResize());
@@ -225,11 +228,9 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
 
           if (data === "\r") {
             terminal.write("\r\x1b[K");
-            const dormantInput = dormantInputRef.current + "\r";
+            startPty();
+            terminalClient.write(paneId, dormantInputRef.current + "\r");
             dormantInputRef.current = "";
-            void startPty()
-              .then(() => terminalClient.write(paneId, dormantInput))
-              .catch(() => undefined);
           } else if (data === "\x7f") {
             if (dormantInputRef.current.length > 0) {
               dormantInputRef.current = dormantInputRef.current.slice(0, -1);
@@ -240,10 +241,12 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
             terminal.write(data);
           }
         });
-    const removeDataListener = cachedEntry ? null : terminalClient.onData((sessionId, data) => {
-      if (sessionId !== paneId) return;
-      terminal.write(data);
-    });
+    const removeDataListener = cachedEntry
+      ? null
+      : terminalClient.onData((sessionId, data) => {
+          if (sessionId !== paneId) return;
+          terminal.write(data);
+        });
     const removeExitListener = cachedEntry
       ? null
       : terminalClient.onExit((sessionId) => {
@@ -252,7 +255,8 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
           exitStateSetters.get(paneId)?.(true);
           const entry = terminalCache.get(paneId);
           if (entry) entry.stopped = true;
-          const message = "\r\n\x1b[2m[process exited — close, restart, or split a new terminal]\x1b[0m\r\n";
+          const message =
+            "\r\n\x1b[2m[process exited — close, restart, or split a new terminal]\x1b[0m\r\n";
           terminal.write(message);
         });
 
@@ -273,7 +277,8 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
     const viewport = host.querySelector<HTMLElement>(".xterm-viewport");
     const showScrollbar = (): void => {
       host.classList.add("is-scrolling");
-      if (scrollbarHideTimerRef.current !== null) window.clearTimeout(scrollbarHideTimerRef.current);
+      if (scrollbarHideTimerRef.current !== null)
+        window.clearTimeout(scrollbarHideTimerRef.current);
       scrollbarHideTimerRef.current = window.setTimeout(() => {
         host.classList.remove("is-scrolling");
         scrollbarHideTimerRef.current = null;
@@ -284,7 +289,8 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
     return () => {
       observer.disconnect();
       viewport?.removeEventListener("scroll", showScrollbar);
-      if (scrollbarHideTimerRef.current !== null) window.clearTimeout(scrollbarHideTimerRef.current);
+      if (scrollbarHideTimerRef.current !== null)
+        window.clearTimeout(scrollbarHideTimerRef.current);
       host.classList.remove("is-scrolling");
       webLinksDisposableRef.current?.dispose();
       webLinksDisposableRef.current = null;
@@ -302,7 +308,17 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
       fitRef.current = null;
       searchRef.current = null;
     };
-  }, [isActive, paneId, view.id, workspace.path]);
+  }, [
+    isActive,
+    paneId,
+    paneMeta?.cwd,
+    paneMeta?.env,
+    paneMeta?.metadata?.cwd,
+    paneMeta?.metadata?.env,
+    paneShellProfile,
+    view.id,
+    workspace.path,
+  ]);
 
   useEffect(() => {
     const terminal = termRef.current;
@@ -321,10 +337,21 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
         termRef.current.resize(cols, dimensions.rows);
       }
       if (startedSessions.has(paneId)) {
-        terminalClient.resize({ sessionId: paneId, cols: termRef.current.cols, rows: termRef.current.rows });
+        terminalClient.resize({
+          sessionId: paneId,
+          cols: termRef.current.cols,
+          rows: termRef.current.rows,
+        });
       }
     });
-  }, [paneId, settings.cursorBlink, settings.cursorStyle, settings.fontFamily, settings.fontSize, settings.lineHeight]);
+  }, [
+    paneId,
+    settings.cursorBlink,
+    settings.cursorStyle,
+    settings.fontFamily,
+    settings.fontSize,
+    settings.lineHeight,
+  ]);
 
   useEffect(() => {
     if (!isActive) return;
@@ -370,7 +397,12 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
       if (title) appActions.renamePane(workspace.id, view.id, paneId, title);
     }
     if (action === "cwd") {
-      const cwd = window.prompt("Initial CWD for next restart", paneMeta?.cwd ?? paneMeta?.metadata?.cwd ?? workspace.path)?.trim();
+      const cwd = window
+        .prompt(
+          "Initial CWD for next restart",
+          paneMeta?.cwd ?? paneMeta?.metadata?.cwd ?? workspace.path,
+        )
+        ?.trim();
       if (cwd) appActions.setPaneInitialCwd(workspace.id, view.id, paneId, cwd);
     }
     if (action === "splitRight") appActions.splitPane(workspace.id, view.id, paneId, "vertical");
@@ -434,11 +466,17 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
       statusClass={exited ? "exited" : startedSessions.has(paneId) ? "running" : "dormant"}
       onActivate={() => appActions.setActivePane(workspace.id, view.id, paneId)}
       onSplitRight={(kind) => appActions.splitPane(workspace.id, view.id, paneId, "vertical", kind)}
-      onSplitDown={(kind) => appActions.splitPane(workspace.id, view.id, paneId, "horizontal", kind)}
+      onSplitDown={(kind) =>
+        appActions.splitPane(workspace.id, view.id, paneId, "horizontal", kind)
+      }
       onClose={close}
       onKeyDown={onKeyDown}
-      onCopyCapture={(event: ClipboardEvent<HTMLDivElement>) => inputControllerRef.current?.handleCopyEvent(event)}
-      onPasteCapture={(event: ClipboardEvent<HTMLDivElement>) => inputControllerRef.current?.handlePasteEvent(event)}
+      onCopyCapture={(event: ClipboardEvent<HTMLDivElement>) =>
+        inputControllerRef.current?.handleCopyEvent(event)
+      }
+      onPasteCapture={(event: ClipboardEvent<HTMLDivElement>) =>
+        inputControllerRef.current?.handlePasteEvent(event)
+      }
       onDragOver={(event: DragEvent<HTMLDivElement>) => {
         if (event.dataTransfer.files.length > 0) event.preventDefault();
       }}
@@ -465,7 +503,9 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
           onClose={() => setSearchOpen(false)}
         />
       ) : null}
-      {contextMenu ? <TerminalContextMenu x={contextMenu.x} y={contextMenu.y} onAction={runContextAction} /> : null}
+      {contextMenu ? (
+        <TerminalContextMenu x={contextMenu.x} y={contextMenu.y} onAction={runContextAction} />
+      ) : null}
     </PaneFrame>
   );
 }

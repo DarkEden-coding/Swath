@@ -24,14 +24,23 @@ export function isTerminalPasteShortcut(event: TerminalKeyEvent): boolean {
 }
 
 export function shouldXtermHandleKeyEvent(event: TerminalKeyEvent): boolean {
-  return event.type !== "keydown" || (!isTerminalPasteShortcut(event) && !getModifiedEnterSequence(event));
+  return (
+    event.type !== "keydown" ||
+    (!isTerminalPasteShortcut(event) && !getModifiedEnterSequence(event))
+  );
 }
 
-export function getTerminalKeyAction(event: TerminalKeyEvent, hasCopySelection: boolean): TerminalKeyAction {
+export function getTerminalKeyAction(
+  event: TerminalKeyEvent,
+  hasCopySelection: boolean,
+): TerminalKeyAction {
   const key = event.key.toLowerCase();
   const commandModifier = Boolean(event.metaKey || event.ctrlKey) && !event.altKey;
 
-  if ((commandModifier && key === "c" && hasCopySelection) || (event.ctrlKey && key === "insert" && hasCopySelection)) {
+  if (
+    (commandModifier && key === "c" && hasCopySelection) ||
+    (event.ctrlKey && key === "insert" && hasCopySelection)
+  ) {
     return "copy";
   }
 

@@ -5,11 +5,14 @@ import type { PaneComponentProps } from "./paneTypes";
 
 interface PaneRegistration {
   label: string;
-  Component: ComponentType<PaneComponentProps> | LazyExoticComponent<ComponentType<PaneComponentProps>>;
+  Component:
+    ComponentType<PaneComponentProps> | LazyExoticComponent<ComponentType<PaneComponentProps>>;
 }
 
 function buildPaneRegistry(): Record<PaneKind, PaneRegistration> {
-  const entries = getTabTypes().map((t) => [t.kind, { label: t.label, Component: t.Component }] as const);
+  const entries = getTabTypes().map(
+    (t) => [t.kind, { label: t.label, Component: t.Component }] as const,
+  );
   return Object.fromEntries(entries) as Record<PaneKind, PaneRegistration>;
 }
 

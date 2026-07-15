@@ -35,7 +35,9 @@ export function PaneFrame({
   onContextMenu,
   children,
 }: PaneFrameProps): JSX.Element {
-  const ring = active ? "border-[rgba(56,139,253,0.65)] shadow-[0_0_0_1px_rgba(56,139,253,0.12)]" : "border-swath-border";
+  const ring = active
+    ? "border-[rgba(56,139,253,0.65)] shadow-[0_0_0_1px_rgba(56,139,253,0.12)]"
+    : "border-swath-border";
 
   return (
     <div
@@ -49,7 +51,13 @@ export function PaneFrame({
       onDrop={onDrop}
       onContextMenu={onContextMenu}
     >
-      <PaneToolbar title={title} statusClass={statusClass} onSplitRight={onSplitRight} onSplitDown={onSplitDown} onClose={onClose} />
+      <PaneToolbar
+        title={title}
+        statusClass={statusClass}
+        onSplitRight={onSplitRight}
+        onSplitDown={onSplitDown}
+        onClose={onClose}
+      />
       {children}
     </div>
   );

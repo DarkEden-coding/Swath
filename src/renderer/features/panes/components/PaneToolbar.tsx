@@ -17,7 +17,13 @@ function statusDotClass(statusClass: string): string {
   return "bg-swath-muted-2";
 }
 
-export function PaneToolbar({ title, statusClass, onSplitRight, onSplitDown, onClose }: PaneToolbarProps): JSX.Element {
+export function PaneToolbar({
+  title,
+  statusClass,
+  onSplitRight,
+  onSplitDown,
+  onClose,
+}: PaneToolbarProps): JSX.Element {
   const [splitDirection, setSplitDirection] = useState<SplitDirection | null>(null);
   const selectorRef = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -42,7 +48,10 @@ export function PaneToolbar({ title, statusClass, onSplitRight, onSplitDown, onC
   };
 
   useEffect(() => {
-    if (splitDirection) requestAnimationFrame(() => menuRef.current?.querySelector<HTMLButtonElement>("button")?.focus());
+    if (splitDirection)
+      requestAnimationFrame(() =>
+        menuRef.current?.querySelector<HTMLButtonElement>("button")?.focus(),
+      );
   }, [splitDirection]);
 
   const closeMenu = (): void => {
@@ -69,7 +78,10 @@ export function PaneToolbar({ title, statusClass, onSplitRight, onSplitDown, onC
           title="Split right"
           aria-haspopup="menu"
           aria-expanded={splitDirection === "vertical"}
-          onClick={(event) => { triggerRef.current = event.currentTarget; split("vertical", event.shiftKey); }}
+          onClick={(event) => {
+            triggerRef.current = event.currentTarget;
+            split("vertical", event.shiftKey);
+          }}
         >
           <IconColumns width={15} height={15} className="block" />
         </button>
@@ -79,7 +91,10 @@ export function PaneToolbar({ title, statusClass, onSplitRight, onSplitDown, onC
           title="Split down"
           aria-haspopup="menu"
           aria-expanded={splitDirection === "horizontal"}
-          onClick={(event) => { triggerRef.current = event.currentTarget; split("horizontal", event.shiftKey); }}
+          onClick={(event) => {
+            triggerRef.current = event.currentTarget;
+            split("horizontal", event.shiftKey);
+          }}
         >
           <IconRows width={15} height={15} className="block" />
         </button>
@@ -92,7 +107,18 @@ export function PaneToolbar({ title, statusClass, onSplitRight, onSplitDown, onC
           <IconClose width={15} height={15} className="block" />
         </button>
         {splitDirection ? (
-          <div ref={menuRef} role="menu" aria-label="Choose pane type" onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); closeMenu(); } }} className="absolute right-0 top-full z-[100] mt-1 flex min-w-[140px] flex-col gap-0.5 rounded-md border border-swath-border bg-[#1a1a1a] p-1 shadow-swath-float">
+          <div
+            ref={menuRef}
+            role="menu"
+            aria-label="Choose pane type"
+            onKeyDown={(event) => {
+              if (event.key === "Escape") {
+                event.preventDefault();
+                closeMenu();
+              }
+            }}
+            className="absolute right-0 top-full z-[100] mt-1 flex min-w-[140px] flex-col gap-0.5 rounded-md border border-swath-border bg-[#1a1a1a] p-1 shadow-swath-float"
+          >
             {getTabTypes().map((tabType) => (
               <button
                 key={tabType.kind}

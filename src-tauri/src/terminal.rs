@@ -1,3 +1,6 @@
+mod process;
+mod replay;
+
 use crate::types::{
     PtyResizeRequest, TerminalDataEvent, TerminalExitEventPayload, TerminalSessionAttachRequest,
     TerminalSessionStartRequest, TerminalSessionStatus, TERMINAL_REPLAY_DETACHED_MAX_BYTES,
@@ -5,10 +8,11 @@ use crate::types::{
 };
 use anyhow::{anyhow, Result};
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
+use process::has_child_processes;
+use replay::{ReplayBuffer, Utf8StreamDecoder};
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::PathBuf;
-use std::str;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc, Mutex,
@@ -20,6 +24,7 @@ use tauri::{AppHandle, Emitter, Window};
 const DATA_EVENT: &str = "terminal:data";
 const EXIT_EVENT: &str = "terminal:exit";
 
+/// Owns and coordinates all PTY-backed terminal sessions.
 pub struct TerminalManager {
     app: AppHandle,
     sessions: Mutex<HashMap<String, Arc<TerminalSession>>>,
@@ -38,6 +43,7 @@ struct TerminalSession {
 }
 
 impl TerminalManager {
+    /// Creates a terminal manager that emits session events through `app`.
     pub fn new(app: AppHandle) -> Self {
         Self {
             app,
@@ -45,6 +51,7 @@ impl TerminalManager {
         }
     }
 
+    /// Replaces any existing session with the same ID and starts a new PTY.
     pub fn create(&self, request: TerminalSessionStartRequest) -> Result<()> {
         let session_id = request.session_id.clone();
         self.kill(&session_id).ok();
@@ -75,6 +82,7 @@ impl TerminalManager {
         }
     }
 
+    /// Writes input to a terminal session.
     pub fn write(&self, session_id: &str, data: &str) -> Result<()> {
         let session = self.get(session_id)?;
         session.writer.lock().unwrap().write_all(data.as_bytes())?;
@@ -82,6 +90,7 @@ impl TerminalManager {
         Ok(())
     }
 
+    /// Resizes a terminal session PTY.
     pub fn resize(&self, request: PtyResizeRequest) -> Result<()> {
         let session = self.get(&request.session_id)?;
         session.master.lock().unwrap().resize(PtySize {
@@ -93,6 +102,7 @@ impl TerminalManager {
         Ok(())
     }
 
+    /// Stops and removes a terminal session if it exists.
     pub fn kill(&self, session_id: &str) -> Result<()> {
         let session = self.sessions.lock().unwrap().remove(session_id);
         if let Some(session) = session {
@@ -110,6 +120,7 @@ impl TerminalManager {
         Ok(())
     }
 
+    /// Attaches to an existing session, optionally replaying output, or creates it.
     pub fn attach(&self, request: TerminalSessionAttachRequest) -> Result<TerminalSessionStatus> {
         if let Some(session) = self
             .sessions
@@ -135,6 +146,7 @@ impl TerminalManager {
         })
     }
 
+    /// Restarts a session using its original start request.
     pub fn restart(&self, session_id: &str) -> Result<TerminalSessionStatus> {
         let request = self.get(session_id)?.request.clone();
         self.kill(session_id).ok();
@@ -145,6 +157,7 @@ impl TerminalManager {
         })
     }
 
+    /// Emits buffered output for a session to one window.
     pub fn replay_to_window(
         &self,
         window: &Window,
@@ -167,6 +180,7 @@ impl TerminalManager {
         })
     }
 
+    /// Enables live UI events and adjusts replay capacity for attachment state.
     pub fn set_streaming(&self, session_id: &str, enabled: bool) -> Result<()> {
         let session = self.get(session_id)?;
         session.stream_to_ui.store(enabled, Ordering::Relaxed);
@@ -179,6 +193,7 @@ impl TerminalManager {
         Ok(())
     }
 
+    /// Reports whether a running shell has spawned a child process.
     pub fn is_busy(&self, session_id: &str) -> Result<bool> {
         let session = self.get(session_id)?;
         if !session.running.load(Ordering::SeqCst) {
@@ -187,6 +202,7 @@ impl TerminalManager {
         Ok(session.pid.is_some_and(has_child_processes))
     }
 
+    /// Stops and removes every terminal session.
     pub fn kill_all(&self) {
         let ids: Vec<String> = self.sessions.lock().unwrap().keys().cloned().collect();
         for id in ids {
@@ -317,148 +333,6 @@ impl TerminalManager {
         let session = self.get(session_id)?;
         let text = session.replay.lock().unwrap().text();
         Ok(text)
-    }
-}
-
-fn has_child_processes(pid: u32) -> bool {
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
-    {
-        let pid_text = pid.to_string();
-        if let Ok(output) = std::process::Command::new("pgrep")
-            .args(["-P", &pid_text])
-            .output()
-        {
-            if output.status.success() && !String::from_utf8_lossy(&output.stdout).trim().is_empty()
-            {
-                return true;
-            }
-        }
-        if let Ok(output) = std::process::Command::new("ps")
-            .args(["-A", "-o", "ppid="])
-            .output()
-        {
-            return String::from_utf8_lossy(&output.stdout)
-                .lines()
-                .any(|line| line.trim() == pid_text);
-        }
-        false
-    }
-    #[cfg(target_os = "windows")]
-    {
-        let query = format!("Get-CimInstance Win32_Process | Where-Object {{$_.ParentProcessId -eq {pid}}} | Select-Object -First 1 -ExpandProperty ProcessId");
-        std::process::Command::new("powershell.exe")
-            .args(["-NoProfile", "-Command", &query])
-            .output()
-            .map(|output| {
-                output.status.success()
-                    && !String::from_utf8_lossy(&output.stdout).trim().is_empty()
-            })
-            .unwrap_or(false)
-    }
-    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-    {
-        false
-    }
-}
-
-struct ReplayBuffer {
-    data: String,
-    max_bytes: usize,
-}
-
-impl ReplayBuffer {
-    fn new(max_bytes: usize) -> Self {
-        Self {
-            data: String::new(),
-            max_bytes,
-        }
-    }
-
-    fn set_limit(&mut self, max_bytes: usize) {
-        self.max_bytes = max_bytes;
-        self.trim_to_max();
-    }
-
-    fn push(&mut self, chunk: &str) {
-        if chunk.contains("\x1bc") || chunk.contains("\x1b[2J") || chunk.contains("\x1b[3J") {
-            self.clear();
-        }
-        self.data.push_str(chunk);
-        self.trim_to_max();
-    }
-
-    fn trim_to_max(&mut self) {
-        if self.data.len() <= self.max_bytes {
-            return;
-        }
-        let excess = self.data.len() - self.max_bytes;
-        let mut drain_end = excess;
-        while drain_end < self.data.len() && !self.data.is_char_boundary(drain_end) {
-            drain_end += 1;
-        }
-        self.data.drain(..drain_end);
-    }
-
-    fn clear(&mut self) {
-        self.data.clear();
-    }
-
-    fn text(&self) -> String {
-        self.data.clone()
-    }
-}
-
-#[derive(Default)]
-struct Utf8StreamDecoder {
-    pending: Vec<u8>,
-}
-
-impl Utf8StreamDecoder {
-    fn push(&mut self, bytes: &[u8]) -> Vec<String> {
-        self.pending.extend_from_slice(bytes);
-        let mut out = Vec::new();
-
-        loop {
-            match str::from_utf8(&self.pending) {
-                Ok(valid) => {
-                    if !valid.is_empty() {
-                        out.push(valid.to_string());
-                    }
-                    self.pending.clear();
-                    break;
-                }
-                Err(err) => {
-                    let valid_up_to = err.valid_up_to();
-                    if valid_up_to > 0 {
-                        let valid =
-                            String::from_utf8_lossy(&self.pending[..valid_up_to]).to_string();
-                        out.push(valid);
-                        self.pending.drain(..valid_up_to);
-                        continue;
-                    }
-
-                    if let Some(error_len) = err.error_len() {
-                        out.push(String::from_utf8_lossy(&self.pending[..error_len]).to_string());
-                        self.pending.drain(..error_len);
-                        continue;
-                    }
-
-                    break;
-                }
-            }
-        }
-
-        out
-    }
-
-    fn finish(&mut self) -> Option<String> {
-        if self.pending.is_empty() {
-            None
-        } else {
-            let data = String::from_utf8_lossy(&self.pending).to_string();
-            self.pending.clear();
-            Some(data)
-        }
     }
 }
 

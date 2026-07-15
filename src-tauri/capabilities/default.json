@@ -3,10 +3,5 @@
   "identifier": "default",
   "description": "Default permissions for Swath desktop window",
   "windows": ["main"],
-  "permissions": [
-    "core:default",
-    "dialog:default",
-    "clipboard-manager:default",
-    "opener:default"
-  ]
+  "permissions": ["core:default", "dialog:default", "clipboard-manager:default", "opener:default"]
 }
