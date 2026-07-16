@@ -2,13 +2,34 @@ import { create } from "zustand";
 
 const SIDEBAR_WIDTH_MIN = 180;
 const SIDEBAR_WIDTH_HARD_MAX = 560;
+const SIDEBAR_WIDTH_STORAGE_KEY = "swath.sidebarWidthPx";
 
+/** Constrains the sidebar divider to usable bounds for the current window. */
 function clampSidebarWidthPx(width: number): number {
   const max = Math.max(
     SIDEBAR_WIDTH_MIN,
     Math.min(SIDEBAR_WIDTH_HARD_MAX, Math.floor(window.innerWidth * 0.5)),
   );
   return Math.round(Math.max(SIDEBAR_WIDTH_MIN, Math.min(max, width)));
+}
+
+/** Restores the last sidebar divider position when available. */
+function loadSidebarWidthPx(): number {
+  try {
+    const savedWidth = Number.parseFloat(localStorage.getItem(SIDEBAR_WIDTH_STORAGE_KEY) ?? "");
+    return Number.isFinite(savedWidth) ? clampSidebarWidthPx(savedWidth) : 268;
+  } catch {
+    return 268;
+  }
+}
+
+/** Saves the sidebar divider position without blocking UI updates on storage errors. */
+function saveSidebarWidthPx(width: number): void {
+  try {
+    localStorage.setItem(SIDEBAR_WIDTH_STORAGE_KEY, String(width));
+  } catch {
+    // The divider remains usable when browser storage is unavailable.
+  }
 }
 
 interface UiState {
@@ -31,12 +52,16 @@ export const useUiStore = create<UiState>((set) => ({
   settingsOpen: false,
   activePaneId: null,
   sidebarCollapsed: false,
-  sidebarWidthPx: 268,
+  sidebarWidthPx: loadSidebarWidthPx(),
   setSidebarQuery: (sidebarQuery) => set({ sidebarQuery }),
   openSettings: () => set({ settingsOpen: true }),
   closeSettings: () => set({ settingsOpen: false }),
   setActivePaneId: (activePaneId) => set({ activePaneId }),
   setSidebarCollapsed: (sidebarCollapsed) => set({ sidebarCollapsed }),
   toggleSidebarCollapsed: () => set((state) => ({ sidebarCollapsed: !state.sidebarCollapsed })),
-  setSidebarWidthPx: (width) => set({ sidebarWidthPx: clampSidebarWidthPx(width) }),
+  setSidebarWidthPx: (width) => {
+    const sidebarWidthPx = clampSidebarWidthPx(width);
+    saveSidebarWidthPx(sidebarWidthPx);
+    set({ sidebarWidthPx });
+  },
 }));

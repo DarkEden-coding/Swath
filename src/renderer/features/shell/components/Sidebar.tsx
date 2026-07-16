@@ -10,7 +10,7 @@ import type { Workspace } from "../../../../shared/types";
 import * as appActions from "../../../app/appActions";
 import { useConfigStore } from "../../../state/configStore";
 import appIcon from "../../../assets/app-icon-64.png";
-import { IconChevronsRight, IconFolder, IconMoreVertical, IconPlus } from "../icons";
+import { IconChevronsRight, IconFolder, IconPlus } from "../icons";
 import { useReorderDrag } from "../../../hooks/useReorderDrag";
 
 interface SidebarProps {
@@ -155,17 +155,17 @@ function WorkspaceItem({
   onRemove,
   onRename,
 }: WorkspaceItemProps): JSX.Element {
-  const [menuOpen, setMenuOpen] = useState(false);
+  const [menuPosition, setMenuPosition] = useState<{ x: number; y: number } | null>(null);
   const [editing, setEditing] = useState(false);
   const [draftName, setDraftName] = useState(workspace.name);
 
   useEffect(() => {
-    if (!menuOpen) return;
+    if (!menuPosition) return;
     const onKeyDown = (event: KeyboardEvent): void => {
-      if (event.key === "Escape") setMenuOpen(false);
+      if (event.key === "Escape") setMenuPosition(null);
     };
     const onClick = (): void => {
-      setMenuOpen(false);
+      setMenuPosition(null);
     };
     window.addEventListener("keydown", onKeyDown);
     window.addEventListener("mousedown", onClick);
@@ -173,7 +173,7 @@ function WorkspaceItem({
       window.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("mousedown", onClick);
     };
-  }, [menuOpen]);
+  }, [menuPosition]);
 
   const activeClasses = active
     ? "border-[rgba(56,139,253,0.35)] bg-[rgba(56,139,253,0.12)] before:absolute before:bottom-1.5 before:left-0 before:top-1.5 before:w-[3px] before:rounded-full before:bg-swath-accent before:content-['']"
@@ -215,7 +215,7 @@ function WorkspaceItem({
       onDrop={(event) => onDrop(event)}
       onContextMenu={(event) => {
         event.preventDefault();
-        setMenuOpen(true);
+        setMenuPosition({ x: event.clientX, y: event.clientY });
       }}
     >
       <span
@@ -265,57 +265,48 @@ function WorkspaceItem({
           )}
         </span>
       </button>
-      <div className="relative flex items-center self-center py-1 pl-1 pr-2 [-webkit-app-region:no-drag] [app-region:no-drag]">
-        <button
-          type="button"
-          className="grid size-8 min-h-8 cursor-pointer place-items-center rounded-lg border border-swath-border bg-swath-bg p-0 text-swath-muted [-webkit-app-region:no-drag] [app-region:no-drag] hover:border-swath-border-strong hover:bg-[#161b22]"
-          onClick={(event) => {
-            event.stopPropagation();
-            setMenuOpen((value) => !value);
+      {menuPosition ? (
+        <div
+          className="fixed z-20 min-w-32 rounded-xl border border-swath-border bg-[#151a22] p-1.5 shadow-swath [-webkit-app-region:no-drag] [app-region:no-drag]"
+          style={{
+            left: Math.max(4, Math.min(menuPosition.x, window.innerWidth - 140)),
+            top: Math.max(4, Math.min(menuPosition.y, window.innerHeight - 132)),
           }}
-          aria-label="Project menu"
+          onMouseDown={(event) => event.stopPropagation()}
+          onClick={(event) => event.stopPropagation()}
         >
-          <IconMoreVertical width={17} height={17} className="block" />
-        </button>
-        {menuOpen ? (
-          <div
-            className="absolute right-1 top-[34px] z-20 min-w-32 rounded-xl border border-swath-border bg-[#151a22] p-1.5 shadow-swath [-webkit-app-region:no-drag] [app-region:no-drag]"
-            onMouseDown={(event) => event.stopPropagation()}
-            onClick={(event) => event.stopPropagation()}
+          <button
+            type="button"
+            className="block w-full cursor-pointer rounded-lg border-0 bg-transparent px-2.5 py-2 text-left text-swath-text [-webkit-app-region:no-drag] [app-region:no-drag] hover:bg-[#202735]"
+            onClick={() => {
+              setMenuPosition(null);
+              setEditing(true);
+            }}
           >
-            <button
-              type="button"
-              className="block w-full cursor-pointer rounded-lg border-0 bg-transparent px-2.5 py-2 text-left text-swath-text [-webkit-app-region:no-drag] [app-region:no-drag] hover:bg-[#202735]"
-              onClick={() => {
-                setMenuOpen(false);
-                setEditing(true);
-              }}
-            >
-              Rename
-            </button>
-            <button
-              type="button"
-              className="block w-full cursor-pointer rounded-lg border-0 bg-transparent px-2.5 py-2 text-left text-swath-text [-webkit-app-region:no-drag] [app-region:no-drag] hover:bg-[#202735]"
-              onClick={() => {
-                setMenuOpen(false);
-                void copyWorkingDirectory();
-              }}
-            >
-              CWD
-            </button>
-            <button
-              type="button"
-              className="block w-full cursor-pointer rounded-lg border-0 bg-transparent px-2.5 py-2 text-left text-swath-danger [-webkit-app-region:no-drag] [app-region:no-drag] hover:bg-[#202735]"
-              onClick={() => {
-                setMenuOpen(false);
-                onRemove();
-              }}
-            >
-              Remove
-            </button>
-          </div>
-        ) : null}
-      </div>
+            Rename
+          </button>
+          <button
+            type="button"
+            className="block w-full cursor-pointer rounded-lg border-0 bg-transparent px-2.5 py-2 text-left text-swath-text [-webkit-app-region:no-drag] [app-region:no-drag] hover:bg-[#202735]"
+            onClick={() => {
+              setMenuPosition(null);
+              void copyWorkingDirectory();
+            }}
+          >
+            CWD
+          </button>
+          <button
+            type="button"
+            className="block w-full cursor-pointer rounded-lg border-0 bg-transparent px-2.5 py-2 text-left text-swath-danger [-webkit-app-region:no-drag] [app-region:no-drag] hover:bg-[#202735]"
+            onClick={() => {
+              setMenuPosition(null);
+              onRemove();
+            }}
+          >
+            Remove
+          </button>
+        </div>
+      ) : null}
     </div>
   );
 }
