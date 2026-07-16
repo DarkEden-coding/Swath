@@ -10,7 +10,7 @@ DEST_APP="${DEST_DIR}/${PRODUCT_APP}"
 cd "$ROOT_DIR"
 
 echo "Building ${APP_NAME} Tauri bundle for macOS..."
-npm run tauri:build
+npm run tauri:build -- --bundles app
 
 APP_PATH=""
 while IFS= read -r -d '' candidate; do

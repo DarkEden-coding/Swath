@@ -49,7 +49,8 @@ $ReleaseDir = Join-Path $RootDir 'src-tauri\target\release'
 $ExpectedExePath = Join-Path $ReleaseDir $ExeName
 
 Write-Host "Building $AppName Tauri bundle for Windows..."
-Invoke-Checked npm run tauri:build
+# The install uses the release executable directly, so generating an NSIS installer is wasted work.
+Invoke-Checked npm run tauri:build -- --no-bundle
 
 if (-not (Test-Path $ExpectedExePath)) {
   throw "Could not find built executable at $ExpectedExePath"

@@ -10,7 +10,7 @@
     "dev": "tauri dev",
     "dev:renderer": "vite",
     "build": "tauri build",
-    "build:renderer": "vite build",
+    "build:renderer": "node scripts/build-renderer.mjs",
     "typecheck": "tsc --noEmit",
     "test": "node --experimental-strip-types scripts/test-terminal-paste.mjs",
     "test:unit": "vitest run",
