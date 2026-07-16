@@ -213,6 +213,10 @@ function WorkspaceItem({
         event.dataTransfer.dropEffect = "move";
       }}
       onDrop={(event) => onDrop(event)}
+      onContextMenu={(event) => {
+        event.preventDefault();
+        setMenuOpen(true);
+      }}
     >
       <span
         className="grid w-[22px] shrink-0 cursor-grab grid-cols-[repeat(2,3px)] grid-rows-[repeat(3,3px)] gap-0.5 place-content-center pl-1 opacity-45 [-webkit-app-region:no-drag] [app-region:no-drag]"
@@ -297,7 +301,7 @@ function WorkspaceItem({
                 void copyWorkingDirectory();
               }}
             >
-              Copy Working Directory
+              CWD
             </button>
             <button
               type="button"
