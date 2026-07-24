@@ -2,10 +2,8 @@ import type { FitAddon } from "@xterm/addon-fit";
 import type { Terminal } from "@xterm/xterm";
 
 export interface TerminalScrollState {
-  viewportY: number;
-  atBottom: boolean;
-  scrollTop: number;
-  scrollHeight: number;
+  distanceFromBottom: number;
+  followOutput: boolean;
 }
 
 export interface TerminalCacheEntry {
@@ -14,6 +12,11 @@ export interface TerminalCacheEntry {
   disposeResources: () => void;
   stopped: boolean;
   scrollState?: TerminalScrollState;
+  scrollRevision?: number;
+  outputWritePending?: boolean;
+  outputWriteQueue?: string[];
+  restoringScroll?: boolean;
+  userScrollCapturePending?: boolean;
 }
 
 export const terminalCache = new Map<string, TerminalCacheEntry>();
@@ -24,52 +27,70 @@ function terminalViewport(entry: TerminalCacheEntry): HTMLElement | null {
   return entry.terminal.element?.querySelector<HTMLElement>(".xterm-viewport") ?? null;
 }
 
-function syncViewportDomScroll(entry: TerminalCacheEntry): void {
-  const viewport = terminalViewport(entry);
-  const scrollState = entry.scrollState;
-  if (!viewport || !scrollState) return;
-
-  if (scrollState.atBottom) {
-    viewport.scrollTop = viewport.scrollHeight;
-    return;
-  }
-
-  if (scrollState.scrollHeight > 0) {
-    viewport.scrollTop = Math.round(
-      (scrollState.scrollTop / scrollState.scrollHeight) * viewport.scrollHeight,
-    );
-  }
-}
-
-export function captureTerminalScrollState(entry: TerminalCacheEntry): void {
+/** Capture a logical scroll anchor measured from the live bottom of xterm's buffer. */
+export function captureTerminalScrollState(entry: TerminalCacheEntry, userInitiated = false): void {
   const buffer = entry.terminal.buffer.active;
-  const viewport = terminalViewport(entry);
+  const distanceFromBottom = Math.max(0, buffer.baseY - buffer.viewportY);
   entry.scrollState = {
-    viewportY: buffer.viewportY,
-    atBottom: buffer.viewportY >= buffer.baseY - 1,
-    scrollTop: viewport?.scrollTop ?? 0,
-    scrollHeight: viewport?.scrollHeight ?? 0,
+    distanceFromBottom,
+    followOutput: distanceFromBottom === 0,
   };
+  if (userInitiated) entry.scrollRevision = (entry.scrollRevision ?? 0) + 1;
 }
 
+/** Restore a logical anchor after output, resize, or DOM reattachment. */
 export function restoreTerminalScrollState(entry: TerminalCacheEntry): void {
   const scrollState = entry.scrollState;
   if (!scrollState) return;
 
-  if (scrollState.atBottom) {
-    // Detaching/re-attaching the xterm DOM can reset the native viewport's
-    // scrollTop to 0 even when xterm's buffer still thinks it is at bottom.
-    // Force a line change first so xterm recalculates, then sync the DOM
-    // viewport too; otherwise the next wheel event starts from the top.
-    entry.terminal.scrollToTop();
+  entry.restoringScroll = true;
+  if (scrollState.followOutput) {
     entry.terminal.scrollToBottom();
+    // A detached xterm viewport can retain scrollTop=0 despite its logical
+    // buffer being at the bottom. Repair that browser state after reattachment.
+    const viewport = terminalViewport(entry);
+    if (viewport) viewport.scrollTop = viewport.scrollHeight;
   } else {
-    entry.terminal.scrollToLine(scrollState.viewportY);
+    const targetLine = Math.max(
+      0,
+      entry.terminal.buffer.active.baseY - scrollState.distanceFromBottom,
+    );
+    entry.terminal.scrollToLine(targetLine);
   }
 
-  syncViewportDomScroll(entry);
-  requestAnimationFrame(() => syncViewportDomScroll(entry));
-  window.setTimeout(() => syncViewportDomScroll(entry), 0);
+  requestAnimationFrame(() => {
+    entry.restoringScroll = false;
+  });
+}
+
+/**
+ * Serialize terminal output and preserve the user's bottom-relative anchor.
+ * A user scroll made while xterm parses a large write supersedes the old anchor.
+ */
+export function writeTerminalOutput(entry: TerminalCacheEntry, data: string): void {
+  if (!data) return;
+  (entry.outputWriteQueue ??= []).push(data);
+  if (entry.outputWritePending) return;
+
+  const writeNext = (): void => {
+    const chunk = entry.outputWriteQueue?.shift();
+    if (chunk === undefined) {
+      entry.outputWritePending = false;
+      return;
+    }
+
+    entry.outputWritePending = true;
+    // Keep the durable user anchor rather than recapturing transient positions
+    // produced while xterm is parsing or rendering previous output.
+    if (!entry.scrollState) captureTerminalScrollState(entry);
+    const revision = entry.scrollRevision ?? 0;
+    entry.terminal.write(chunk, () => {
+      if ((entry.scrollRevision ?? 0) === revision) restoreTerminalScrollState(entry);
+      writeNext();
+    });
+  };
+
+  writeNext();
 }
 
 export function detachCachedTerminalElement(

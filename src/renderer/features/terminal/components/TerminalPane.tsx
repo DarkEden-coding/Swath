@@ -36,6 +36,7 @@ import {
   restoreTerminalScrollState,
   startedSessions,
   terminalCache,
+  writeTerminalOutput,
 } from "../runtime/terminalCache";
 
 function shellFor(settings: AppSettings): ShellProfile | null {
@@ -142,6 +143,12 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
 
     const currentCwd = paneMeta?.cwd ?? paneMeta?.metadata?.cwd ?? workspace.path;
 
+    const writeOutput = (data: string): void => {
+      const entry = terminalCache.get(paneId);
+      if (entry) writeTerminalOutput(entry, data);
+      else terminal.write(data);
+    };
+
     let sessionReady: Promise<void> | null = null;
 
     const startPty = (): Promise<void> => {
@@ -175,7 +182,7 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
           sessionReady = null;
           if (entry) entry.stopped = true;
           exitStateSetters.get(paneId)?.(true);
-          terminal.write(`\r\n\x1b[31mFailed to start terminal: ${String(error)}\x1b[0m\r\n`);
+          writeOutput(`\r\n\x1b[31mFailed to start terminal: ${String(error)}\x1b[0m\r\n`);
           throw error;
         });
 
@@ -186,9 +193,7 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
       if (!startedSessions.has(paneId)) void startPty();
       const ready = sessionReady;
       if (ready) {
-        void ready
-          .then(() => terminalClient.write(paneId, data))
-          .catch(() => undefined);
+        void ready.then(() => terminalClient.write(paneId, data)).catch(() => undefined);
         return;
       }
       void terminalClient.write(paneId, data);
@@ -205,7 +210,7 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
       platform: window.swath.platform,
       onPasteError: (error) => {
         console.error("Unable to read the clipboard", error);
-        terminal.write("\r\n\x1b[31m[clipboard paste failed]\x1b[0m\r\n");
+        writeOutput("\r\n\x1b[31m[clipboard paste failed]\x1b[0m\r\n");
       },
     });
 
@@ -234,7 +239,7 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
         void terminalClient.replay(paneId);
       } else {
         const prompt = `${currentCwd} % `;
-        terminal.write(prompt);
+        writeOutput(prompt);
         terminal.focus();
       }
     });
@@ -254,7 +259,7 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
           if (!data || isDormantIgnoredInput(data)) return;
 
           if (data === "\r") {
-            terminal.write("\r\x1b[K");
+            writeOutput("\r\x1b[K");
             const dormantInput = dormantInputRef.current + "\r";
             dormantInputRef.current = "";
             // Queue write behind PTY create — firing write immediately races spawn
@@ -263,18 +268,26 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
           } else if (data === "\x7f") {
             if (dormantInputRef.current.length > 0) {
               dormantInputRef.current = dormantInputRef.current.slice(0, -1);
-              terminal.write("\b \b");
+              writeOutput("\b \b");
             }
           } else {
             dormantInputRef.current += data;
-            terminal.write(data);
+            writeOutput(data);
           }
         });
     const removeDataListener = cachedEntry
       ? null
       : terminalClient.onData((sessionId, data) => {
           if (sessionId !== paneId) return;
-          terminal.write(data);
+          writeOutput(data);
+        });
+    const scrollDisposable = cachedEntry
+      ? null
+      : terminal.onScroll(() => {
+          const entry = terminalCache.get(paneId);
+          if (entry && !entry.outputWritePending && !entry.restoringScroll) {
+            captureTerminalScrollState(entry, true);
+          }
         });
     const removeExitListener = cachedEntry
       ? null
@@ -287,7 +300,7 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
           if (entry) entry.stopped = true;
           const message =
             "\r\n\x1b[2m[process exited — close, restart, or split a new terminal]\x1b[0m\r\n";
-          terminal.write(message);
+          writeOutput(message);
         });
 
     if (!cachedEntry) {
@@ -298,6 +311,7 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
           disposable?.dispose();
           removeDataListener?.();
           removeExitListener?.();
+          scrollDisposable?.dispose();
           terminal.dispose();
         },
         stopped: false,
@@ -314,11 +328,40 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
         scrollbarHideTimerRef.current = null;
       }, 800);
     };
+    const preserveUserScrollIntent = (): void => {
+      const entry = terminalCache.get(paneId);
+      if (!entry) return;
+      entry.scrollRevision = (entry.scrollRevision ?? 0) + 1;
+      entry.userScrollCapturePending = true;
+      requestAnimationFrame(() => {
+        captureTerminalScrollState(entry);
+        entry.userScrollCapturePending = false;
+      });
+    };
     viewport?.addEventListener("scroll", showScrollbar, { passive: true });
+    viewport?.addEventListener("wheel", preserveUserScrollIntent, { passive: true });
+
+    let maintenanceFrame = 0;
+    let framesUntilMaintenance = 10;
+    const maintainUserScrollPosition = (): void => {
+      framesUntilMaintenance -= 1;
+      if (framesUntilMaintenance === 0) {
+        framesUntilMaintenance = 10;
+        const entry = terminalCache.get(paneId);
+        if (entry && !entry.outputWritePending && !entry.userScrollCapturePending) {
+          if (!entry.scrollState) captureTerminalScrollState(entry);
+          restoreTerminalScrollState(entry);
+        }
+      }
+      maintenanceFrame = requestAnimationFrame(maintainUserScrollPosition);
+    };
+    maintenanceFrame = requestAnimationFrame(maintainUserScrollPosition);
 
     return () => {
       observer.disconnect();
+      cancelAnimationFrame(maintenanceFrame);
       viewport?.removeEventListener("scroll", showScrollbar);
+      viewport?.removeEventListener("wheel", preserveUserScrollIntent);
       if (scrollbarHideTimerRef.current !== null)
         window.clearTimeout(scrollbarHideTimerRef.current);
       host.classList.remove("is-scrolling");
