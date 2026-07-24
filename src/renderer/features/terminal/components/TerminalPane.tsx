@@ -281,14 +281,6 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
           if (sessionId !== paneId) return;
           writeOutput(data);
         });
-    const scrollDisposable = cachedEntry
-      ? null
-      : terminal.onScroll(() => {
-          const entry = terminalCache.get(paneId);
-          if (entry && !entry.outputWritePending && !entry.restoringScroll) {
-            captureTerminalScrollState(entry, true);
-          }
-        });
     const removeExitListener = cachedEntry
       ? null
       : terminalClient.onExit((sessionId) => {
@@ -311,7 +303,6 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
           disposable?.dispose();
           removeDataListener?.();
           removeExitListener?.();
-          scrollDisposable?.dispose();
           terminal.dispose();
         },
         stopped: false,
@@ -328,40 +319,11 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
         scrollbarHideTimerRef.current = null;
       }, 800);
     };
-    const preserveUserScrollIntent = (): void => {
-      const entry = terminalCache.get(paneId);
-      if (!entry) return;
-      entry.scrollRevision = (entry.scrollRevision ?? 0) + 1;
-      entry.userScrollCapturePending = true;
-      requestAnimationFrame(() => {
-        captureTerminalScrollState(entry);
-        entry.userScrollCapturePending = false;
-      });
-    };
     viewport?.addEventListener("scroll", showScrollbar, { passive: true });
-    viewport?.addEventListener("wheel", preserveUserScrollIntent, { passive: true });
-
-    let maintenanceFrame = 0;
-    let framesUntilMaintenance = 10;
-    const maintainUserScrollPosition = (): void => {
-      framesUntilMaintenance -= 1;
-      if (framesUntilMaintenance === 0) {
-        framesUntilMaintenance = 10;
-        const entry = terminalCache.get(paneId);
-        if (entry && !entry.outputWritePending && !entry.userScrollCapturePending) {
-          if (!entry.scrollState) captureTerminalScrollState(entry);
-          restoreTerminalScrollState(entry);
-        }
-      }
-      maintenanceFrame = requestAnimationFrame(maintainUserScrollPosition);
-    };
-    maintenanceFrame = requestAnimationFrame(maintainUserScrollPosition);
 
     return () => {
       observer.disconnect();
-      cancelAnimationFrame(maintenanceFrame);
       viewport?.removeEventListener("scroll", showScrollbar);
-      viewport?.removeEventListener("wheel", preserveUserScrollIntent);
       if (scrollbarHideTimerRef.current !== null)
         window.clearTimeout(scrollbarHideTimerRef.current);
       host.classList.remove("is-scrolling");
