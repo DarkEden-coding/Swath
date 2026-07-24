@@ -79,6 +79,7 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
+  const [showScrollToBottom, setShowScrollToBottom] = useState(false);
   const activePaneId = useUiStore((state) => state.activePaneId);
   const paneId = pane.id;
 
@@ -143,10 +144,23 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
 
     const currentCwd = paneMeta?.cwd ?? paneMeta?.metadata?.cwd ?? workspace.path;
 
+    const updateScrollToBottomButton = (): void => {
+      const viewport = host.querySelector<HTMLElement>(".xterm-viewport");
+      if (viewport) {
+        const distanceFromBottom =
+          viewport.scrollHeight - viewport.clientHeight - viewport.scrollTop;
+        setShowScrollToBottom(distanceFromBottom > 24);
+        return;
+      }
+
+      const buffer = terminal.buffer.active;
+      setShowScrollToBottom(buffer.viewportY < buffer.baseY);
+    };
+
     const writeOutput = (data: string): void => {
       const entry = terminalCache.get(paneId);
-      if (entry) writeTerminalOutput(entry, data);
-      else terminal.write(data);
+      if (entry) writeTerminalOutput(entry, data, updateScrollToBottomButton);
+      else terminal.write(data, updateScrollToBottomButton);
     };
 
     let sessionReady: Promise<void> | null = null;
@@ -310,6 +324,8 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
     }
 
     const viewport = host.querySelector<HTMLElement>(".xterm-viewport");
+    const scrollDisposable = terminal.onScroll(updateScrollToBottomButton);
+    updateScrollToBottomButton();
     const showScrollbar = (): void => {
       host.classList.add("is-scrolling");
       if (scrollbarHideTimerRef.current !== null)
@@ -319,11 +335,17 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
         scrollbarHideTimerRef.current = null;
       }, 800);
     };
-    viewport?.addEventListener("scroll", showScrollbar, { passive: true });
+    const onViewportScroll = (): void => {
+      showScrollbar();
+      updateScrollToBottomButton();
+    };
+    viewport?.addEventListener("scroll", onViewportScroll, { passive: true });
 
     return () => {
       observer.disconnect();
-      viewport?.removeEventListener("scroll", showScrollbar);
+      scrollDisposable.dispose();
+      setShowScrollToBottom(false);
+      viewport?.removeEventListener("scroll", onViewportScroll);
       if (scrollbarHideTimerRef.current !== null)
         window.clearTimeout(scrollbarHideTimerRef.current);
       host.classList.remove("is-scrolling");
@@ -530,6 +552,30 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
       }}
     >
       <TerminalViewport hostRef={hostRef} suspended={!isActive} />
+      <button
+        type="button"
+        className={`absolute bottom-3 left-1/2 z-10 grid h-8 w-8 -translate-x-1/2 place-items-center rounded-full border border-[#30363d] bg-[#161b22]/95 text-[#8b949e] shadow-[0_4px_14px_rgba(0,0,0,0.4)] backdrop-blur-sm transition-[opacity,transform,background-color,border-color,color] duration-200 ease-out hover:border-[#484f58] hover:bg-[#21262d] hover:text-[#f0f6fc] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#2f81f7] ${showScrollToBottom && isActive ? "translate-y-0 opacity-100" : "pointer-events-none translate-y-2 opacity-0"}`}
+        aria-label="Scroll to bottom"
+        aria-hidden={!showScrollToBottom || !isActive}
+        tabIndex={showScrollToBottom && isActive ? 0 : -1}
+        title="Scroll to bottom"
+        onMouseDown={(event) => event.preventDefault()}
+        onClick={() => {
+          const viewport = hostRef.current?.querySelector<HTMLElement>(".xterm-viewport");
+          viewport?.scrollTo({ top: viewport.scrollHeight, behavior: "smooth" });
+          termRef.current?.focus();
+        }}
+      >
+        <svg aria-hidden="true" viewBox="0 0 16 16" className="h-4 w-4" fill="none">
+          <path
+            d="M3.5 6 8 10.5 12.5 6"
+            stroke="currentColor"
+            strokeWidth="1.6"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+      </button>
       {searchOpen ? (
         <TerminalSearchBar
           query={searchQuery}

@@ -50,8 +50,14 @@ export function restoreTerminalScrollState(entry: TerminalCacheEntry): void {
 }
 
 /** Write output without overriding xterm's native user-scrolling behavior. */
-export function writeTerminalOutput(entry: TerminalCacheEntry, data: string): void {
-  if (data) entry.terminal.write(data);
+export function writeTerminalOutput(
+  entry: TerminalCacheEntry,
+  data: string,
+  onParsed?: () => void,
+): void {
+  if (!data) return;
+  if (onParsed) entry.terminal.write(data, onParsed);
+  else entry.terminal.write(data);
 }
 
 export function detachCachedTerminalElement(
