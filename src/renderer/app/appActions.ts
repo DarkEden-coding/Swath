@@ -246,10 +246,10 @@ export function setPaneInitialCwd(
 }
 
 /**
- * Opens or updates an imagePreview pane in the current view from a source terminal.
+ * Opens or updates an imagePreview pane in the current view, split from a source pane.
  * Stores only path metadata; image bytes are loaded on demand via RPC.
  */
-export function upsertImagePreviewFromTerminal(
+export function upsertImagePreviewFromPane(
   workspaceId: string,
   viewId: string,
   sourcePaneId: string,

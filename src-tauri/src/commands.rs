@@ -1,5 +1,5 @@
 use crate::types::*;
-use crate::{config, git, image, platform, AppState};
+use crate::{config, git, image, pi_agent, platform, AppState};
 use tauri::{AppHandle, State, Window};
 
 pub type CommandResult<T> = Result<T, String>;
@@ -168,4 +168,13 @@ pub async fn image_rpc(request: serde_json::Value) -> CommandResult<serde_json::
     tauri::async_runtime::spawn_blocking(move || image::rpc(request))
         .await
         .map_err(|err| err.to_string())?
+}
+
+#[tauri::command]
+pub fn pi_rpc(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    request: serde_json::Value,
+) -> CommandResult<serde_json::Value> {
+    pi_agent::rpc(&app, &state.pi, request)
 }

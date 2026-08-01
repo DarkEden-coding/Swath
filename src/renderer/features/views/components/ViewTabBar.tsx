@@ -7,6 +7,7 @@ import {
   IconGitBranch,
   IconImage,
   IconPlus,
+  IconSparkle,
   IconTerminal,
 } from "../../shell/icons";
 import { getTabTypes } from "../../tabTypes/registry";
@@ -30,6 +31,8 @@ function tabTypeIcon(kind: PaneKind): JSX.Element {
     return <IconGitBranch width={16} height={16} className="block shrink-0 text-swath-accent" />;
   if (kind === "imagePreview")
     return <IconImage width={16} height={16} className="block shrink-0 text-swath-accent" />;
+  if (kind === "piAgent")
+    return <IconSparkle width={16} height={16} className="block shrink-0 text-swath-accent" />;
   return <IconTerminal width={16} height={16} className="block shrink-0 text-swath-accent" />;
 }
 

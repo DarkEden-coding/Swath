@@ -21,6 +21,8 @@ export const IpcChannels = {
   gitRpc: "git:rpc",
   gitData: "git:data",
   imageRpc: "image:rpc",
+  piRpc: "pi:rpc",
+  piEvent: "pi:event",
   browserOpenExternal: "browser:open-external",
 } as const;
 

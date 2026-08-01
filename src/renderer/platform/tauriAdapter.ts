@@ -6,6 +6,7 @@ import type { SwathApi } from "../../shared/ipc/swath";
 import type { AppConfig } from "../../shared/types";
 import type { GitRpcRequest } from "../../shared/ipc/gitRpc";
 import type { ImageRpcRequest } from "../../shared/ipc/imageRpc";
+import type { PiHostEvent, PiRpcRequest } from "../../shared/ipc/piRpc";
 
 /** Creates the renderer API backed by Tauri commands and events. */
 export function createTauriSwath(): SwathApi {
@@ -120,6 +121,24 @@ export function createTauriSwath(): SwathApi {
     },
     image: {
       rpc: (request: ImageRpcRequest) => invoke(TauriCommands.imageRpc, { request }),
+    },
+    pi: {
+      rpc: (request: PiRpcRequest) => invoke(TauriCommands.piRpc, { request }),
+      onEvent: (callback) => {
+        let disposed = false;
+        let unsubscribe: (() => void) | undefined;
+        void listen<PiHostEvent>(IpcChannels.piEvent, (event) => {
+          const { paneId, line, exit } = event.payload;
+          callback(paneId, line, exit === true);
+        }).then((unlisten) => {
+          unsubscribe = unlisten;
+          if (disposed) unlisten();
+        });
+        return () => {
+          disposed = true;
+          unsubscribe?.();
+        };
+      },
     },
   };
 }

@@ -4,6 +4,7 @@
 - [Terminal pane](./terminal.md)
 - [Git manager pane](./git-manager.md)
 - [Pi image preview integration](./pi-image-preview.md)
+- [Pi agent pane](./pi-agent-pane.md) — plan
 
 Related:
 

@@ -4,6 +4,7 @@ mod git;
 mod image;
 #[cfg(not(target_os = "windows"))]
 mod menu;
+mod pi_agent;
 mod platform;
 mod terminal;
 mod types;
@@ -11,11 +12,13 @@ mod types;
 use std::sync::Arc;
 use tauri::{Manager, RunEvent};
 
+use pi_agent::PiManager;
 use terminal::TerminalManager;
 
 #[derive(Clone)]
 pub struct AppState {
     terminal: Arc<TerminalManager>,
+    pi: Arc<PiManager>,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -27,7 +30,8 @@ pub fn run() {
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .setup(|app| {
             let terminal = Arc::new(TerminalManager::new(app.handle().clone()));
-            app.manage(AppState { terminal });
+            let pi = Arc::new(PiManager::new());
+            app.manage(AppState { terminal, pi });
             #[cfg(not(target_os = "windows"))]
             menu::install_menu(app.handle())?;
             Ok(())
@@ -53,6 +57,7 @@ pub fn run() {
             commands::terminal_is_busy,
             commands::git_rpc,
             commands::image_rpc,
+            commands::pi_rpc,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Swath")
@@ -60,6 +65,7 @@ pub fn run() {
             if let RunEvent::ExitRequested { .. } = event {
                 if let Some(state) = app.try_state::<AppState>() {
                     state.terminal.kill_all();
+                    state.pi.kill_all();
                 }
             }
         });

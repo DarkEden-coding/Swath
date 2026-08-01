@@ -186,3 +186,12 @@ export function IconImage(props: IconProps): JSX.Element {
     </svg>
   );
 }
+
+export function IconSparkle(props: IconProps): JSX.Element {
+  return (
+    <svg viewBox="0 0 24 24" width={18} height={18} aria-hidden {...stroke} {...props}>
+      <path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z" />
+      <path d="M18 15l.8 2.2L21 18l-2.2.8L18 21l-.8-2.2L15 18l2.2-.8z" />
+    </svg>
+  );
+}

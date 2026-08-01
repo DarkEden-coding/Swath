@@ -3,12 +3,14 @@ import { createPaneMeta, createPaneView } from "../../domain/panes/paneMetadata"
 import { terminalTabType } from "./terminal/terminalTabType";
 import { gitManagerTabType } from "./gitManager/gitManagerTabType";
 import { imagePreviewTabType } from "./imagePreview/imagePreviewTabType";
+import { piAgentTabType } from "./piAgent/piAgentTabType";
 import type { TabTypeRegistration } from "./types";
 
 const tabTypes: Record<PaneKind, TabTypeRegistration> = {
   terminal: terminalTabType,
   gitManager: gitManagerTabType,
   imagePreview: imagePreviewTabType,
+  piAgent: piAgentTabType,
 };
 
 export function getTabType(kind: PaneKind): TabTypeRegistration {

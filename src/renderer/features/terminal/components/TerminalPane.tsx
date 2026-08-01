@@ -337,7 +337,7 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
         if (parsed.kind === "path") {
           // Fire-and-forget so the parser is not paused on UI/config work.
           queueMicrotask(() => {
-            appActions.upsertImagePreviewFromTerminal(workspace.id, view.id, paneId, parsed.path);
+            appActions.upsertImagePreviewFromPane(workspace.id, view.id, paneId, parsed.path);
           });
         }
         // Consume matching malformed payloads so they do not leak into the buffer.

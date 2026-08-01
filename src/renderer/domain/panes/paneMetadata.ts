@@ -67,6 +67,18 @@ const metadata: Record<PaneKind, PaneKindMetadata> = {
       };
     },
   },
+  piAgent: {
+    kind: "piAgent",
+    label: "Pi Agent",
+    createPaneMeta(_settings, cwd) {
+      return {
+        kind: "piAgent",
+        cwd,
+        title: "pi",
+        metadata: { cwd, title: "pi" },
+      };
+    },
+  },
 };
 
 export function getPaneKindMetadata(kind: PaneKind): PaneKindMetadata {

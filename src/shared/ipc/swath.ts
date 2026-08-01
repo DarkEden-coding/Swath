@@ -11,6 +11,7 @@ import type {
 } from "../types";
 import type { GitRpcRequest } from "./gitRpc";
 import type { ImageRpcRequest } from "./imageRpc";
+import type { PiRpcRequest } from "./piRpc";
 
 /** Rust command identifiers used by the renderer's Tauri transport. */
 export const TauriCommands = {
@@ -33,6 +34,7 @@ export const TauriCommands = {
   terminalIsBusy: "terminal_is_busy",
   gitRpc: "git_rpc",
   imageRpc: "image_rpc",
+  piRpc: "pi_rpc",
 } as const;
 
 /** Stable host API exposed as `window.swath` in both Tauri and browser development. */
@@ -71,5 +73,10 @@ export interface SwathApi {
   };
   image: {
     rpc(request: ImageRpcRequest): Promise<unknown>;
+  };
+  pi: {
+    rpc(request: PiRpcRequest): Promise<unknown>;
+    /** Subscribes to stdout lines and exit notices for every pi pane. */
+    onEvent(callback: (paneId: string, line: string | undefined, exited: boolean) => void): () => void;
   };
 }
