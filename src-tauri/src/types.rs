@@ -114,6 +114,10 @@ pub struct PaneMetadata {
     pub env: Option<serde_json::Value>,
     #[serde(default)]
     pub session_id: Option<String>,
+    #[serde(default)]
+    pub image_path: Option<String>,
+    #[serde(default)]
+    pub image_title: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

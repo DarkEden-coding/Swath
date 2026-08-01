@@ -1,4 +1,5 @@
 import type { FitAddon } from "@xterm/addon-fit";
+import type { ImageAddon } from "@xterm/addon-image";
 import type { Terminal } from "@xterm/xterm";
 
 export interface TerminalScrollState {
@@ -9,6 +10,8 @@ export interface TerminalScrollState {
 export interface TerminalCacheEntry {
   terminal: Terminal;
   fit: FitAddon;
+  /** One ImageAddon for the cached terminal lifetime; disposed only with the terminal. */
+  image?: ImageAddon;
   disposeResources: () => void;
   stopped: boolean;
   scrollState?: TerminalScrollState;

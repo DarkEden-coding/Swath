@@ -4,6 +4,7 @@ import { createPaneMeta } from "./paneMetadata";
 import {
   closePane as closePaneNode,
   collectPaneIds,
+  collectPanes,
   findPane,
   splitPaneWithId,
   updateSplitRatio,
@@ -112,6 +113,74 @@ export function setPaneInitialCwd(
     pane.metadata = { ...(pane.metadata ?? {}), cwd: normalized };
     return { ...view, layout };
   });
+}
+
+/** Basename used for image preview titles when the host does not supply one. */
+export function imagePreviewTitleFromPath(imagePath: string): string {
+  const normalized = imagePath.replace(/\\/g, "/");
+  const parts = normalized.split("/").filter(Boolean);
+  return parts[parts.length - 1] || "Image Preview";
+}
+
+/**
+ * Reuses an existing imagePreview pane in the view, or splits vertically from the
+ * source terminal. Persists only path metadata (no image bytes).
+ */
+export function upsertImagePreviewPane(
+  config: AppConfig,
+  workspaceId: string,
+  viewId: string,
+  sourcePaneId: string,
+  imagePath: string,
+  imageTitle?: string,
+): { config: AppConfig; activePaneId: string | null } {
+  const normalizedPath = imagePath.trim();
+  if (!normalizedPath) return { config, activePaneId: null };
+
+  const title = (imageTitle?.trim() || imagePreviewTitleFromPath(normalizedPath)).trim();
+  let activePaneId: string | null = null;
+
+  const next = updateView(config, workspaceId, viewId, (view, workspace) => {
+    const layout = structuredClone(view.layout);
+    const existing = collectPanes(layout).find((pane) => pane.kind === "imagePreview");
+    if (existing) {
+      existing.title = title;
+      existing.promptLabel = title;
+      existing.metadata = {
+        ...(existing.metadata ?? {}),
+        title,
+        imagePath: normalizedPath,
+        imageTitle: title,
+        cwd: existing.metadata?.cwd ?? existing.cwd ?? workspace.path,
+      };
+      activePaneId = existing.id;
+      return { ...view, layout, activePaneId: existing.id };
+    }
+
+    const source = findPane(layout, sourcePaneId);
+    if (!source) return view;
+
+    const newPaneId = createId("pane");
+    const meta = {
+      ...createPaneMeta("imagePreview", config.settings, workspace.path),
+      title,
+      promptLabel: title,
+      metadata: {
+        cwd: workspace.path,
+        title,
+        imagePath: normalizedPath,
+        imageTitle: title,
+      },
+    };
+    activePaneId = newPaneId;
+    return {
+      ...view,
+      layout: splitPaneWithId(layout, sourcePaneId, "vertical", newPaneId, "imagePreview", meta),
+      activePaneId: newPaneId,
+    };
+  });
+
+  return { config: next, activePaneId };
 }
 
 function updateView(

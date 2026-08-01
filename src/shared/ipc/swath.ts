@@ -10,6 +10,7 @@ import type {
   TerminalSessionStatus,
 } from "../types";
 import type { GitRpcRequest } from "./gitRpc";
+import type { ImageRpcRequest } from "./imageRpc";
 
 /** Rust command identifiers used by the renderer's Tauri transport. */
 export const TauriCommands = {
@@ -31,6 +32,7 @@ export const TauriCommands = {
   terminalSetStreaming: "terminal_set_streaming",
   terminalIsBusy: "terminal_is_busy",
   gitRpc: "git_rpc",
+  imageRpc: "image_rpc",
 } as const;
 
 /** Stable host API exposed as `window.swath` in both Tauri and browser development. */
@@ -66,5 +68,8 @@ export interface SwathApi {
   git: {
     rpc(request: GitRpcRequest): Promise<unknown>;
     onData(callback: (runId: string, data: string) => void): () => void;
+  };
+  image: {
+    rpc(request: ImageRpcRequest): Promise<unknown>;
   };
 }

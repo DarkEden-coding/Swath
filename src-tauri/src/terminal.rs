@@ -368,7 +368,6 @@ fn build_command(request: &TerminalSessionStartRequest) -> CommandBuilder {
     }
 
     cmd.env("TERM", "xterm-256color");
-    cmd.env("TERM_PROGRAM", "swath");
     cmd.env("COLORTERM", "truecolor");
     if std::env::var_os("LANG").is_none() {
         cmd.env("LANG", "en_US.UTF-8");
@@ -389,5 +388,26 @@ fn build_command(request: &TerminalSessionStartRequest) -> CommandBuilder {
             cmd.env(k, v);
         }
     }
+    // Applied after user/profile env so image-capable terminal identity is guaranteed.
+    cmd.env("TERM_PROGRAM", "swath");
+    cmd.env(
+        "ITERM_SESSION_ID",
+        synthetic_iterm_session_id(&request.session_id),
+    );
     cmd
+}
+
+/// Builds a synthetic iTerm session id from the Swath terminal session id.
+fn synthetic_iterm_session_id(session_id: &str) -> String {
+    format!("swath:{session_id}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::synthetic_iterm_session_id;
+
+    #[test]
+    fn iterm_session_id_includes_session_id() {
+        assert_eq!(synthetic_iterm_session_id("abc-123"), "swath:abc-123");
+    }
 }

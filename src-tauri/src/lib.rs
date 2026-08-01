@@ -1,6 +1,7 @@
 mod commands;
 mod config;
 mod git;
+mod image;
 #[cfg(not(target_os = "windows"))]
 mod menu;
 mod platform;
@@ -51,6 +52,7 @@ pub fn run() {
             commands::terminal_set_streaming,
             commands::terminal_is_busy,
             commands::git_rpc,
+            commands::image_rpc,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Swath")

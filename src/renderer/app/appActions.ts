@@ -245,6 +245,29 @@ export function setPaneInitialCwd(
   withConfig((config) => paneActions.setPaneInitialCwd(config, workspaceId, viewId, paneId, cwd));
 }
 
+/**
+ * Opens or updates an imagePreview pane in the current view from a source terminal.
+ * Stores only path metadata; image bytes are loaded on demand via RPC.
+ */
+export function upsertImagePreviewFromTerminal(
+  workspaceId: string,
+  viewId: string,
+  sourcePaneId: string,
+  imagePath: string,
+  imageTitle?: string,
+): void {
+  withConfig((config) =>
+    paneActions.upsertImagePreviewPane(
+      config,
+      workspaceId,
+      viewId,
+      sourcePaneId,
+      imagePath,
+      imageTitle,
+    ),
+  );
+}
+
 /** Determines whether pane closure requires confirmation. */
 export function shouldConfirmClosePane(workspaceId: string, viewId: string): boolean {
   const config = useConfigStore.getState().config;

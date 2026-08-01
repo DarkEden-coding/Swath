@@ -20,6 +20,7 @@ export const IpcChannels = {
   appCommand: "app:command",
   gitRpc: "git:rpc",
   gitData: "git:data",
+  imageRpc: "image:rpc",
   browserOpenExternal: "browser:open-external",
 } as const;
 

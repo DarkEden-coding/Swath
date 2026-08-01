@@ -5,6 +5,7 @@ import { TauriCommands } from "../../shared/ipc/swath";
 import type { SwathApi } from "../../shared/ipc/swath";
 import type { AppConfig } from "../../shared/types";
 import type { GitRpcRequest } from "../../shared/ipc/gitRpc";
+import type { ImageRpcRequest } from "../../shared/ipc/imageRpc";
 
 /** Creates the renderer API backed by Tauri commands and events. */
 export function createTauriSwath(): SwathApi {
@@ -116,6 +117,9 @@ export function createTauriSwath(): SwathApi {
           unsubscribe?.();
         };
       },
+    },
+    image: {
+      rpc: (request: ImageRpcRequest) => invoke(TauriCommands.imageRpc, { request }),
     },
   };
 }

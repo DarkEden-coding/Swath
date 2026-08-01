@@ -8,6 +8,7 @@ import {
   type MouseEvent,
 } from "react";
 import { FitAddon } from "@xterm/addon-fit";
+import { ImageAddon } from "@xterm/addon-image";
 import { SearchAddon } from "@xterm/addon-search";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { Terminal } from "@xterm/xterm";
@@ -27,7 +28,12 @@ import {
   createTerminalInputController,
   type TerminalInputController,
 } from "../input/terminalInputController";
-import { TERMINAL_SCROLLBACK_LINES } from "../../../../shared/memoryLimits";
+import {
+  IMAGE_ADDON_SEQUENCE_SIZE_LIMIT,
+  IMAGE_ADDON_STORAGE_LIMIT_MB,
+  TERMINAL_SCROLLBACK_LINES,
+} from "../../../../shared/memoryLimits";
+import { parseSwathImageOsc } from "../osc/swathImageOsc";
 import {
   captureTerminalScrollState,
   detachCachedTerminalElement,
@@ -60,6 +66,19 @@ function removeForeignTerminalElements(
   Array.from(host.children).forEach((child) => {
     if (child === currentElement) return;
     if (child.classList.contains("xterm")) host.removeChild(child);
+  });
+}
+
+/** Creates ImageAddon options with conservative IIP/SIXEL limits from memoryLimits. */
+function createImageAddon(): ImageAddon {
+  return new ImageAddon({
+    enableSizeReports: false,
+    showPlaceholder: true,
+    iipSupport: true,
+    sixelSupport: true,
+    storageLimit: IMAGE_ADDON_STORAGE_LIMIT_MB,
+    iipSizeLimit: IMAGE_ADDON_SEQUENCE_SIZE_LIMIT,
+    sixelSizeLimit: IMAGE_ADDON_SEQUENCE_SIZE_LIMIT,
   });
 }
 
@@ -115,7 +134,7 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
     const terminal =
       cachedEntry?.terminal ??
       new Terminal({
-        allowProposedApi: false,
+        allowProposedApi: true,
         convertEol: true,
         cursorBlink: initialSettingsRef.current.cursorBlink,
         cursorStyle: initialSettingsRef.current.cursorStyle,
@@ -127,6 +146,7 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
       });
 
     const fit = cachedEntry?.fit ?? new FitAddon();
+    const image = cachedEntry?.image ?? createImageAddon();
     if (cachedEntry) {
       const terminalElement = terminal.element;
       removeForeignTerminalElements(host, terminalElement);
@@ -135,6 +155,7 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
     } else {
       removeForeignTerminalElements(host, undefined);
       terminal.loadAddon(fit);
+      terminal.loadAddon(image);
       terminal.open(host);
     }
 
@@ -310,10 +331,25 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
         });
 
     if (!cachedEntry) {
+      const oscDisposable = terminal.parser.registerOscHandler(777, (data) => {
+        const parsed = parseSwathImageOsc(data);
+        if (parsed.kind === "ignore") return false;
+        if (parsed.kind === "path") {
+          // Fire-and-forget so the parser is not paused on UI/config work.
+          queueMicrotask(() => {
+            appActions.upsertImagePreviewFromTerminal(workspace.id, view.id, paneId, parsed.path);
+          });
+        }
+        // Consume matching malformed payloads so they do not leak into the buffer.
+        return true;
+      });
+
       terminalCache.set(paneId, {
         terminal,
         fit,
+        image,
         disposeResources: () => {
+          oscDisposable.dispose();
           disposable?.dispose();
           removeDataListener?.();
           removeExitListener?.();
@@ -374,6 +410,7 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
     paneMeta?.metadata?.env,
     paneShellProfile,
     view.id,
+    workspace.id,
     workspace.path,
   ]);
 
