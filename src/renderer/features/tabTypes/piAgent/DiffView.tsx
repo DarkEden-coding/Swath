@@ -88,10 +88,10 @@ export function hasDiff(entry: PiToolEntry): boolean {
 }
 
 function lineClass(type: DiffLine["type"]): string {
-  if (type === "add") return "bg-[#12261a] text-[#7ee2a8]";
-  if (type === "del") return "bg-[#2b1417] text-[#f2909a]";
-  if (type === "sep") return "bg-black/40 text-swath-muted";
-  return "text-swath-text";
+  if (type === "add") return "bg-[#12261a] text-[var(--pi-green)]";
+  if (type === "del") return "bg-[#2b1417] text-[var(--pi-red)]";
+  if (type === "sep") return "bg-black/40 text-[var(--pi-muted)]";
+  return "text-[var(--pi-text)]";
 }
 
 function gutter(line: DiffLine): string {
@@ -114,7 +114,7 @@ function StructuredDiffView({ diff }: { diff: StructuredDiff }): JSX.Element {
     <div className="overflow-x-auto font-mono text-[12px] leading-relaxed">
       {diff.lines.map((line, index) => (
         <div key={index} className={`flex ${lineClass(line.type)}`}>
-          <span className="w-10 shrink-0 select-none pr-2 text-right text-swath-muted">
+          <span className="w-10 shrink-0 select-none pr-2 text-right text-[var(--pi-dim)]">
             {gutter(line)}
           </span>
           <span className="w-3 shrink-0 select-none">{marker(line.type)}</span>
@@ -167,10 +167,10 @@ export function DiffView({ entry }: { entry: PiToolEntry }): JSX.Element | null 
   if (structured) {
     return (
       <div>
-        <div className="border-b border-swath-border px-2.5 py-1 font-mono text-[11px] text-swath-muted">
+        <div className="border-b border-[var(--pi-border-muted)] px-2.5 py-1 text-[11px] text-[var(--pi-muted)]">
           {structured.filePath ? <span className="mr-2">{structured.filePath}</span> : null}
-          <span className="text-[#7ee2a8]">+{structured.added}</span>{" "}
-          <span className="text-[#f2909a]">−{structured.removed}</span>
+          <span className="text-[var(--pi-green)]">+{structured.added}</span>{" "}
+          <span className="text-[var(--pi-red)]">−{structured.removed}</span>
         </div>
         <StructuredDiffView diff={structured} />
       </div>

@@ -254,6 +254,12 @@ pub struct TerminalExitEventPayload {
 pub struct TerminalClipboardPayload {
     pub text: String,
     pub has_image: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_data: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_width: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_height: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

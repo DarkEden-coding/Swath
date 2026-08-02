@@ -41,7 +41,7 @@ export function CodeBlock({ code, lang }: { code: string; lang?: string }): JSX.
 
   if (!language) {
     return (
-      <pre className="my-2 overflow-x-auto rounded border border-swath-border bg-black/30 p-2 font-mono text-[12px] text-swath-text">
+      <pre className="my-2 overflow-x-auto rounded border border-[var(--pi-border)] bg-[var(--pi-surface)] p-2 font-mono text-[12px] text-[var(--pi-text)]">
         {code}
       </pre>
     );
@@ -50,7 +50,7 @@ export function CodeBlock({ code, lang }: { code: string; lang?: string }): JSX.
   return (
     <Highlight theme={themes.vsDark} code={code.replace(/\n$/, "")} language={language}>
       {({ tokens, getLineProps, getTokenProps }) => (
-        <pre className="my-2 overflow-x-auto rounded border border-swath-border bg-black/30 p-2 font-mono text-[12px]">
+        <pre className="my-2 overflow-x-auto rounded border border-[var(--pi-border)] bg-[var(--pi-surface)] p-2 font-mono text-[12px]">
           {tokens.map((line, i) => (
             <div key={i} {...getLineProps({ line })}>
               {line.map((token, j) => (
@@ -84,7 +84,7 @@ function renderInline(tokens: Token[] | undefined, keyPrefix: string): ReactNode
         return (
           <code
             key={key}
-            className="rounded bg-black/40 px-1 font-mono text-[12px] text-swath-accent"
+            className="rounded bg-[var(--pi-surface)] px-1 font-mono text-[12px] text-[var(--pi-purple)]"
           >
             {(token as Tokens.Codespan).text}
           </code>
@@ -95,7 +95,7 @@ function renderInline(tokens: Token[] | undefined, keyPrefix: string): ReactNode
           <button
             key={key}
             type="button"
-            className="text-swath-accent underline"
+            className="text-[var(--pi-cyan)] underline"
             onClick={() => void window.swath.browser.openExternal(link.href)}
           >
             {renderInline(link.tokens, key) ?? link.href}
@@ -144,7 +144,7 @@ function renderBlocks(tokens: Token[], keyPrefix: string): ReactNode {
         return (
           <blockquote
             key={key}
-            className="my-2 border-l-2 border-swath-border pl-3 text-swath-muted"
+            className="my-2 border-l-2 border-[var(--pi-purple)] pl-3 text-[var(--pi-muted)]"
           >
             {renderBlocks((token as Tokens.Blockquote).tokens, key)}
           </blockquote>
@@ -178,7 +178,7 @@ function renderBlocks(tokens: Token[], keyPrefix: string): ReactNode {
                   {table.header.map((cell, cellIndex) => (
                     <th
                       key={cellIndex}
-                      className="border border-swath-border px-2 py-1 text-left font-semibold"
+                      className="border border-[var(--pi-border)] px-2 py-1 text-left font-semibold"
                     >
                       {renderInline(cell.tokens, `${key}-h-${cellIndex}`)}
                     </th>
@@ -189,7 +189,7 @@ function renderBlocks(tokens: Token[], keyPrefix: string): ReactNode {
                 {table.rows.map((row, rowIndex) => (
                   <tr key={rowIndex}>
                     {row.map((cell, cellIndex) => (
-                      <td key={cellIndex} className="border border-swath-border px-2 py-1">
+                      <td key={cellIndex} className="border border-[var(--pi-border)] px-2 py-1">
                         {renderInline(cell.tokens, `${key}-${rowIndex}-${cellIndex}`)}
                       </td>
                     ))}
@@ -202,18 +202,14 @@ function renderBlocks(tokens: Token[], keyPrefix: string): ReactNode {
       }
 
       case "hr":
-        return <hr key={key} className="my-3 border-swath-border" />;
+        return <hr key={key} className="my-3 border-[var(--pi-border)]" />;
 
       case "space":
         return null;
 
       case "text": {
         const text = token as Tokens.Text;
-        return (
-          <span key={key}>
-            {text.tokens ? renderInline(text.tokens, key) : text.text}
-          </span>
-        );
+        return <span key={key}>{text.tokens ? renderInline(text.tokens, key) : text.text}</span>;
       }
 
       // Raw HTML in model output is shown as text, never parsed as markup.
@@ -237,5 +233,5 @@ function renderBlocks(tokens: Token[], keyPrefix: string): ReactNode {
 /** Renders a markdown string as React elements. */
 export function Markdown({ text }: { text: string }): JSX.Element {
   const tokens = marked.lexer(text);
-  return <div className="text-[13px] text-swath-text">{renderBlocks(tokens, "md")}</div>;
+  return <div className="text-[13px] text-[var(--pi-text)]">{renderBlocks(tokens, "md")}</div>;
 }

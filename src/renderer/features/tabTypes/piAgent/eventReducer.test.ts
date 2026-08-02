@@ -28,7 +28,12 @@ describe("reducePiEvent against a real captured turn", () => {
   it("produces prompt, tool card and reply in order", () => {
     const state = run(realTurn());
 
-    expect(state.entries.map((entry) => entry.kind)).toEqual(["message", "message", "tool", "message"]);
+    expect(state.entries.map((entry) => entry.kind)).toEqual([
+      "message",
+      "message",
+      "tool",
+      "message",
+    ]);
 
     const [prompt, toolCallMsg, tool, reply] = state.entries;
     expect((prompt as PiMessageEntry).role).toBe("user");
@@ -72,7 +77,14 @@ describe("history hydration from get_messages", () => {
     { role: "user" as const, content: [{ type: "text" as const, text: "run echo" }], timestamp: 1 },
     {
       role: "assistant" as const,
-      content: [{ type: "toolCall" as const, id: "call_1", name: "bash", arguments: { command: "echo hi" } }],
+      content: [
+        {
+          type: "toolCall" as const,
+          id: "call_1",
+          name: "bash",
+          arguments: { command: "echo hi" },
+        },
+      ],
       timestamp: 2,
     },
     {
@@ -83,7 +95,11 @@ describe("history hydration from get_messages", () => {
       isError: false,
       timestamp: 3,
     },
-    { role: "assistant" as const, content: [{ type: "text" as const, text: "done" }], timestamp: 4 },
+    {
+      role: "assistant" as const,
+      content: [{ type: "text" as const, text: "done" }],
+      timestamp: 4,
+    },
   ];
 
   it("rebuilds messages and tool cards in order", () => {
@@ -145,7 +161,10 @@ describe("reducePiEvent", () => {
   it("replaces cumulative message content rather than appending it", () => {
     const state = run([
       { type: "message_start", message: { role: "assistant", content: [] } },
-      { type: "message_update", message: { role: "assistant", content: [{ type: "text", text: "Hello" }] } },
+      {
+        type: "message_update",
+        message: { role: "assistant", content: [{ type: "text", text: "Hello" }] },
+      },
       {
         type: "message_update",
         message: { role: "assistant", content: [{ type: "text", text: "Hello, world" }] },
@@ -232,13 +251,43 @@ describe("reducePiEvent", () => {
 
   it("interleaves tools and messages in arrival order", () => {
     const state = run([
-      { type: "message_start", message: { role: "assistant", content: [{ type: "text", text: "running" }] } },
-      { type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "running" }] } },
+      {
+        type: "message_start",
+        message: { role: "assistant", content: [{ type: "text", text: "running" }] },
+      },
+      {
+        type: "message_end",
+        message: { role: "assistant", content: [{ type: "text", text: "running" }] },
+      },
       { type: "tool_execution_start", toolCallId: "t1", toolName: "bash" },
       { type: "message_start", message: { role: "assistant", content: [] } },
     ]);
 
     expect(state.entries.map((entry) => entry.kind)).toEqual(["message", "tool", "message"]);
+  });
+
+  it("groups sibling tool calls as one parallel batch", () => {
+    const calls = [
+      { type: "toolCall" as const, id: "t1", name: "read", arguments: { path: "a.ts" } },
+      { type: "toolCall" as const, id: "t2", name: "read", arguments: { path: "b.ts" } },
+    ];
+    const state = run([
+      { type: "message_start", message: { role: "assistant", content: [] } },
+      { type: "message_end", message: { role: "assistant", content: calls } },
+      { type: "tool_execution_start", toolCallId: "t1", toolName: "read" },
+      { type: "tool_execution_start", toolCallId: "t2", toolName: "read" },
+    ]);
+
+    const tools = state.entries.filter((entry): entry is PiToolEntry => entry.kind === "tool");
+    expect(tools.map((tool) => tool.parallelGroup)).toEqual([
+      { id: "parallel:t1", index: 0, total: 2 },
+      { id: "parallel:t1", index: 1, total: 2 },
+    ]);
+  });
+
+  it("counts steering and follow-up queues from the current RPC shape", () => {
+    const state = run([{ type: "queue_update", steering: ["a"], followUp: ["b", "c"] }]);
+    expect(state.pendingCount).toBe(3);
   });
 
   it("sets and clears extension status chips", () => {
@@ -254,7 +303,14 @@ describe("reducePiEvent", () => {
     expect(state.status["parallel-agents"]).toBe("subagents:5/5");
 
     state = run(
-      [{ type: "extension_ui_request", id: "u2", method: "setStatus", statusKey: "parallel-agents" }],
+      [
+        {
+          type: "extension_ui_request",
+          id: "u2",
+          method: "setStatus",
+          statusKey: "parallel-agents",
+        },
+      ],
       state,
     );
     expect(state.status["parallel-agents"]).toBeUndefined();

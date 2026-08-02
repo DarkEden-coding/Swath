@@ -61,7 +61,7 @@ export interface PiSessionStats {
   totalMessages: number;
   tokens: { input: number; output: number; cacheRead: number; cacheWrite: number; total: number };
   cost: number;
-  contextUsage: { tokens: number; contextWindow: number; percent: number };
+  contextUsage?: { tokens: number | null; contextWindow: number; percent: number | null };
 }
 
 /** One node of the `get_tree` reply. */
@@ -211,7 +211,7 @@ export type PiIncoming =
       result?: PiToolResult;
       isError?: boolean;
     }
-  | { type: "queue_update"; pending?: number }
+  | { type: "queue_update"; pending?: number; steering?: string[]; followUp?: string[] }
   | { type: "compaction_start" }
   | { type: "compaction_end" }
   | { type: "extension_error"; error?: string }

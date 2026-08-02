@@ -89,10 +89,7 @@ export function PiAgentPane({ workspace, view, pane }: PaneComponentProps): JSX.
 
   const renderWidgets = (widgets: typeof widgetsAbove): JSX.Element[] =>
     widgets.map((widget) => (
-      <div
-        key={widget.key}
-        className="shrink-0 border-t border-swath-border px-3 py-1 font-mono text-[11px]"
-      >
+      <div key={widget.key} className="pi-agent-widget shrink-0 border-t">
         {widget.lines.map((line, index) => (
           <div key={index}>
             <AnsiText text={line} />
@@ -104,7 +101,7 @@ export function PiAgentPane({ workspace, view, pane }: PaneComponentProps): JSX.
   return (
     <PaneFrame
       active={isActive}
-      title={state.state?.sessionName ?? "pi"}
+      title={state.title ?? state.state?.sessionName ?? "pi"}
       statusClass={state.exited ? "exited" : state.isStreaming ? "running" : "dormant"}
       onActivate={() => appActions.setActivePane(workspace.id, view.id, paneId)}
       onSplitRight={(kind) => appActions.splitPane(workspace.id, view.id, paneId, "vertical", kind)}
@@ -113,12 +110,12 @@ export function PiAgentPane({ workspace, view, pane }: PaneComponentProps): JSX.
       }
       onClose={() => appActions.closePane(workspace.id, view.id, paneId)}
     >
-      <div className="relative flex h-full min-h-0 bg-[#0d1117]">
+      <div className="pi-agent relative flex h-full min-h-0">
         <div className="flex min-w-0 flex-1 flex-col">
-          <div className="flex shrink-0 items-center gap-2 border-b border-swath-border bg-swath-panel px-2.5 py-1 font-mono text-[11px] text-swath-muted">
+          <div className="pi-agent-toolbar flex shrink-0 items-center gap-3 border-b px-4 py-1 text-[11px]">
             <button
               type="button"
-              className="hover:text-swath-text"
+              className="hover:text-[var(--pi-text)]"
               onClick={() => runUiCommand("/new")}
               disabled={state.isStreaming}
             >
@@ -126,14 +123,14 @@ export function PiAgentPane({ workspace, view, pane }: PaneComponentProps): JSX.
             </button>
             <button
               type="button"
-              className="hover:text-swath-text"
+              className="hover:text-[var(--pi-text)]"
               onClick={() => runUiCommand("/rename")}
             >
               rename
             </button>
             <button
               type="button"
-              className="hover:text-swath-text"
+              className="hover:text-[var(--pi-text)]"
               onClick={() => runUiCommand("/compact")}
               disabled={state.isStreaming || state.isCompacting}
             >
@@ -141,7 +138,7 @@ export function PiAgentPane({ workspace, view, pane }: PaneComponentProps): JSX.
             </button>
             <button
               type="button"
-              className={`ml-auto hover:text-swath-text ${treeOpen ? "text-swath-text" : ""}`}
+              className={`ml-auto hover:text-[var(--pi-text)] ${treeOpen ? "text-[var(--pi-text)]" : ""}`}
               onClick={() => {
                 if (!treeOpen) agent.refreshTree();
                 setTreeOpen((value) => !value);
@@ -152,17 +149,17 @@ export function PiAgentPane({ workspace, view, pane }: PaneComponentProps): JSX.
           </div>
 
           {state.notices.length > 0 ? (
-            <div className="shrink-0 border-b border-swath-border">
+            <div className="shrink-0 border-b border-[var(--pi-border-muted)]">
               {state.notices.slice(-3).map((notice) => (
                 <button
                   key={notice.id}
                   type="button"
                   className={`block w-full px-3 py-1 text-left font-mono text-[11px] ${
                     notice.level === "error"
-                      ? "text-[#f14c4c]"
+                      ? "text-[var(--pi-red)]"
                       : notice.level === "warning"
-                        ? "text-[#e5e510]"
-                        : "text-swath-muted"
+                        ? "text-[var(--pi-yellow)]"
+                        : "text-[var(--pi-muted)]"
                   }`}
                   onClick={() => agent.dismissNotice(notice.id)}
                 >
@@ -181,8 +178,14 @@ export function PiAgentPane({ workspace, view, pane }: PaneComponentProps): JSX.
             }}
           >
             {state.entries.length === 0 ? (
-              <div className="grid h-full place-items-center px-6 text-center text-sm text-swath-muted">
-                {state.exited ? "pi exited." : state.error ? state.error : `Starting pi in ${cwd}…`}
+              <div className="grid h-full place-items-center px-6 text-center text-sm text-[var(--pi-dim)]">
+                {state.exited
+                  ? "pi exited."
+                  : state.error
+                    ? state.error
+                    : state.state
+                      ? "Start a new chat with pi."
+                      : `Starting pi in ${cwd}…`}
               </div>
             ) : (
               <Transcript entries={state.entries} />
@@ -196,6 +199,7 @@ export function PiAgentPane({ workspace, view, pane }: PaneComponentProps): JSX.
             cwd={cwd}
             commands={commands}
             streaming={state.isStreaming}
+            thinkingLevel={state.state?.thinkingLevel}
             value={draft}
             onChange={setDraft}
             onSubmit={(message, images) => {

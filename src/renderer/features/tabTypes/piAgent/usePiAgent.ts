@@ -152,6 +152,23 @@ export function usePiAgent(
         if (typeof path === "string" && path) showImageRef.current?.(path);
       }
 
+      // Session replacement rebinds extensions before the response arrives. Do not reset here:
+      // that would erase the replacement session's freshly emitted widgets and model list.
+      if (
+        event.type === "response" &&
+        event.success &&
+        (event.id === "new-session" || event.id === "fork-session") &&
+        !(event.data as { cancelled?: boolean } | undefined)?.cancelled
+      ) {
+        sendRef.current({ id: "messages", type: "get_messages" });
+        sendRef.current({ id: "state", type: "get_state" });
+        sendRef.current({ id: "commands", type: "get_commands" });
+        sendRef.current({ id: "models", type: "get_available_models" });
+        sendRef.current({ id: "thinking", type: "get_available_thinking_levels" });
+        sendRef.current({ id: "stats", type: "get_session_stats" });
+        sendRef.current({ id: "tree", type: "get_tree" });
+      }
+
       // Refresh the footer once the run is fully settled, when totals are final.
       if (event.type === "agent_settled") {
         sendRef.current({ id: "stats", type: "get_session_stats" });
@@ -184,12 +201,7 @@ export function usePiAgent(
       },
       abort: () => send({ type: "abort" }),
       restart: spawn,
-      newSession: () => {
-        send({ id: "new-session", type: "new_session" });
-        send({ id: "messages", type: "get_messages" });
-        send({ id: "state", type: "get_state" });
-        send({ id: "stats", type: "get_session_stats" });
-      },
+      newSession: () => send({ id: "new-session", type: "new_session" }),
       compact: () => send({ type: "compact" }),
       setModel: (model: string) => {
         const separator = model.indexOf("/");
@@ -217,13 +229,7 @@ export function usePiAgent(
         send({ id: "state", type: "get_state" });
       },
       refreshTree: () => send({ id: "tree", type: "get_tree" }),
-      fork: (entryId: string) => {
-        send({ type: "fork", entryId });
-        dispatch({ type: "reset" });
-        send({ id: "messages", type: "get_messages" });
-        send({ id: "state", type: "get_state" });
-        send({ id: "tree", type: "get_tree" });
-      },
+      fork: (entryId: string) => send({ id: "fork-session", type: "fork", entryId }),
       answerDialog: (id, response) => {
         send({ type: "extension_ui_response", id, ...response });
         dispatch({ type: "dismissDialog", id });

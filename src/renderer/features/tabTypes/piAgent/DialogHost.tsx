@@ -11,7 +11,10 @@ import type { PiDialog } from "./eventReducer";
 
 interface DialogHostProps {
   dialog: PiDialog | undefined;
-  onAnswer: (id: string, response: { value?: string; confirmed?: boolean; cancelled?: true }) => void;
+  onAnswer: (
+    id: string,
+    response: { value?: string; confirmed?: boolean; cancelled?: true },
+  ) => void;
 }
 
 /**
@@ -19,9 +22,8 @@ interface DialogHostProps {
  * inheriting the previous one's text.
  */
 export function DialogHost({ dialog, onAnswer }: DialogHostProps): JSX.Element | null {
-  const [draft, setDraft] = useState(
-    dialog?.method === "editor" ? (dialog.prefill ?? "") : "",
-  );
+  const [draft, setDraft] = useState(dialog?.method === "editor" ? (dialog.prefill ?? "") : "");
+  const [selected, setSelected] = useState(0);
 
   if (!dialog) return null;
 
@@ -29,15 +31,35 @@ export function DialogHost({ dialog, onAnswer }: DialogHostProps): JSX.Element |
 
   return (
     <div className="absolute inset-0 z-20 grid place-items-center bg-black/50 p-4">
-      <div className="w-full max-w-lg rounded border border-swath-border-strong bg-swath-panel p-4 shadow-lg">
+      <div
+        className="w-full max-w-lg rounded border border-[var(--pi-purple)] bg-[var(--pi-page)] p-4 font-mono shadow-lg outline-none"
+        tabIndex={-1}
+        autoFocus
+        onKeyDown={(event) => {
+          if (event.key === "Escape") {
+            event.preventDefault();
+            cancel();
+            return;
+          }
+          if (dialog.method !== "select" || dialog.options.length === 0) return;
+          if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+            event.preventDefault();
+            const delta = event.key === "ArrowDown" ? 1 : -1;
+            setSelected((value) => (value + delta + dialog.options.length) % dialog.options.length);
+          } else if (event.key === "Enter" && dialog.options[selected]) {
+            event.preventDefault();
+            onAnswer(dialog.id, { value: dialog.options[selected] });
+          }
+        }}
+      >
         {dialog.title ? (
-          <div className="mb-3 text-sm font-semibold text-swath-text">{dialog.title}</div>
+          <div className="mb-3 text-sm font-semibold text-[var(--pi-blue)]">{dialog.title}</div>
         ) : null}
 
         {dialog.method === "confirm" ? (
           <>
             {dialog.message ? (
-              <p className="mb-4 text-[13px] text-swath-muted">{dialog.message}</p>
+              <p className="mb-4 text-[13px] text-[var(--pi-muted)]">{dialog.message}</p>
             ) : null}
             <div className="flex justify-end gap-2">
               <button
@@ -60,11 +82,16 @@ export function DialogHost({ dialog, onAnswer }: DialogHostProps): JSX.Element |
 
         {dialog.method === "select" ? (
           <div className="flex max-h-80 flex-col gap-1 overflow-auto">
-            {dialog.options.map((option) => (
+            {dialog.options.map((option, index) => (
               <button
                 key={option}
                 type="button"
-                className="rounded border border-swath-border px-3 py-1.5 text-left font-mono text-[12px] text-swath-text hover:border-swath-accent hover:bg-[#1f2a37]"
+                className={`rounded border px-3 py-1.5 text-left text-[12px] ${
+                  index === selected
+                    ? "border-[var(--pi-purple)] bg-[#172235] text-[var(--pi-text)]"
+                    : "border-[var(--pi-border)] text-[var(--pi-text)]"
+                }`}
+                onMouseEnter={() => setSelected(index)}
                 onClick={() => onAnswer(dialog.id, { value: option })}
               >
                 {option}
@@ -77,7 +104,7 @@ export function DialogHost({ dialog, onAnswer }: DialogHostProps): JSX.Element |
           <>
             <textarea
               autoFocus
-              className="mb-3 h-32 w-full resize-none rounded border border-swath-border bg-[#0d1117] p-2 font-mono text-[12px] text-swath-text outline-none focus:border-swath-accent"
+              className="mb-3 h-32 w-full resize-none rounded border border-[var(--pi-border)] bg-[var(--pi-surface)] p-2 text-[12px] text-[var(--pi-text)] outline-none focus:border-[var(--pi-purple)]"
               placeholder={dialog.method === "input" ? (dialog.placeholder ?? "") : ""}
               value={draft}
               onChange={(event) => setDraft(event.target.value)}

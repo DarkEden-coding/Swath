@@ -1,10 +1,18 @@
 import { describe, expect, it } from "vitest";
-import { activeToken } from "./Composer";
+import { activeToken, imagePreviewSource } from "./Composer";
 
 /** Places the caret at the end of `text`. */
 function at(text: string) {
   return activeToken(text, text.length);
 }
+
+describe("imagePreviewSource", () => {
+  it("builds a renderable data URL without attachment text", () => {
+    expect(imagePreviewSource({ type: "image", data: "abc", mimeType: "image/png" })).toBe(
+      "data:image/png;base64,abc",
+    );
+  });
+});
 
 describe("activeToken", () => {
   it("returns nothing for plain text", () => {

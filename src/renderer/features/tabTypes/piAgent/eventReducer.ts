@@ -32,6 +32,8 @@ export interface PiToolEntry {
   startedAt: number;
   endedAt?: number;
   isError: boolean;
+  reasoningLevel?: PiThinkingLevel;
+  parallelGroup?: { id: string; index: number; total: number };
 }
 
 export interface PiMessageEntry {
@@ -84,8 +86,12 @@ export interface PiPaneState {
   pendingCount: number;
   /** Text pi asked us to prefill into the composer, consumed by the UI. */
   editorText?: string;
+  /** Latest tab title requested by an extension. */
+  title?: string;
   exited: boolean;
   error?: string;
+  /** Tool-call batches discovered while the assistant message streams. */
+  toolGroups: Record<string, { id: string; index: number; total: number }>;
   /** Monotonic id source, kept in state so the reducer stays pure. */
   seq: number;
 }
@@ -107,6 +113,7 @@ export function initialPiPaneState(): PiPaneState {
     isCompacting: false,
     pendingCount: 0,
     exited: false,
+    toolGroups: {},
     seq: 0,
   };
 }
@@ -170,6 +177,22 @@ function readMessage(message: PiMessage): { text: string; thinking: string } {
   return { text, thinking };
 }
 
+/** Records sibling tool calls so their cards can share one parallel frame. */
+function recordToolGroups(state: PiPaneState, message: PiMessage): PiPaneState {
+  if (message.role !== "assistant") return state;
+  const calls = message.content.filter(
+    (block): block is Extract<PiContentBlock, { type: "toolCall" }> => block.type === "toolCall",
+  );
+  if (calls.length < 2) return state;
+
+  const groupId = `parallel:${calls[0].id}`;
+  const toolGroups = { ...state.toolGroups };
+  calls.forEach((call, index) => {
+    toolGroups[call.id] = { id: groupId, index, total: calls.length };
+  });
+  return { ...state, toolGroups };
+}
+
 function applyExtensionUi(state: PiPaneState, event: PiExtensionUiRequest): PiPaneState {
   switch (event.method) {
     case "select":
@@ -217,7 +240,7 @@ function applyExtensionUi(state: PiPaneState, event: PiExtensionUiRequest): PiPa
       return { ...state, editorText: event.text };
 
     case "setTitle":
-      return state;
+      return { ...state, title: event.title };
 
     default:
       return state;
@@ -253,8 +276,9 @@ export function reducePiEvent(state: PiPaneState, event: PiIncoming): PiPaneStat
       const { text, thinking } = readMessage(event.message);
       const usage = role === "assistant" ? event.message.usage : undefined;
       const closing = event.type === "message_end";
+      const groupedState = recordToolGroups(state, event.message);
       return updateEntry(
-        state,
+        groupedState,
         (entry) => entry.kind === "message" && entry.id === targetId,
         (entry) => ({
           ...(entry as PiMessageEntry),
@@ -276,6 +300,8 @@ export function reducePiEvent(state: PiPaneState, event: PiIncoming): PiPaneStat
         output: "",
         startedAt: Date.now(),
         isError: false,
+        reasoningLevel: state.state?.thinkingLevel,
+        parallelGroup: state.toolGroups[event.toolCallId],
       };
       return { ...state, entries: [...state.entries, entry] };
     }
@@ -312,7 +338,11 @@ export function reducePiEvent(state: PiPaneState, event: PiIncoming): PiPaneStat
       return { ...state, isStreaming: false };
 
     case "queue_update":
-      return { ...state, pendingCount: event.pending ?? 0 };
+      return {
+        ...state,
+        pendingCount:
+          event.pending ?? (event.steering?.length ?? 0) + (event.followUp?.length ?? 0),
+      };
 
     case "compaction_start":
       return { ...state, isCompacting: true };
@@ -433,8 +463,12 @@ export function hydrateFromMessages(state: PiPaneState, messages: PiMessage[]): 
         });
       }
       if (message.role === "assistant") {
-        for (const block of message.content) {
-          if (block.type !== "toolCall") continue;
+        const calls = message.content.filter(
+          (block): block is Extract<PiContentBlock, { type: "toolCall" }> =>
+            block.type === "toolCall",
+        );
+        const groupId = calls.length > 1 ? `parallel:${calls[0].id}` : undefined;
+        calls.forEach((block, index) => {
           const tool: PiToolEntry = {
             kind: "tool",
             id: block.id,
@@ -444,10 +478,11 @@ export function hydrateFromMessages(state: PiPaneState, messages: PiMessage[]): 
             output: "",
             startedAt: message.timestamp ?? 0,
             isError: false,
+            parallelGroup: groupId ? { id: groupId, index, total: calls.length } : undefined,
           };
           toolsByCallId.set(block.id, tool);
           entries.push(tool);
-        }
+        });
       }
       continue;
     }

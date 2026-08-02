@@ -35,7 +35,7 @@ function Picker<T extends string>({ label, options, onPick }: PickerProps<T>): J
     <div className="relative shrink-0">
       <button
         type="button"
-        className="hover:text-swath-text"
+        className="hover:text-[var(--pi-text)]"
         onClick={() => setOpen((value) => !value)}
       >
         {label}
@@ -48,12 +48,12 @@ function Picker<T extends string>({ label, options, onPick }: PickerProps<T>): J
             className="fixed inset-0 z-10 cursor-default"
             onClick={() => setOpen(false)}
           />
-          <div className="absolute bottom-full right-0 z-20 mb-1 max-h-72 w-64 overflow-auto rounded border border-swath-border-strong bg-swath-panel py-1 shadow-lg">
+          <div className="absolute bottom-full right-0 z-20 mb-1 max-h-72 w-64 overflow-auto rounded border border-[var(--pi-border)] bg-[var(--pi-surface)] py-1 shadow-lg">
             {options.map((option) => (
               <button
                 key={option.value}
                 type="button"
-                className="block w-full truncate px-2 py-1 text-left font-mono text-[11px] text-swath-muted hover:bg-[#1f2a37] hover:text-swath-text"
+                className="block w-full truncate px-2 py-1 text-left text-[11px] text-[var(--pi-muted)] hover:bg-[#172235] hover:text-[var(--pi-text)]"
                 onClick={() => {
                   onPick(option.value);
                   setOpen(false);
@@ -107,62 +107,71 @@ export function Chrome({
   const context = stats?.contextUsage;
 
   return (
-    <div className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-0.5 border-t border-swath-border bg-swath-panel px-3 py-1 font-mono text-[11px] text-swath-muted">
-      <span className="truncate" title={cwd}>
-        {cwd}
-      </span>
-
-      {Object.entries(status).map(([key, text]) => (
-        <AnsiText key={key} text={text} />
-      ))}
-
-      {stats ? (
-        <span>
-          ↑{formatTokens(stats.tokens.input)} ↓{formatTokens(stats.tokens.output)}
-          {stats.tokens.cacheRead > 0 ? ` R${formatTokens(stats.tokens.cacheRead)}` : ""}{" "}
-          {formatCost(stats.cost)}
-          {context && context.contextWindow > 0
-            ? ` ${context.percent.toFixed(1)}%/${formatTokens(context.contextWindow)}`
-            : ""}
+    <div className="pi-agent-footer shrink-0">
+      <div className="pi-footer-row">
+        <span className="truncate" title={cwd}>
+          {cwd}
         </span>
-      ) : null}
-
-      {compacting ? <span>compacting…</span> : null}
-      {pendingCount > 0 ? <span>queued:{pendingCount}</span> : null}
-
-      <div className="ml-auto flex shrink-0 items-center gap-3">
-        <Picker
-          label={model ? `(${model.provider}) ${model.name}` : "no model"}
-          options={models.map((option) => ({
-            value: `${option.provider}/${option.id}`,
-            label: `${option.provider}/${option.id}`,
-          }))}
-          onPick={onSetModel}
-        />
-        <Picker
-          label={`• ${thinkingLevel ?? "?"}`}
-          options={thinkingLevels.map((level) => ({ value: level, label: level }))}
-          onPick={onSetThinking}
-        />
-        {streaming ? (
-          <button
-            type="button"
-            className="rounded border border-swath-border px-2 hover:text-swath-text"
-            onClick={onAbort}
-          >
-            stop
-          </button>
-        ) : null}
-        {exited ? (
-          <button
-            type="button"
-            className="rounded border border-swath-border px-2 hover:text-swath-text"
-            onClick={onRestart}
-          >
-            restart
-          </button>
-        ) : null}
+        {compacting ? <span>compacting…</span> : null}
+        {pendingCount > 0 ? <span>queued:{pendingCount}</span> : null}
       </div>
+
+      <div className="pi-footer-row">
+        {stats ? (
+          <span>
+            ↑{formatTokens(stats.tokens.input)} ↓{formatTokens(stats.tokens.output)}
+            {stats.tokens.cacheRead > 0 ? ` R${formatTokens(stats.tokens.cacheRead)}` : ""}
+            {stats.tokens.cacheWrite > 0 ? ` W${formatTokens(stats.tokens.cacheWrite)}` : ""}{" "}
+            {formatCost(stats.cost)}
+            {context && context.contextWindow > 0 && context.percent !== null
+              ? ` ${context.percent.toFixed(1)}%/${formatTokens(context.contextWindow)}`
+              : ""}
+          </span>
+        ) : (
+          <span />
+        )}
+        <div className="pi-footer-right flex shrink-0 items-center gap-3 text-[var(--pi-muted)]">
+          <Picker
+            label={model ? `(${model.provider}) ${model.name}` : "no model"}
+            options={models.map((option) => ({
+              value: `${option.provider}/${option.id}`,
+              label: `${option.provider}/${option.id}`,
+            }))}
+            onPick={onSetModel}
+          />
+          <Picker
+            label={`• ${thinkingLevel ?? "?"}`}
+            options={thinkingLevels.map((level) => ({ value: level, label: level }))}
+            onPick={onSetThinking}
+          />
+          {streaming ? (
+            <button
+              type="button"
+              className="border border-[var(--pi-border)] px-2 hover:text-[var(--pi-text)]"
+              onClick={onAbort}
+            >
+              stop
+            </button>
+          ) : null}
+          {exited ? (
+            <button
+              type="button"
+              className="border border-[var(--pi-border)] px-2 hover:text-[var(--pi-text)]"
+              onClick={onRestart}
+            >
+              restart
+            </button>
+          ) : null}
+        </div>
+      </div>
+
+      {Object.keys(status).length > 0 ? (
+        <div className="pi-footer-row">
+          {Object.entries(status).map(([key, text]) => (
+            <AnsiText key={key} text={text} />
+          ))}
+        </div>
+      ) : null}
     </div>
   );
 }
