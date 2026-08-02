@@ -253,7 +253,6 @@ body.is-reordering * {
   font-size: 11px;
 }
 
-.pi-agent-toolbar,
 .pi-agent-widget,
 .pi-agent-footer {
   border-color: var(--pi-border-muted);

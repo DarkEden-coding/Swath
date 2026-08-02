@@ -8,7 +8,15 @@
 
 import { useState } from "react";
 import type { PiModel, PiSessionStats, PiThinkingLevel } from "../../../../shared/ipc/piRpc";
-import { AnsiText } from "../../../lib/ansi";
+import { AnsiText, parseAnsi } from "../../../lib/ansi";
+
+/** Extensions publish counter chips ("background terminals: 0") that are noise while at zero. */
+export function isEmptyCounterChip(text: string): boolean {
+  const plain = parseAnsi(text)
+    .map((span) => span.text)
+    .join("");
+  return plain.trim() === "" || /:\s*0$/.test(plain.trim());
+}
 
 /** Formats a token count the way pi's footer does (149000 → 149k). */
 export function formatTokens(value: number): string {
@@ -112,13 +120,10 @@ export function Chrome({
         <span className="truncate" title={cwd}>
           {cwd}
         </span>
-        {compacting ? <span>compacting…</span> : null}
-        {pendingCount > 0 ? <span>queued:{pendingCount}</span> : null}
-      </div>
-
-      <div className="pi-footer-row">
+        {compacting ? <span className="shrink-0">compacting…</span> : null}
+        {pendingCount > 0 ? <span className="shrink-0">queued:{pendingCount}</span> : null}
         {stats ? (
-          <span>
+          <span className="pi-footer-right shrink-0">
             ↑{formatTokens(stats.tokens.input)} ↓{formatTokens(stats.tokens.output)}
             {stats.tokens.cacheRead > 0 ? ` R${formatTokens(stats.tokens.cacheRead)}` : ""}
             {stats.tokens.cacheWrite > 0 ? ` W${formatTokens(stats.tokens.cacheWrite)}` : ""}{" "}
@@ -127,9 +132,18 @@ export function Chrome({
               ? ` ${context.percent.toFixed(1)}%/${formatTokens(context.contextWindow)}`
               : ""}
           </span>
-        ) : (
-          <span />
-        )}
+        ) : null}
+      </div>
+
+      {/* Extension status chips share their line with the model / thinking pickers. */}
+      <div className="pi-footer-row">
+        <div className="flex min-w-0 items-center gap-3 overflow-hidden whitespace-nowrap">
+          {Object.entries(status)
+            .filter(([, text]) => !isEmptyCounterChip(text))
+            .map(([key, text]) => (
+              <AnsiText key={key} text={text} />
+            ))}
+        </div>
         <div className="pi-footer-right flex shrink-0 items-center gap-3 text-[var(--pi-muted)]">
           <Picker
             label={model ? `(${model.provider}) ${model.name}` : "no model"}
@@ -164,14 +178,6 @@ export function Chrome({
           ) : null}
         </div>
       </div>
-
-      {Object.keys(status).length > 0 ? (
-        <div className="pi-footer-row">
-          {Object.entries(status).map(([key, text]) => (
-            <AnsiText key={key} text={text} />
-          ))}
-        </div>
-      ) : null}
     </div>
   );
 }

@@ -59,8 +59,10 @@ export function PiAgentPane({ workspace, view, pane }: PaneComponentProps): JSX.
       { name: "compact", description: "Compact conversation context", source: "builtin" },
       { name: "model", description: "Cycle to the next model", source: "builtin" },
       { name: "thinking", description: "Cycle reasoning level", source: "builtin" },
+      { name: "tree", description: "Toggle the session tree", source: "builtin" },
       ...state.commands.filter(
-        (command) => !["new", "rename", "compact", "model", "thinking"].includes(command.name),
+        (command) =>
+          !["new", "rename", "compact", "model", "thinking", "tree"].includes(command.name),
       ),
     ],
     [state.commands],
@@ -73,7 +75,10 @@ export function PiAgentPane({ workspace, view, pane }: PaneComponentProps): JSX.
     else if (command === "/compact") agent.compact();
     else if (command === "/model") agent.cycleModel();
     else if (command === "/thinking") agent.cycleThinking();
-    else if (command === "/rename") {
+    else if (command === "/tree") {
+      if (!treeOpen) agent.refreshTree();
+      setTreeOpen(!treeOpen);
+    } else if (command === "/rename") {
       const name = args.join(" ") || prompt("Session name", state.state?.sessionName ?? "");
       if (name) agent.setSessionName(name);
     } else return false;
@@ -121,42 +126,6 @@ export function PiAgentPane({ workspace, view, pane }: PaneComponentProps): JSX.
     >
       <div className="pi-agent relative flex h-full min-h-0">
         <div className="flex min-w-0 flex-1 flex-col">
-          <div className="pi-agent-toolbar flex shrink-0 items-center gap-3 border-b px-4 py-1 text-[11px]">
-            <button
-              type="button"
-              className="hover:text-[var(--pi-text)]"
-              onClick={() => runUiCommand("/new")}
-              disabled={state.isStreaming}
-            >
-              new
-            </button>
-            <button
-              type="button"
-              className="hover:text-[var(--pi-text)]"
-              onClick={() => runUiCommand("/rename")}
-            >
-              rename
-            </button>
-            <button
-              type="button"
-              className="hover:text-[var(--pi-text)]"
-              onClick={() => runUiCommand("/compact")}
-              disabled={state.isStreaming || state.isCompacting}
-            >
-              compact
-            </button>
-            <button
-              type="button"
-              className={`ml-auto hover:text-[var(--pi-text)] ${treeOpen ? "text-[var(--pi-text)]" : ""}`}
-              onClick={() => {
-                if (!treeOpen) agent.refreshTree();
-                setTreeOpen((value) => !value);
-              }}
-            >
-              tree
-            </button>
-          </div>
-
           {state.notices.length > 0 ? (
             <div className="shrink-0 border-b border-[var(--pi-border-muted)]">
               {state.notices.slice(-3).map((notice) => (

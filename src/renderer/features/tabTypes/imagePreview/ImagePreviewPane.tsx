@@ -184,13 +184,19 @@ export function ImagePreviewPane({ workspace, view, pane }: PaneComponentProps):
             </div>
           ) : null}
           {loadState.status === "ready" ? (
-            <div className="flex min-h-full min-w-full items-center justify-center p-4">
+            <div
+              className={
+                fit
+                  ? "h-full w-full"
+                  : "flex min-h-full min-w-full items-center justify-center p-4"
+              }
+            >
+              {/* Fit scales by the smaller axis and crops the overflow, so the pane is always
+                  filled edge to edge; zooming switches back to the whole, scrollable image. */}
               <img
                 src={loadState.objectUrl}
                 alt={loadState.title}
-                className={
-                  fit ? "max-h-full max-w-full object-contain" : "max-w-none object-contain"
-                }
+                className={fit ? "h-full w-full object-cover" : "max-w-none object-contain"}
                 style={fit ? undefined : { width: `${zoom * 100}%`, height: "auto" }}
                 draggable={false}
               />
