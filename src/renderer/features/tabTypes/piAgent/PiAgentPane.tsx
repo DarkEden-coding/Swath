@@ -17,6 +17,7 @@ import { Chrome } from "./Chrome";
 import { Composer } from "./Composer";
 import { DialogHost } from "./DialogHost";
 import { SessionTree } from "./SessionTree";
+import { piPaneCache, type AttachedImage } from "./piPaneCache";
 import { Transcript } from "./Transcript";
 import { usePiAgent } from "./usePiAgent";
 
@@ -37,7 +38,15 @@ export function PiAgentPane({ workspace, view, pane }: PaneComponentProps): JSX.
 
   const agent = usePiAgent(paneId, cwd, showImage);
   const { state } = agent;
-  const [draft, setDraft] = useState("");
+  // Draft and attachments are cached alongside the transcript so a tab switch does not lose them.
+  const [draft, setDraft] = useState(() => piPaneCache.get(paneId)?.draft ?? "");
+  const [images, setImages] = useState<AttachedImage[]>(
+    () => piPaneCache.get(paneId)?.images ?? [],
+  );
+  useEffect(() => {
+    const entry = piPaneCache.get(paneId);
+    if (entry) piPaneCache.set(paneId, { ...entry, draft, images });
+  }, [paneId, draft, images]);
   const [appliedEditorText, setAppliedEditorText] = useState<string | undefined>(undefined);
   const [treeOpen, setTreeOpen] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -201,7 +210,9 @@ export function PiAgentPane({ workspace, view, pane }: PaneComponentProps): JSX.
             streaming={state.isStreaming}
             thinkingLevel={state.state?.thinkingLevel}
             value={draft}
+            images={images}
             onChange={setDraft}
+            onImagesChange={setImages}
             onSubmit={(message, images) => {
               if (!images.length && runUiCommand(message)) {
                 setDraft("");

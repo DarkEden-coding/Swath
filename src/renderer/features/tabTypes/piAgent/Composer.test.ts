@@ -1,5 +1,52 @@
 import { describe, expect, it } from "vitest";
-import { activeToken, clipboardImageFiles, imagePreviewSource } from "./Composer";
+import {
+  activeToken,
+  attachImages,
+  clipboardImageFiles,
+  imagePreviewSource,
+  imagesForText,
+  removeTrailingImage,
+} from "./Composer";
+import type { AttachedImage } from "./piPaneCache";
+
+const png = (data: string) => ({ type: "image" as const, data, mimeType: "image/png" });
+
+describe("image placeholders", () => {
+  it("appends a numbered placeholder per attachment", () => {
+    const first = attachImages("look at", [], [png("a"), png("b")]);
+    expect(first.text).toBe("look at [Image 1] [Image 2]");
+    expect(first.images.map((image) => image.placeholder)).toEqual(["[Image 1]", "[Image 2]"]);
+  });
+
+  it("never collides with a placeholder still in the prompt", () => {
+    const first = attachImages("", [], [png("a"), png("b")]);
+    const removed = removeTrailingImage(first.text, first.images);
+    expect(removed).toEqual({ text: "[Image 1]", images: [first.images[0]] });
+    // Reusing the number just freed is safe; nothing references it any more.
+    const second = attachImages(removed?.text ?? "", removed?.images ?? [], [png("c")]);
+    expect(second.text).toBe("[Image 1] [Image 2]");
+    expect(second.images.map((image) => image.data)).toEqual(["a", "c"]);
+  });
+
+  it("caps attachments at the per-message maximum", () => {
+    const many = attachImages("", [], Array.from({ length: 12 }, (_, index) => png(String(index))));
+    expect(many.images).toHaveLength(8);
+  });
+
+  it("removes only a trailing placeholder", () => {
+    const images: AttachedImage[] = [{ ...png("a"), placeholder: "[Image 1]" }];
+    expect(removeTrailingImage("hi [Image 1]", images)).toEqual({ text: "hi", images: [] });
+    expect(removeTrailingImage("[Image 1] tail", images)).toBeNull();
+  });
+
+  it("drops images whose placeholder the user deleted", () => {
+    const images: AttachedImage[] = [
+      { ...png("a"), placeholder: "[Image 1]" },
+      { ...png("b"), placeholder: "[Image 2]" },
+    ];
+    expect(imagesForText("only [Image 2]", images)).toEqual([images[1]]);
+  });
+});
 
 /** Places the caret at the end of `text`. */
 function at(text: string) {

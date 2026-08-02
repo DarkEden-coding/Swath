@@ -203,6 +203,19 @@ splits on `\n` only, exactly what `rpc.md` requires. (The docs warn Node's `read
 non-compliant because it also splits on U+2028/U+2029, legal inside JSON strings. Avoid it in any
 Node-side tooling.)
 
+### 3.1b The child outlives the pane component
+
+Only the active view is mounted, so a tab switch unmounts the pane. The pi child is therefore
+killed only from `piAgentTabType.closePane`, never on unmount; `piPaneCache.ts` keeps the last
+rendered state, draft and attachments, and a remount reattaches (`spawnedPanes`) and resyncs with
+the `get_state`/`get_messages`/`get_session_stats` handshake to pick up anything streamed while
+hidden.
+
+Keyboard paste in the composer arrives as the `swath:terminal-paste` window event, not as a DOM
+paste event: `src-tauri/src/menu.rs` binds Cmd/Ctrl+V to a custom menu item, so the webview never
+sees the shortcut. Attachments mirror the `clipboard-image-paste` extension's `[Image N]`
+placeholder contract, which is inert under `--mode rpc`.
+
 ### 3.2 No validators
 
 `gitRpc.ts` hand-validates because it builds shell-executed git commands from renderer input — a

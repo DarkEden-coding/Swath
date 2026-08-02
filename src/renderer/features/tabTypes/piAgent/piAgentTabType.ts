@@ -3,6 +3,7 @@ import type { AppSettings, PaneLeaf, WorkspaceView } from "../../../../shared/ty
 import { createPaneNode } from "../../../domain/layout/layoutTree";
 import { createId } from "../../../utils/ids";
 import type { TabTypeRegistration } from "../types";
+import { disposePiPane } from "./piPaneCache";
 
 const PiAgentPane = lazy(() =>
   import("./PiAgentPane").then((module) => ({ default: module.PiAgentPane })),
@@ -44,4 +45,5 @@ export const piAgentTabType: TabTypeRegistration = {
   Component: PiAgentPane,
   createPaneMeta: createPiAgentPaneMeta,
   createView: (title, cwd, settings) => createPiAgentView(title, cwd, settings),
+  closePane: (paneId) => disposePiPane(paneId),
 };

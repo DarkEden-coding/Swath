@@ -8,6 +8,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { PiCommand, PiImageContent, PiThinkingLevel } from "../../../../shared/ipc/piRpc";
 import type { TerminalClipboardPayload } from "../../../../shared/types";
+import type { AttachedImage } from "./piPaneCache";
 
 /** Maximum attachments accepted per message. */
 const MAX_IMAGES = 8;
@@ -19,10 +20,61 @@ interface ComposerProps {
   streaming: boolean;
   thinkingLevel?: PiThinkingLevel;
   value: string;
+  images: AttachedImage[];
   onChange: (value: string) => void;
+  onImagesChange: (images: AttachedImage[]) => void;
   onSubmit: (message: string, images: PiImageContent[]) => void;
   onCycleModel: () => void;
   onCycleThinking: () => void;
+}
+
+/**
+ * Attachment bookkeeping mirroring the pi `clipboard-image-paste` extension: each image gets an
+ * `[Image N]` placeholder in the prompt text, and deleting the placeholder detaches the image.
+ * That extension is inert under `--mode rpc` (stdout carries the protocol, not a TUI), so the
+ * composer reimplements its contract here.
+ */
+export function attachImages(
+  text: string,
+  images: AttachedImage[],
+  added: PiImageContent[],
+): { text: string; images: AttachedImage[] } {
+  let counter = images.reduce(
+    (highest, image) => Math.max(highest, Number(/\[Image (\d+)]/.exec(image.placeholder)?.[1] ?? 0)),
+    0,
+  );
+  const attached = added.slice(0, MAX_IMAGES - images.length).map((image) => {
+    counter += 1;
+    return { ...image, placeholder: `[Image ${counter}]` };
+  });
+  if (attached.length === 0) return { text, images };
+  const nextText = attached.reduce(
+    (accumulated, image) =>
+      accumulated && !accumulated.endsWith(" ")
+        ? `${accumulated} ${image.placeholder}`
+        : `${accumulated}${image.placeholder}`,
+    text,
+  );
+  return { text: nextText, images: [...images, ...attached] };
+}
+
+/** Removes the placeholder at the end of the prompt together with its image, or returns null. */
+export function removeTrailingImage(
+  text: string,
+  images: AttachedImage[],
+): { text: string; images: AttachedImage[] } | null {
+  const trimmed = text.trimEnd();
+  const image = images.find((candidate) => trimmed.endsWith(candidate.placeholder));
+  if (!image) return null;
+  return {
+    text: trimmed.slice(0, trimmed.length - image.placeholder.length).trimEnd(),
+    images: images.filter((candidate) => candidate !== image),
+  };
+}
+
+/** Images still referenced by the prompt; the rest were detached by editing their placeholder. */
+export function imagesForText(text: string, images: AttachedImage[]): AttachedImage[] {
+  return images.filter((image) => text.includes(image.placeholder));
 }
 
 /** The `@` or `/` token being typed at the caret, if any. Exported for testing. */
@@ -95,12 +147,13 @@ export function Composer({
   streaming,
   thinkingLevel,
   value,
+  images,
   onChange,
+  onImagesChange,
   onSubmit,
   onCycleModel,
   onCycleThinking,
 }: ComposerProps): JSX.Element {
-  const [images, setImages] = useState<PiImageContent[]>([]);
   const [files, setFiles] = useState<string[]>([]);
   const [caret, setCaret] = useState(0);
   const [highlight, setHighlight] = useState(0);
@@ -160,27 +213,77 @@ export function Composer({
     inputRef.current?.focus();
   };
 
-  const addImages = async (list: FileList | File[]): Promise<void> => {
-    const converted = await Promise.all(Array.from(list).map(fileToImage));
-    const valid = converted.filter((image): image is PiImageContent => image !== null);
-    if (valid.length) setImages((current) => [...current, ...valid].slice(0, MAX_IMAGES));
+  /** Attaches images and appends their placeholders, kept in one place so both stay in sync. */
+  const attach = (added: PiImageContent[]): void => {
+    if (added.length === 0) return;
+    const next = attachImages(value, images, added);
+    onChange(next.text);
+    onImagesChange(next.images);
+    inputRef.current?.focus();
   };
 
-  /** Uses the same native clipboard reader as terminal paste when WebKit omits image files. */
-  const addNativeClipboardImage = async (): Promise<void> => {
+  const addImages = async (list: FileList | File[]): Promise<void> => {
+    const converted = await Promise.all(Array.from(list).map(fileToImage));
+    attach(converted.filter((image): image is PiImageContent => image !== null));
+  };
+
+  /**
+   * Reads the OS clipboard directly. The app menu binds Cmd/Ctrl+V to a custom item (see
+   * `src-tauri/src/menu.rs`), so the webview never receives a native paste event for the
+   * shortcut — this is the only paste path for the keyboard, not just an image fallback.
+   */
+  const pasteFromNativeClipboard = async (): Promise<void> => {
     try {
-      const image = clipboardImageToPng(await window.swath.clipboard.readForTerminal());
-      if (image) setImages((current) => [...current, image].slice(0, MAX_IMAGES));
+      const payload = await window.swath.clipboard.readForTerminal();
+      const image = clipboardImageToPng(payload);
+      if (image) {
+        attach([image]);
+        return;
+      }
+      if (payload.hasImage) {
+        console.error("Clipboard image could not be decoded", {
+          width: payload.imageWidth,
+          height: payload.imageHeight,
+          bytes: payload.imageData?.length,
+        });
+      }
+      if (payload.text) insertText(payload.text);
     } catch (error) {
-      console.error("Unable to paste clipboard image", error);
+      console.error("Unable to paste clipboard contents", error);
     }
   };
 
+  const insertText = (text: string): void => {
+    const input = inputRef.current;
+    const current = value;
+    const start = input?.selectionStart ?? current.length;
+    const end = input?.selectionEnd ?? current.length;
+    onChange(current.slice(0, start) + text + current.slice(end));
+    setCaret(start + text.length);
+    input?.focus();
+  };
+
+  // Cmd/Ctrl+V arrives as an app-menu command, never as a DOM paste event. Only the focused
+  // composer may claim it, so a background pi tab does not steal the terminal's paste.
+  useEffect(() => {
+    const onMenuPaste = (): void => {
+      if (document.activeElement !== inputRef.current) return;
+      void pasteFromNativeClipboard();
+    };
+    window.addEventListener("swath:terminal-paste", onMenuPaste);
+    return () => window.removeEventListener("swath:terminal-paste", onMenuPaste);
+  }, [pasteFromNativeClipboard]);
+
+  // Editing a placeholder out of the prompt detaches its image, so the strip only previews
+  // what the next message will actually carry.
+  const attachedInPrompt = imagesForText(value, images);
+
   const submit = (): void => {
     const message = value.trim();
-    if (!message && images.length === 0) return;
-    onSubmit(message, images);
-    setImages([]);
+    const attached = imagesForText(message, images);
+    if (!message && attached.length === 0) return;
+    onSubmit(message, attached);
+    onImagesChange([]);
   };
 
   return (
@@ -219,17 +322,20 @@ export function Composer({
         </div>
       ) : null}
 
-      {images.length > 0 ? (
+      {attachedInPrompt.length > 0 ? (
         <div className="pi-image-previews" aria-label="Image attachments">
-          {images.map((image, index) => (
+          {attachedInPrompt.map((image) => (
             <button
-              key={`${image.data.slice(0, 24)}-${index}`}
+              key={image.placeholder}
               type="button"
-              title="Remove image"
+              title={`Remove ${image.placeholder}`}
               className="pi-image-preview"
-              onClick={() => setImages((current) => current.filter((_, i) => i !== index))}
+              onClick={() => {
+                onChange(value.replace(image.placeholder, "").replace(/ {2,}/g, " ").trimEnd());
+                onImagesChange(images.filter((candidate) => candidate !== image));
+              }}
             >
-              <img src={imagePreviewSource(image)} alt="" />
+              <img src={imagePreviewSource(image)} alt={image.placeholder} />
               <span aria-hidden="true">×</span>
             </button>
           ))}
@@ -248,10 +354,11 @@ export function Composer({
         onKeyUp={(event) => setCaret(event.currentTarget.selectionStart)}
         onClick={(event) => setCaret(event.currentTarget.selectionStart)}
         onPaste={(event) => {
-          const images = clipboardImageFiles(event.clipboardData);
-          if (images.length > 0) {
+          // Reached by context-menu paste; the keyboard shortcut goes through the menu command.
+          const pasted = clipboardImageFiles(event.clipboardData);
+          if (pasted.length > 0) {
             event.preventDefault();
-            void addImages(images);
+            void addImages(pasted);
             return;
           }
           const hasImageItem = Array.from(event.clipboardData.items).some((item) =>
@@ -259,10 +366,24 @@ export function Composer({
           );
           if (hasImageItem || !event.clipboardData.getData("text/plain")) {
             event.preventDefault();
-            void addNativeClipboardImage();
+            void pasteFromNativeClipboard();
           }
         }}
         onKeyDown={(event) => {
+          // Backspace at the end of the prompt detaches the trailing image, as pi's TUI does.
+          if (
+            event.key === "Backspace" &&
+            event.currentTarget.selectionStart === event.currentTarget.selectionEnd &&
+            event.currentTarget.selectionStart === value.length
+          ) {
+            const next = removeTrailingImage(value, images);
+            if (next) {
+              event.preventDefault();
+              onChange(next.text);
+              onImagesChange(next.images);
+              return;
+            }
+          }
           if (event.ctrlKey && event.key.toLowerCase() === "p") {
             event.preventDefault();
             onCycleModel();

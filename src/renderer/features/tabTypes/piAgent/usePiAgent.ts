@@ -20,6 +20,7 @@ import {
   reducePiEvent,
   type PiPaneState,
 } from "./eventReducer";
+import { piPaneCache, spawnedPanes } from "./piPaneCache";
 
 type Action =
   | { type: "line"; line: string }
@@ -83,7 +84,17 @@ export function usePiAgent(
   cwd: string | undefined,
   onShowImage?: (path: string) => void,
 ): PiAgentController {
-  const [state, dispatch] = useReducer(reducer, undefined, initialPiPaneState);
+  const [state, dispatch] = useReducer(
+    reducer,
+    paneId,
+    (id) => piPaneCache.get(id)?.state ?? initialPiPaneState(),
+  );
+
+  // Republish every render so a remount (tab switch) restores the transcript synchronously.
+  useEffect(() => {
+    const entry = piPaneCache.get(paneId);
+    piPaneCache.set(paneId, { draft: "", images: [], ...entry, state });
+  }, [paneId, state]);
 
   const send = useCallback(
     (command: PiCommandMessage) => {
@@ -96,8 +107,24 @@ export function usePiAgent(
     [paneId],
   );
 
+  /** The startup handshake, also used to resync a pane that was hidden while pi kept working. */
+  const requestFullState = useCallback(() => {
+    send({ id: "init-state", type: "get_state" });
+    send({ id: "init-commands", type: "get_commands" });
+    send({ id: "init-messages", type: "get_messages" });
+    send({ id: "init-models", type: "get_available_models" });
+    send({ id: "init-thinking", type: "get_available_thinking_levels" });
+    send({ id: "init-stats", type: "get_session_stats" });
+  }, [send]);
+
   const spawn = useCallback(() => {
     if (!cwd) return;
+    // The process outlives an unmount: reattach and pull anything missed while hidden.
+    if (spawnedPanes.has(paneId)) {
+      requestFullState();
+      return;
+    }
+    spawnedPanes.add(paneId);
     dispatch({ type: "reset" });
     // The pane id doubles as the pi session id: it is stable and already persisted in the
     // layout, so a remounted or restored pane reattaches to its own conversation.
@@ -109,20 +136,23 @@ export function usePiAgent(
         // (the browser fixture) must not leave the pane silently stuck on "Starting pi…".
         const failure = result as { ok?: boolean; error?: string } | null;
         if (failure && failure.ok === false) {
+          spawnedPanes.delete(paneId);
           dispatch({ type: "error", message: failure.error ?? "Unable to start pi" });
           return;
         }
-        send({ id: "init-state", type: "get_state" });
-        send({ id: "init-commands", type: "get_commands" });
-        send({ id: "init-messages", type: "get_messages" });
-        send({ id: "init-models", type: "get_available_models" });
-        send({ id: "init-thinking", type: "get_available_thinking_levels" });
-        send({ id: "init-stats", type: "get_session_stats" });
+        requestFullState();
       })
       .catch((error: unknown) => {
+        spawnedPanes.delete(paneId);
         dispatch({ type: "error", message: String(error) });
       });
-  }, [paneId, cwd, send]);
+  }, [paneId, cwd, requestFullState]);
+
+  /** Explicit user restart: tear the child down first, then spawn a fresh one. */
+  const restart = useCallback(() => {
+    spawnedPanes.delete(paneId);
+    void window.swath.pi.rpc({ op: "kill", paneId }).finally(spawn);
+  }, [paneId, spawn]);
 
   // Kept in refs so the subscription is created once per pane rather than on every render.
   const showImageRef = useRef(onShowImage);
@@ -178,12 +208,11 @@ export function usePiAgent(
     return unsubscribe;
   }, [paneId]);
 
+  // No teardown on unmount: the pane is unmounted on every tab switch, and killing pi there is
+  // what forced the reload. `piAgentTabType.closePane` disposes the pane for real.
   useEffect(() => {
     spawn();
-    return () => {
-      void window.swath.pi.rpc({ op: "kill", paneId });
-    };
-  }, [spawn, paneId]);
+  }, [spawn]);
 
   return useMemo<PiAgentController>(
     () => ({
@@ -200,7 +229,7 @@ export function usePiAgent(
         });
       },
       abort: () => send({ type: "abort" }),
-      restart: spawn,
+      restart,
       newSession: () => send({ id: "new-session", type: "new_session" }),
       compact: () => send({ type: "compact" }),
       setModel: (model: string) => {
@@ -236,6 +265,6 @@ export function usePiAgent(
       },
       dismissNotice: (id) => dispatch({ type: "dismissNotice", id }),
     }),
-    [state, send, spawn],
+    [state, send, restart],
   );
 }
