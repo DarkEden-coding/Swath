@@ -145,7 +145,6 @@ body.is-reordering * {
   border: 1px solid var(--pi-card-accent);
   border-radius: 5px;
   background: var(--pi-page);
-  content-visibility: auto;
 }
 
 .pi-tool-section,
@@ -155,23 +154,24 @@ body.is-reordering * {
   max-width: 100%;
 }
 
-.pi-single-tool-card {
+.pi-single-tool-card,
+.pi-parallel-group {
   position: relative;
   padding-top: 16px;
 }
 
 .pi-tool-border-status {
   position: absolute;
-  top: 0;
+  top: -8px;
   right: 10px;
   display: flex;
   max-width: calc(100% - 20px);
   gap: 10px;
   padding: 0 4px;
-  transform: translateY(-50%);
   background: var(--pi-page);
   color: var(--pi-card-accent);
   font-size: 12px;
+  line-height: 16px;
   white-space: nowrap;
 }
 
@@ -251,14 +251,6 @@ body.is-reordering * {
 .pi-tool-duration {
   padding: 7px 2px 0;
   font-size: 11px;
-}
-
-.pi-parallel-group {
-  padding-top: 7px;
-}
-
-.pi-parallel-heading {
-  margin-bottom: 9px;
 }
 
 .pi-agent-toolbar,

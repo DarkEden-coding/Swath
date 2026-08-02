@@ -51,6 +51,16 @@ async function fileToImage(file: File): Promise<PiImageContent | null> {
   return { type: "image", data: btoa(binary), mimeType: file.type };
 }
 
+/** Returns image files exposed through either WebKit clipboard collection. */
+export function clipboardImageFiles(data: Pick<DataTransfer, "files" | "items">): File[] {
+  const files = Array.from(data.files).filter((file) => file.type.startsWith("image/"));
+  if (files.length) return files;
+  return Array.from(data.items)
+    .filter((item) => item.kind === "file" && item.type.startsWith("image/"))
+    .map((item) => item.getAsFile())
+    .filter((file): file is File => file !== null);
+}
+
 /** Encodes the native clipboard's RGBA pixels as the PNG payload Pi expects. */
 function clipboardImageToPng(payload: TerminalClipboardPayload): PiImageContent | null {
   if (!payload.imageData || !payload.imageWidth || !payload.imageHeight) return null;
@@ -238,15 +248,16 @@ export function Composer({
         onKeyUp={(event) => setCaret(event.currentTarget.selectionStart)}
         onClick={(event) => setCaret(event.currentTarget.selectionStart)}
         onPaste={(event) => {
-          const images = Array.from(event.clipboardData.files).filter((file) =>
-            file.type.startsWith("image/"),
-          );
+          const images = clipboardImageFiles(event.clipboardData);
           if (images.length > 0) {
             event.preventDefault();
             void addImages(images);
             return;
           }
-          if (!event.clipboardData.getData("text/plain")) {
+          const hasImageItem = Array.from(event.clipboardData.items).some((item) =>
+            item.type.startsWith("image/"),
+          );
+          if (hasImageItem || !event.clipboardData.getData("text/plain")) {
             event.preventDefault();
             void addNativeClipboardImage();
           }

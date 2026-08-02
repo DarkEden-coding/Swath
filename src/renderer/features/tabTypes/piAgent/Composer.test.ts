@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { activeToken, imagePreviewSource } from "./Composer";
+import { activeToken, clipboardImageFiles, imagePreviewSource } from "./Composer";
 
 /** Places the caret at the end of `text`. */
 function at(text: string) {
@@ -11,6 +11,18 @@ describe("imagePreviewSource", () => {
     expect(imagePreviewSource({ type: "image", data: "abc", mimeType: "image/png" })).toBe(
       "data:image/png;base64,abc",
     );
+  });
+});
+
+describe("clipboardImageFiles", () => {
+  it("uses clipboard items when WebKit leaves files empty", () => {
+    const image = { type: "image/png" } as File;
+    const data = {
+      files: [],
+      items: [{ kind: "file", type: "image/png", getAsFile: () => image }],
+    } as unknown as Pick<DataTransfer, "files" | "items">;
+
+    expect(clipboardImageFiles(data)).toEqual([image]);
   });
 });
 

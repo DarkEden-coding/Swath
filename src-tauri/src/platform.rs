@@ -62,21 +62,10 @@ pub async fn confirm(app: AppHandle, request: ConfirmDialogRequest) -> Result<bo
 }
 
 pub fn read_clipboard_for_terminal(app: AppHandle) -> Result<TerminalClipboardPayload> {
-    if let Ok(text) = app.clipboard().read_text() {
-        if !text.is_empty() {
-            return Ok(TerminalClipboardPayload {
-                text,
-                has_image: false,
-                image_data: None,
-                image_width: None,
-                image_height: None,
-            });
-        }
-    }
-
+    let text = app.clipboard().read_text().unwrap_or_default();
     let image = app.clipboard().read_image().ok();
     Ok(TerminalClipboardPayload {
-        text: String::new(),
+        text,
         has_image: image.is_some(),
         image_data: image.as_ref().map(|image| BASE64.encode(image.rgba())),
         image_width: image.as_ref().map(|image| image.width()),

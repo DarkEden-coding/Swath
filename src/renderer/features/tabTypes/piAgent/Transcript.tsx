@@ -163,8 +163,7 @@ function ParallelToolGroup({ entries }: { entries: PiToolEntry[] }): JSX.Element
       className="pi-tool-card pi-parallel-group"
       style={{ "--pi-card-accent": color } as React.CSSProperties}
     >
-      <div className="pi-tool-rule pi-parallel-heading">
-        <span className="pi-tool-rule-line" />
+      <div className="pi-tool-border-status">
         <span>⇉ Parallel</span>
         <span>{running ? "● Running" : failed ? "✕ Failed" : "✓ Completed"}</span>
       </div>
