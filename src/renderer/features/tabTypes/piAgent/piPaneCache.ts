@@ -24,9 +24,18 @@ export interface PiPaneCacheEntry {
 export const piPaneCache = new Map<string, PiPaneCacheEntry>();
 /** Panes whose pi process is already running, so a remount reattaches instead of respawning. */
 export const spawnedPanes = new Set<string>();
+/**
+ * Session files adopted through `/resume`, so a restarted pane reopens the resumed conversation
+ * rather than its own `--session-id`.
+ *
+ * ponytail: in-memory, so a resumed pane reverts to its own session when the app restarts.
+ * Persist it in pane metadata if that becomes annoying.
+ */
+export const resumedSessions = new Map<string, string>();
 
 export function disposePiPane(paneId: string): void {
   piPaneCache.delete(paneId);
   spawnedPanes.delete(paneId);
+  resumedSessions.delete(paneId);
   void window.swath.pi.rpc({ op: "kill", paneId });
 }

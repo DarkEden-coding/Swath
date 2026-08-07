@@ -83,6 +83,22 @@ function createImageAddon(): ImageAddon {
 }
 
 /** Render and manage the cached xterm instance for a workspace pane. */
+/**
+ * The grid `fit` proposes, or null when the pane has no usable size.
+ *
+ * `proposeDimensions()` divides by the measured cell size, so a pane that is hidden or mid-layout
+ * yields NaN or Infinity — and `Terminal.resize` throws "This API only accepts integers" on those,
+ * from a ResizeObserver callback where nothing catches it.
+ */
+function fitDimensions(fit: FitAddon): { cols: number; rows: number } | null {
+  const proposed = fit.proposeDimensions();
+  if (!proposed) return null;
+  const cols = Math.floor(proposed.cols - TERMINAL_COL_RESERVE);
+  const rows = Math.floor(proposed.rows);
+  if (!Number.isFinite(cols) || !Number.isFinite(rows)) return null;
+  return { cols: Math.max(2, cols), rows: Math.max(1, rows) };
+}
+
 export function TerminalPane({ workspace, view, pane, settings }: PaneComponentProps): JSX.Element {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<Terminal | null>(null);
@@ -251,12 +267,11 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
 
     const fitAndResize = (): void => {
       if (!termRef.current || !fitRef.current) return;
-      const dimensions = fitRef.current.proposeDimensions();
+      const dimensions = fitDimensions(fitRef.current);
       if (!dimensions) return;
 
-      const cols = Math.max(2, dimensions.cols - TERMINAL_COL_RESERVE);
-      if (terminal.cols !== cols || terminal.rows !== dimensions.rows) {
-        terminal.resize(cols, dimensions.rows);
+      if (terminal.cols !== dimensions.cols || terminal.rows !== dimensions.rows) {
+        terminal.resize(dimensions.cols, dimensions.rows);
       }
       if (startedSessions.has(paneId))
         terminalClient.resize({ sessionId: paneId, cols: terminal.cols, rows: terminal.rows });
@@ -424,11 +439,10 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
     terminal.options.cursorBlink = settings.cursorBlink;
     terminal.options.cursorStyle = settings.cursorStyle;
     requestAnimationFrame(() => {
-      const dimensions = fitRef.current?.proposeDimensions();
+      const dimensions = fitRef.current ? fitDimensions(fitRef.current) : null;
       if (!termRef.current || !dimensions) return;
-      const cols = Math.max(2, dimensions.cols - TERMINAL_COL_RESERVE);
-      if (termRef.current.cols !== cols || termRef.current.rows !== dimensions.rows) {
-        termRef.current.resize(cols, dimensions.rows);
+      if (termRef.current.cols !== dimensions.cols || termRef.current.rows !== dimensions.rows) {
+        termRef.current.resize(dimensions.cols, dimensions.rows);
       }
       if (startedSessions.has(paneId)) {
         terminalClient.resize({

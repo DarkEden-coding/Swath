@@ -5,7 +5,7 @@
  * `dangerouslySetInnerHTML` and no sanitizer are involved: model output is never treated as markup.
  */
 
-import { Highlight, themes } from "prism-react-renderer";
+import { Highlight, Prism, themes } from "prism-react-renderer";
 import { marked, type Token, type Tokens } from "marked";
 import type { ReactNode } from "react";
 
@@ -36,8 +36,21 @@ const LANGUAGE_ALIASES: Record<string, string> = {
   diff: "diff",
 };
 
+/**
+ * A Prism grammar name, or "" when the language should render as plain monospace.
+ *
+ * `prism-react-renderer` bundles only a subset of Prism's grammars — `bash`, `toml` and `diff`
+ * are absent — and `Highlight` throws from inside `Prism.tokenize` when handed a name it does not
+ * have. A throw during render unmounts the whole React tree, so a ```bash fence in a reply would
+ * blank the window. Anything unbundled degrades to unhighlighted code instead.
+ */
+export function highlightLanguage(name: string | undefined): string {
+  const language = LANGUAGE_ALIASES[(name ?? "").toLowerCase()] ?? "";
+  return language && Prism.languages[language] ? language : "";
+}
+
 export function CodeBlock({ code, lang }: { code: string; lang?: string }): JSX.Element {
-  const language = LANGUAGE_ALIASES[(lang ?? "").toLowerCase()] ?? "";
+  const language = highlightLanguage(lang);
 
   if (!language) {
     return (

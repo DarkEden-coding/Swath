@@ -201,6 +201,9 @@ function Message({ entry }: { entry: PiMessageEntry }): JSX.Element {
           {entry.streaming ? <span className="pi-streaming-cursor">▍</span> : null}
         </div>
       ) : null}
+      {entry.error ? (
+        <div className="whitespace-pre-wrap break-words text-[var(--pi-red)]">{entry.error}</div>
+      ) : null}
     </div>
   );
 }
@@ -211,7 +214,8 @@ export function Transcript({ entries }: { entries: PiEntry[] }): JSX.Element {
   for (let index = 0; index < entries.length; index += 1) {
     const entry = entries[index];
     if (entry.kind === "message") {
-      if (entry.text || entry.thinking) rendered.push(<Message key={entry.id} entry={entry} />);
+      if (entry.text || entry.thinking || entry.error)
+        rendered.push(<Message key={entry.id} entry={entry} />);
       continue;
     }
 

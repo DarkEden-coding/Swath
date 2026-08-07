@@ -20,7 +20,8 @@ import {
   reducePiEvent,
   type PiPaneState,
 } from "./eventReducer";
-import { piPaneCache, spawnedPanes } from "./piPaneCache";
+import { reportError } from "../../../lib/errorLog";
+import { piPaneCache, resumedSessions, spawnedPanes } from "./piPaneCache";
 
 type Action =
   | { type: "line"; line: string }
@@ -67,6 +68,8 @@ export interface PiAgentController {
   setSessionName: (name: string) => void;
   refreshTree: () => void;
   fork: (entryId: string) => void;
+  /** Adopts a previously recorded session file (`/resume`). */
+  switchSession: (sessionPath: string) => void;
   answerDialog: (
     id: string,
     response: { value?: string; confirmed?: boolean; cancelled?: true },
@@ -128,9 +131,16 @@ export function usePiAgent(
     dispatch({ type: "reset" });
     // The pane id doubles as the pi session id: it is stable and already persisted in the
     // layout, so a remounted or restored pane reattaches to its own conversation.
-    // `--session-id` creates the session when it does not exist yet.
+    // `--session-id` creates the session when it does not exist yet. A pane that adopted another
+    // session through `/resume` opens that file instead — the two flags are mutually exclusive.
+    const resumed = resumedSessions.get(paneId);
     void window.swath.pi
-      .rpc({ op: "spawn", paneId, cwd, args: ["--session-id", paneId] })
+      .rpc({
+        op: "spawn",
+        paneId,
+        cwd,
+        args: resumed ? ["--session", resumed] : ["--session-id", paneId],
+      })
       .then((result) => {
         // The host rejects on failure, but a transport that resolves with `{ ok: false }`
         // (the browser fixture) must not leave the pane silently stuck on "Starting pi…".
@@ -163,7 +173,19 @@ export function usePiAgent(
   });
 
   useEffect(() => {
+    // Everything below runs inside a Tauri listener, outside React's call stack: a throw here is
+    // caught by no error boundary, and leaves the app blank with nothing on screen. Route it to
+    // the pane's own error state instead.
     const unsubscribe = window.swath.pi.onEvent((eventPaneId, line, exited) => {
+      try {
+        handleLine(eventPaneId, line, exited);
+      } catch (error) {
+        reportError("pi event handler", error);
+        dispatch({ type: "error", message: String(error) });
+      }
+    });
+
+    function handleLine(eventPaneId: string, line?: string, exited?: boolean): void {
       if (eventPaneId !== paneId) return;
       if (exited) {
         dispatch({ type: "exit" });
@@ -187,7 +209,9 @@ export function usePiAgent(
       if (
         event.type === "response" &&
         event.success &&
-        (event.id === "new-session" || event.id === "fork-session") &&
+        (event.id === "new-session" ||
+          event.id === "fork-session" ||
+          event.id === "switch-session") &&
         !(event.data as { cancelled?: boolean } | undefined)?.cancelled
       ) {
         sendRef.current({ id: "messages", type: "get_messages" });
@@ -204,7 +228,8 @@ export function usePiAgent(
         sendRef.current({ id: "stats", type: "get_session_stats" });
         sendRef.current({ id: "state", type: "get_state" });
       }
-    });
+    }
+
     return unsubscribe;
   }, [paneId]);
 
@@ -259,12 +284,16 @@ export function usePiAgent(
       },
       refreshTree: () => send({ id: "tree", type: "get_tree" }),
       fork: (entryId: string) => send({ id: "fork-session", type: "fork", entryId }),
+      switchSession: (sessionPath: string) => {
+        resumedSessions.set(paneId, sessionPath);
+        send({ id: "switch-session", type: "switch_session", sessionPath });
+      },
       answerDialog: (id, response) => {
         send({ type: "extension_ui_response", id, ...response });
         dispatch({ type: "dismissDialog", id });
       },
       dismissNotice: (id) => dispatch({ type: "dismissNotice", id }),
     }),
-    [state, send, restart],
+    [state, send, restart, paneId],
   );
 }

@@ -11,6 +11,7 @@
  */
 
 import { Highlight, themes } from "prism-react-renderer";
+import { highlightLanguage } from "../../../lib/markdown";
 import type { PiToolEntry } from "./eventReducer";
 
 interface DiffLine {
@@ -27,28 +28,9 @@ interface StructuredDiff {
   removed: number;
 }
 
-const LANG_BY_EXT: Record<string, string> = {
-  ts: "typescript",
-  tsx: "tsx",
-  js: "javascript",
-  jsx: "jsx",
-  rs: "rust",
-  py: "python",
-  sh: "bash",
-  json: "json",
-  css: "css",
-  html: "markup",
-  md: "markdown",
-  go: "go",
-  sql: "sql",
-  toml: "toml",
-  yml: "yaml",
-  yaml: "yaml",
-};
-
+/** A file extension is the same key markdown fences use, so the alias table is shared. */
 function languageFor(filePath: string | undefined): string {
-  const ext = filePath?.split(".").pop()?.toLowerCase() ?? "";
-  return LANG_BY_EXT[ext] ?? "";
+  return highlightLanguage(filePath?.split(".").pop());
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

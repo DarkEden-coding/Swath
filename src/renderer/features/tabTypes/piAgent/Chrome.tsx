@@ -19,14 +19,18 @@ export function isEmptyCounterChip(text: string): boolean {
 }
 
 /** Formats a token count the way pi's footer does (149000 → 149k). */
-export function formatTokens(value: number): string {
+export function formatTokens(value: number | undefined): string {
+  if (!Number.isFinite(value)) return "0";
+  value = value as number;
   if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
   if (value >= 1_000) return `${Math.round(value / 1_000)}k`;
   return String(value);
 }
 
 /** Formats a cost in dollars, keeping small amounts legible. */
-export function formatCost(value: number): string {
+export function formatCost(value: number | undefined): string {
+  if (!Number.isFinite(value)) return "$0";
+  value = value as number;
   if (value === 0) return "$0";
   return value < 0.01 ? `$${value.toFixed(4)}` : `$${value.toFixed(3)}`;
 }
@@ -113,6 +117,9 @@ export function Chrome({
   onRestart,
 }: ChromeProps): JSX.Element {
   const context = stats?.contextUsage;
+  // pi omits fields from `get_session_stats` on a fresh session; a missing `tokens` object must
+  // not take the whole pane down with it.
+  const tokens = stats?.tokens;
 
   return (
     <div className="pi-agent-footer shrink-0">
@@ -124,11 +131,11 @@ export function Chrome({
         {pendingCount > 0 ? <span className="shrink-0">queued:{pendingCount}</span> : null}
         {stats ? (
           <span className="pi-footer-right shrink-0">
-            ↑{formatTokens(stats.tokens.input)} ↓{formatTokens(stats.tokens.output)}
-            {stats.tokens.cacheRead > 0 ? ` R${formatTokens(stats.tokens.cacheRead)}` : ""}
-            {stats.tokens.cacheWrite > 0 ? ` W${formatTokens(stats.tokens.cacheWrite)}` : ""}{" "}
+            ↑{formatTokens(tokens?.input)} ↓{formatTokens(tokens?.output)}
+            {(tokens?.cacheRead ?? 0) > 0 ? ` R${formatTokens(tokens?.cacheRead)}` : ""}
+            {(tokens?.cacheWrite ?? 0) > 0 ? ` W${formatTokens(tokens?.cacheWrite)}` : ""}{" "}
             {formatCost(stats.cost)}
-            {context && context.contextWindow > 0 && context.percent !== null
+            {context && context.contextWindow > 0 && typeof context.percent === "number"
               ? ` ${context.percent.toFixed(1)}%/${formatTokens(context.contextWindow)}`
               : ""}
           </span>

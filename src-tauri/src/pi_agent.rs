@@ -204,6 +204,100 @@ const SKIP_DIRS: [&str; 8] = [
 /// Upper bound on files returned to the composer's `@` completion.
 const FILE_LIST_LIMIT: usize = 2000;
 
+/// Lines inspected per session file when building the `/resume` list.
+///
+/// ponytail: a bounded prefix scan, not pi's full-file `buildSessionInfo`. It is enough for the
+/// header, the display name and the opening user message; a session renamed after line 400 shows
+/// its old label. Scan the whole file if that ever matters.
+const SESSION_SCAN_LINES: usize = 400;
+
+/// Sessions offered by `/resume`, newest first.
+const SESSION_LIST_LIMIT: usize = 100;
+
+/// Summarises one pi session JSONL file for the resume picker.
+fn read_session_info(path: &Path) -> Option<Value> {
+    let file = fs::File::open(path).ok()?;
+    let mut lines = BufReader::new(file).lines();
+    let header: Value = serde_json::from_str(&lines.next()?.ok()?).ok()?;
+    if header.get("type").and_then(Value::as_str) != Some("session") {
+        return None;
+    }
+
+    let mut name: Option<String> = None;
+    let mut preview = String::new();
+    let mut messages = 0usize;
+    for line in lines.take(SESSION_SCAN_LINES).map_while(Result::ok) {
+        let Ok(entry) = serde_json::from_str::<Value>(&line) else {
+            continue;
+        };
+        match entry.get("type").and_then(Value::as_str) {
+            Some("session_info") => {
+                name = entry
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .map(|n| n.trim().to_string())
+                    .filter(|n| !n.is_empty());
+            }
+            Some("message") => {
+                messages += 1;
+                let message = entry.get("message");
+                if !preview.is_empty()
+                    || message.and_then(|m| m.get("role")).and_then(Value::as_str) != Some("user")
+                {
+                    continue;
+                }
+                preview = match message.and_then(|m| m.get("content")) {
+                    Some(Value::String(text)) => text.clone(),
+                    Some(Value::Array(blocks)) => blocks
+                        .iter()
+                        .filter(|block| block.get("type").and_then(Value::as_str) == Some("text"))
+                        .filter_map(|block| block.get("text").and_then(Value::as_str))
+                        .collect::<Vec<_>>()
+                        .join(""),
+                    _ => String::new(),
+                };
+                preview = preview.trim().replace('\n', " ");
+                preview.truncate(200);
+            }
+            _ => {}
+        }
+    }
+
+    let modified = fs::metadata(path)
+        .and_then(|meta| meta.modified())
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|since| since.as_millis() as u64)
+        .unwrap_or(0);
+
+    Some(json!({
+        "path": path.to_string_lossy(),
+        "id": header.get("id").and_then(Value::as_str).unwrap_or_default(),
+        "name": name,
+        "preview": preview,
+        "messages": messages,
+        "modified": modified,
+    }))
+}
+
+/// Lists pi sessions stored in `dir`, newest first.
+fn list_sessions(dir: &Path) -> Vec<Value> {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut sessions: Vec<Value> = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "jsonl"))
+        .filter_map(|path| read_session_info(&path))
+        .collect();
+    sessions.sort_by_key(|session| {
+        std::cmp::Reverse(session.get("modified").and_then(Value::as_u64).unwrap_or(0))
+    });
+    sessions.truncate(SESSION_LIST_LIMIT);
+    sessions
+}
+
 /// Walks `root` breadth-first, collecting relative file paths.
 ///
 /// Bounded rather than exhaustive: `@` completion only needs enough candidates to filter,
@@ -302,6 +396,17 @@ pub fn rpc(app: &AppHandle, manager: &PiManager, request: Value) -> PiResult {
             }
             Ok(json!({ "files": walk_files(Path::new(cwd)) }))
         }
+        "sessions" => {
+            let dir = request
+                .get("dir")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .trim();
+            if dir.is_empty() {
+                return Err("pi sessions requires dir".into());
+            }
+            Ok(json!({ "sessions": list_sessions(Path::new(dir)) }))
+        }
         "" => Err("Invalid pi request: missing op".into()),
         other => Err(format!("Unknown pi operation: {other}")),
     }
@@ -310,6 +415,42 @@ pub fn rpc(app: &AppHandle, manager: &PiManager, request: Value) -> PiResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `/resume` is only useful if a session file yields a label a human recognises: its name
+    /// when one was set, otherwise the opening user message.
+    #[test]
+    fn session_info_reads_name_and_first_user_message() {
+        let dir = std::env::temp_dir().join("swath-pi-session-test");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("a.jsonl");
+        fs::write(
+            &path,
+            concat!(
+                r#"{"type":"session","id":"s1","cwd":"/tmp"}"#,
+                "\n",
+                r#"{"type":"message","message":{"role":"user","content":[{"type":"text","text":"fix the parser"}]}}"#,
+                "\n",
+                r#"{"type":"message","message":{"role":"assistant","content":[]}}"#,
+                "\n",
+                r#"{"type":"session_info","name":"parser work"}"#,
+                "\n",
+            ),
+        )
+        .unwrap();
+
+        let info = read_session_info(&path).expect("a valid session file");
+        assert_eq!(info["id"], "s1");
+        assert_eq!(info["name"], "parser work");
+        assert_eq!(info["preview"], "fix the parser");
+        assert_eq!(info["messages"], 2);
+        assert_eq!(list_sessions(&dir).len(), 1);
+
+        // A file that is not a pi session is skipped rather than listed with junk.
+        fs::write(dir.join("b.jsonl"), "not json\n").unwrap();
+        assert_eq!(list_sessions(&dir).len(), 1);
+        let _ = fs::remove_dir_all(&dir);
+    }
 
     /// The GUI `PATH` repair has to produce a usable `PATH` on a real machine — a GUI app
     /// inherits only `/usr/bin:/bin:/usr/sbin:/sbin`, which does not contain Homebrew.

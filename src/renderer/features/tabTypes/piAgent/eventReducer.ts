@@ -44,6 +44,8 @@ export interface PiMessageEntry {
   thinking: string;
   streaming: boolean;
   usage?: PiUsage;
+  /** Failure line pi's TUI prints under the message; absent when the turn ended cleanly. */
+  error?: string;
 }
 
 export type PiEntry = PiMessageEntry | PiToolEntry;
@@ -150,12 +152,21 @@ function openMessageId(state: PiPaneState): string | undefined {
   return undefined;
 }
 
+/**
+ * Content blocks of a message, tolerating the shapes pi's own code calls out as possible:
+ * "extension handlers can return messages with null/missing content".
+ */
+function contentBlocks(message: PiMessage): PiContentBlock[] {
+  const content = (message as { content?: unknown }).content;
+  return Array.isArray(content) ? (content as PiContentBlock[]) : [];
+}
+
 /** Flattens a message's content into displayable text and thinking. */
 function readMessage(message: PiMessage): { text: string; thinking: string } {
   if (message.role === "user") {
     if (typeof message.content === "string") return { text: message.content, thinking: "" };
     return {
-      text: message.content
+      text: contentBlocks(message)
         .filter(
           (block): block is Extract<PiContentBlock, { type: "text" }> => block.type === "text",
         )
@@ -168,7 +179,7 @@ function readMessage(message: PiMessage): { text: string; thinking: string } {
 
   let text = "";
   let thinking = "";
-  for (const block of message.content) {
+  for (const block of contentBlocks(message)) {
     // toolCall blocks are deliberately skipped: they render as tool cards from
     // tool_execution_* instead, so they would otherwise appear twice.
     if (block.type === "text") text += block.text;
@@ -177,10 +188,28 @@ function readMessage(message: PiMessage): { text: string; thinking: string } {
   return { text, thinking };
 }
 
+/**
+ * The failure line pi's TUI shows beneath an assistant message, or undefined when the turn ended
+ * cleanly. Mirrors `modes/interactive/components/assistant-message.js`: aborted/error messages that
+ * carry tool calls stay silent, because the tool cards already report the failure.
+ */
+export function messageError(message: PiMessage): string | undefined {
+  if (message.role !== "assistant") return undefined;
+  if (message.stopReason === "length") return "Response was truncated before completion.";
+  if (contentBlocks(message).some((block) => block.type === "toolCall")) return undefined;
+  if (message.stopReason === "aborted") {
+    return message.errorMessage && message.errorMessage !== "Request was aborted"
+      ? message.errorMessage
+      : "Operation aborted";
+  }
+  if (message.stopReason === "error") return `Error: ${message.errorMessage || "Unknown error"}`;
+  return undefined;
+}
+
 /** Records sibling tool calls so their cards can share one parallel frame. */
 function recordToolGroups(state: PiPaneState, message: PiMessage): PiPaneState {
   if (message.role !== "assistant") return state;
-  const calls = message.content.filter(
+  const calls = contentBlocks(message).filter(
     (block): block is Extract<PiContentBlock, { type: "toolCall" }> => block.type === "toolCall",
   );
   if (calls.length < 2) return state;
@@ -252,7 +281,7 @@ export function reducePiEvent(state: PiPaneState, event: PiIncoming): PiPaneStat
   switch (event.type) {
     case "message_start": {
       // toolResult and bashExecution messages duplicate the tool_execution_* cards.
-      const role = event.message.role;
+      const role = event.message?.role;
       if (role !== "user" && role !== "assistant") return state;
       const { text, thinking } = readMessage(event.message);
       const entry: PiMessageEntry = {
@@ -268,7 +297,7 @@ export function reducePiEvent(state: PiPaneState, event: PiIncoming): PiPaneStat
 
     case "message_update":
     case "message_end": {
-      const role = event.message.role;
+      const role = event.message?.role;
       if (role !== "user" && role !== "assistant") return state;
       const targetId = openMessageId(state);
       if (!targetId) return state;
@@ -285,6 +314,7 @@ export function reducePiEvent(state: PiPaneState, event: PiIncoming): PiPaneStat
           text,
           thinking,
           usage: usage ?? (entry as PiMessageEntry).usage,
+          error: messageError(event.message),
           streaming: !closing,
         }),
       );
@@ -449,9 +479,11 @@ export function hydrateFromMessages(state: PiPaneState, messages: PiMessage[]): 
   let seq = state.seq;
 
   for (const message of messages) {
+    if (!message) continue;
     if (message.role === "user" || message.role === "assistant") {
       const { text, thinking } = readMessage(message);
-      if (text || thinking) {
+      const error = messageError(message);
+      if (text || thinking || error) {
         entries.push({
           kind: "message",
           id: `msg-${seq++}`,
@@ -460,10 +492,11 @@ export function hydrateFromMessages(state: PiPaneState, messages: PiMessage[]): 
           thinking,
           streaming: false,
           usage: message.role === "assistant" ? message.usage : undefined,
+          error,
         });
       }
       if (message.role === "assistant") {
-        const calls = message.content.filter(
+        const calls = contentBlocks(message).filter(
           (block): block is Extract<PiContentBlock, { type: "toolCall" }> =>
             block.type === "toolCall",
         );

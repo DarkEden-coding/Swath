@@ -14,7 +14,20 @@ export type PiRpcRequest =
   | { op: "kill"; paneId: string }
   | { op: "stderr"; paneId: string }
   /** Bounded file walk under `cwd`, for `@file` completion. */
-  | { op: "files"; paneId: string; cwd: string };
+  | { op: "files"; paneId: string; cwd: string }
+  /** Lists the pi session files in `dir`, for `/resume`. */
+  | { op: "sessions"; paneId: string; dir: string };
+
+/** One entry of the `sessions` reply. */
+export interface PiSessionInfo {
+  path: string;
+  id: string;
+  name: string | null;
+  preview: string;
+  messages: number;
+  /** Unix epoch milliseconds. */
+  modified: number;
+}
 
 /** Host → renderer stdout record, or the process-exit notice. */
 export type PiHostEvent = { paneId: string; line?: string; exit?: true };
@@ -155,6 +168,8 @@ export type PiMessage =
       provider?: string;
       usage?: PiUsage;
       stopReason?: string;
+      /** Present when `stopReason` is `error` / `aborted`; pi's TUI renders it as `Error: …`. */
+      errorMessage?: string;
       timestamp?: number;
     }
   | {

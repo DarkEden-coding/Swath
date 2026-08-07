@@ -13,13 +13,42 @@ import { AnsiText } from "../../../lib/ansi";
 import { useUiStore } from "../../../state/uiStore";
 import { PaneFrame } from "../../panes/components/PaneFrame";
 import type { PaneComponentProps } from "../../panes/paneTypes";
-import { Chrome } from "./Chrome";
+import { Chrome, isEmptyCounterChip } from "./Chrome";
 import { Composer } from "./Composer";
 import { DialogHost } from "./DialogHost";
+import { SessionList, sessionDirOf } from "./SessionList";
 import { SessionTree } from "./SessionTree";
 import { piPaneCache, type AttachedImage } from "./piPaneCache";
 import { Transcript } from "./Transcript";
 import { usePiAgent } from "./usePiAgent";
+import type { PiNotice } from "./eventReducer";
+
+function NoticeRow({ notice, onDismiss }: { notice: PiNotice; onDismiss: (id: string) => void }) {
+  const dismissRef = useRef(onDismiss);
+  useEffect(() => {
+    dismissRef.current = onDismiss;
+  }, [onDismiss]);
+  useEffect(() => {
+    const timer = window.setTimeout(() => dismissRef.current(notice.id), 5_000);
+    return () => window.clearTimeout(timer);
+  }, [notice.id]);
+
+  return (
+    <button
+      type="button"
+      className={`block w-full px-3 py-1 text-left font-mono text-[11px] ${
+        notice.level === "error"
+          ? "text-[var(--pi-red)]"
+          : notice.level === "warning"
+            ? "text-[var(--pi-yellow)]"
+            : "text-[var(--pi-muted)]"
+      }`}
+      onClick={() => onDismiss(notice.id)}
+    >
+      {notice.message}
+    </button>
+  );
+}
 
 export function PiAgentPane({ workspace, view, pane }: PaneComponentProps): JSX.Element {
   const activePaneId = useUiStore((state) => state.activePaneId);
@@ -49,6 +78,7 @@ export function PiAgentPane({ workspace, view, pane }: PaneComponentProps): JSX.
   }, [paneId, draft, images]);
   const [appliedEditorText, setAppliedEditorText] = useState<string | undefined>(undefined);
   const [treeOpen, setTreeOpen] = useState(false);
+  const [resumeOpen, setResumeOpen] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const pinnedRef = useRef(true);
 
@@ -60,9 +90,12 @@ export function PiAgentPane({ workspace, view, pane }: PaneComponentProps): JSX.
       { name: "model", description: "Cycle to the next model", source: "builtin" },
       { name: "thinking", description: "Cycle reasoning level", source: "builtin" },
       { name: "tree", description: "Toggle the session tree", source: "builtin" },
+      { name: "resume", description: "Resume a previous chat", source: "builtin" },
       ...state.commands.filter(
         (command) =>
-          !["new", "rename", "compact", "model", "thinking", "tree"].includes(command.name),
+          !["new", "rename", "compact", "model", "thinking", "tree", "resume"].includes(
+            command.name,
+          ),
       ),
     ],
     [state.commands],
@@ -78,6 +111,8 @@ export function PiAgentPane({ workspace, view, pane }: PaneComponentProps): JSX.
     else if (command === "/tree") {
       if (!treeOpen) agent.refreshTree();
       setTreeOpen(!treeOpen);
+    } else if (command === "/resume") {
+      setResumeOpen(true);
     } else if (command === "/rename") {
       const name = args.join(" ") || prompt("Session name", state.state?.sessionName ?? "");
       if (name) agent.setSessionName(name);
@@ -101,16 +136,21 @@ export function PiAgentPane({ workspace, view, pane }: PaneComponentProps): JSX.
   const widgetsAbove = Object.values(state.widgets).filter((w) => w.placement === "aboveEditor");
   const widgetsBelow = Object.values(state.widgets).filter((w) => w.placement === "belowEditor");
 
+  // Counter widgets ("background terminals: 0") are noise while at zero, exactly as the footer
+  // chips are; a widget whose every line is an empty counter is dropped entirely.
   const renderWidgets = (widgets: typeof widgetsAbove): JSX.Element[] =>
-    widgets.map((widget) => (
-      <div key={widget.key} className="pi-agent-widget shrink-0 border-t">
-        {widget.lines.map((line, index) => (
-          <div key={index}>
-            <AnsiText text={line} />
-          </div>
-        ))}
-      </div>
-    ));
+    widgets
+      .map((widget) => ({ ...widget, lines: widget.lines.filter((l) => !isEmptyCounterChip(l)) }))
+      .filter((widget) => widget.lines.length > 0)
+      .map((widget) => (
+        <div key={widget.key} className="pi-agent-widget shrink-0 border-t">
+          {widget.lines.map((line, index) => (
+            <div key={index}>
+              <AnsiText text={line} />
+            </div>
+          ))}
+        </div>
+      ));
 
   return (
     <PaneFrame
@@ -129,20 +169,7 @@ export function PiAgentPane({ workspace, view, pane }: PaneComponentProps): JSX.
           {state.notices.length > 0 ? (
             <div className="shrink-0 border-b border-[var(--pi-border-muted)]">
               {state.notices.slice(-3).map((notice) => (
-                <button
-                  key={notice.id}
-                  type="button"
-                  className={`block w-full px-3 py-1 text-left font-mono text-[11px] ${
-                    notice.level === "error"
-                      ? "text-[var(--pi-red)]"
-                      : notice.level === "warning"
-                        ? "text-[var(--pi-yellow)]"
-                        : "text-[var(--pi-muted)]"
-                  }`}
-                  onClick={() => agent.dismissNotice(notice.id)}
-                >
-                  {notice.message}
-                </button>
+                <NoticeRow key={notice.id} notice={notice} onDismiss={agent.dismissNotice} />
               ))}
             </div>
           ) : null}
@@ -214,6 +241,19 @@ export function PiAgentPane({ workspace, view, pane }: PaneComponentProps): JSX.
             onRestart={agent.restart}
           />
         </div>
+
+        {resumeOpen ? (
+          <SessionList
+            paneId={paneId}
+            sessionDir={sessionDirOf(state.state?.sessionFile ?? state.stats?.sessionFile)}
+            currentFile={state.state?.sessionFile ?? state.stats?.sessionFile}
+            onPick={(sessionPath) => {
+              agent.switchSession(sessionPath);
+              setResumeOpen(false);
+            }}
+            onClose={() => setResumeOpen(false)}
+          />
+        ) : null}
 
         {treeOpen ? (
           <SessionTree

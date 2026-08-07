@@ -5,6 +5,7 @@ import type { PiIncoming } from "../../../../shared/ipc/piRpc";
 import {
   dismissDialog,
   initialPiPaneState,
+  hydrateFromMessages,
   reducePiEvent,
   type PiMessageEntry,
   type PiPaneState,
@@ -394,5 +395,65 @@ describe("reducePiEvent", () => {
     const before = initialPiPaneState();
     const after = reducePiEvent(before, { type: "wat" } as unknown as PiIncoming);
     expect(after).toBe(before);
+  });
+});
+
+describe("failed turns", () => {
+  const failed: PiIncoming[] = [
+    { type: "message_start", message: { role: "assistant", content: [] } },
+    {
+      type: "message_end",
+      message: {
+        role: "assistant",
+        content: [],
+        stopReason: "error",
+        errorMessage: "Provided authentication token is expired.",
+      },
+    },
+  ];
+
+  it("surfaces the error line pi's TUI prints, even with no assistant text", () => {
+    const [entry] = run(failed).entries as PiMessageEntry[];
+    expect(entry.error).toBe("Error: Provided authentication token is expired.");
+    expect(entry.text).toBe("");
+  });
+
+  it("keeps the error when history is rehydrated on a tab switch", () => {
+    const state = hydrateFromMessages(initialPiPaneState(), [
+      { role: "assistant", content: [], stopReason: "error", errorMessage: "boom" },
+    ]);
+    expect((state.entries[0] as PiMessageEntry).error).toBe("Error: boom");
+  });
+
+  it("stays silent when tool cards already report the failure", () => {
+    const state = hydrateFromMessages(initialPiPaneState(), [
+      {
+        role: "assistant",
+        content: [{ type: "toolCall", id: "t1", name: "bash" }],
+        stopReason: "error",
+        errorMessage: "boom",
+      },
+    ]);
+    expect(state.entries.filter((entry) => entry.kind === "message")).toHaveLength(0);
+  });
+});
+
+describe("malformed events", () => {
+  /**
+   * A throw here happens inside React's render of the pane and blanks the whole window, so the
+   * reducer has to be total over whatever pi puts on stdout.
+   */
+  it("ignores message events with no message and no content", () => {
+    const events = [
+      { type: "message_start" },
+      { type: "message_update" },
+      { type: "message_end" },
+      { type: "message_start", message: { role: "assistant" } },
+      { type: "message_end", message: { role: "assistant", content: null } },
+    ] as unknown as PiIncoming[];
+
+    expect(() => run(events)).not.toThrow();
+    expect(hydrateFromMessages(initialPiPaneState(), [undefined, { role: "assistant" }] as never)
+      .entries).toHaveLength(0);
   });
 });
