@@ -209,7 +209,13 @@ function Message({ entry }: { entry: PiMessageEntry }): JSX.Element {
 }
 
 /** Renders messages and coalesces adjacent sibling tool calls into one parallel card. */
-export function Transcript({ entries }: { entries: PiEntry[] }): JSX.Element {
+export function Transcript({
+  entries,
+  working = false,
+}: {
+  entries: PiEntry[];
+  working?: boolean;
+}): JSX.Element {
   const rendered: JSX.Element[] = [];
   for (let index = 0; index < entries.length; index += 1) {
     const entry = entries[index];
@@ -235,5 +241,10 @@ export function Transcript({ entries }: { entries: PiEntry[] }): JSX.Element {
     rendered.push(<ParallelToolGroup key={groupId} entries={group} />);
   }
 
-  return <div className="pi-transcript">{rendered}</div>;
+  return (
+    <div className="pi-transcript">
+      {rendered}
+      {working ? <div className="text-[var(--pi-dim)]">working…</div> : null}
+    </div>
+  );
 }

@@ -1,4 +1,4 @@
-import type { JSX } from "react";
+import { useId, type JSX } from "react";
 import type { GitLogEntry } from "../../../services/gitClient";
 
 /** Row height (px) — keep in sync with commit list rows in GitManagerPane. */
@@ -7,8 +7,9 @@ export const COMMIT_GRAPH_ROW_H = 56;
 /** Visual lane width for one commit graph column (px). */
 export const COMMIT_GRAPH_CELL_W = 36;
 
-const LANE_STROKES = ["#58a6ff", "#d29922", "#3fb950", "#a371f7", "#8b949e"];
+const LANE_STROKES = ["#67a7ff", "#e4ad45", "#64c75b", "#ae82ff", "#8d9baa"];
 
+/** Returns the theme color assigned to a graph lane. */
 function laneStroke(col: number): string {
   return LANE_STROKES[col % LANE_STROKES.length];
 }
@@ -114,7 +115,7 @@ export function CommitGraphSvg({
   const w = layout.cols * cellWidth;
   const h = layout.rows * rowHeight;
   const strokeW = 3;
-  const back = "#161b22";
+  const gradientPrefix = useId().replaceAll(":", "");
 
   const xForCol = (col: number): number => col * cellWidth + cellWidth / 2;
   const yForRow = (row: number): number => row * rowHeight + rowHeight / 2;
@@ -129,8 +130,54 @@ export function CommitGraphSvg({
       aria-label="Commit graph"
     >
       <title>Commit ancestry graph</title>
+      <defs>
+        {layout.paths.map((path, index) => (
+          <linearGradient
+            key={`${path.key}-gradient`}
+            id={`${gradientPrefix}-path-${index}`}
+            gradientUnits="userSpaceOnUse"
+            x1={xForCol(path.fromCol)}
+            y1={yForRow(path.fromRow)}
+            x2={xForCol(path.toCol)}
+            y2={yForRow(path.toRow)}
+          >
+            <stop offset="0" stopColor={laneStroke(path.fromCol)} />
+            <stop offset="1" stopColor={laneStroke(path.toCol)} />
+          </linearGradient>
+        ))}
+        {LANE_STROKES.map((color, index) => (
+          <radialGradient key={color} id={`${gradientPrefix}-node-${index}`} cx="35%" cy="28%">
+            <stop offset="0" stopColor="#ffffff" />
+            <stop offset="0.22" stopColor={color} />
+            <stop offset="1" stopColor={color} stopOpacity="0.65" />
+          </radialGradient>
+        ))}
+      </defs>
+      <g opacity="0.2" aria-hidden="true">
+        {layout.paths.map((path, index) => {
+          const x1 = xForCol(path.fromCol);
+          const y1 = yForRow(path.fromRow);
+          const x2 = xForCol(path.toCol);
+          const y2 = yForRow(path.toRow);
+          const midY = y1 + (y2 - y1) / 2;
+          const d =
+            x1 === x2
+              ? `M ${x1} ${y1} L ${x2} ${y2}`
+              : `M ${x1} ${y1} C ${x1} ${midY}, ${x2} ${midY}, ${x2} ${y2}`;
+          return (
+            <path
+              key={`${path.key}-halo`}
+              d={d}
+              fill="none"
+              stroke={`url(#${gradientPrefix}-path-${index})`}
+              strokeWidth={8}
+              strokeLinecap="round"
+            />
+          );
+        })}
+      </g>
       <g className="commit-graph-rails">
-        {layout.paths.map((path) => {
+        {layout.paths.map((path, index) => {
           const x1 = xForCol(path.fromCol);
           const y1 = yForRow(path.fromRow);
           const x2 = xForCol(path.toCol);
@@ -145,7 +192,7 @@ export function CommitGraphSvg({
               key={path.key}
               d={d}
               fill="none"
-              stroke={laneStroke(path.fromCol)}
+              stroke={`url(#${gradientPrefix}-path-${index})`}
               strokeWidth={strokeW}
               strokeLinecap="round"
               strokeLinejoin="round"
@@ -155,15 +202,23 @@ export function CommitGraphSvg({
       </g>
       <g className="commit-graph-nodes">
         {layout.nodes.map((node) => (
-          <circle
-            key={node.key}
-            cx={xForCol(node.col)}
-            cy={yForRow(node.row)}
-            r={node.merge ? 5.7 : 4.7}
-            fill={back}
-            stroke={laneStroke(node.col)}
-            strokeWidth={node.merge ? 3 : 2.5}
-          />
+          <g key={node.key}>
+            <circle
+              cx={xForCol(node.col)}
+              cy={yForRow(node.row)}
+              r={node.merge ? 9 : 7.5}
+              fill={laneStroke(node.col)}
+              opacity="0.14"
+            />
+            <circle
+              cx={xForCol(node.col)}
+              cy={yForRow(node.row)}
+              r={node.merge ? 5.7 : 4.7}
+              fill={`url(#${gradientPrefix}-node-${node.col % LANE_STROKES.length})`}
+              stroke="#0d1117"
+              strokeWidth="2"
+            />
+          </g>
         ))}
       </g>
     </svg>
