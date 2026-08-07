@@ -127,11 +127,15 @@ export function PiAgentPane({ workspace, view, pane }: PaneComponentProps): JSX.
     setDraft(state.editorText);
   }
 
-  // Follow output while the user is at the bottom; stop as soon as they scroll away.
+  // Follow output while the user is at the bottom; wait for the tab's layout before scrolling.
   useEffect(() => {
-    const node = scrollRef.current;
-    if (node && pinnedRef.current) node.scrollTop = node.scrollHeight;
-  }, [state.entries]);
+    if (!isActive || !pinnedRef.current) return;
+    const frame = window.requestAnimationFrame(() => {
+      const node = scrollRef.current;
+      if (node) node.scrollTop = node.scrollHeight;
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [isActive, state.entries]);
 
   const widgetsAbove = Object.values(state.widgets).filter((w) => w.placement === "aboveEditor");
   const widgetsBelow = Object.values(state.widgets).filter((w) => w.placement === "belowEditor");
