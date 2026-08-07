@@ -207,6 +207,22 @@ describe("reducePiEvent", () => {
     expect((state.entries[0] as PiMessageEntry).text).toBe("hi");
   });
 
+  it("attaches tool-review status to its tool card", () => {
+    const state = run([
+      { type: "tool_execution_start", toolCallId: "t1", toolName: "bash" },
+      {
+        type: "extension_ui_request",
+        id: "status-1",
+        method: "setStatus",
+        statusKey: "tool-review:t1",
+        statusText: "rule-approved",
+      },
+    ]);
+
+    expect((state.entries[0] as PiToolEntry).reviewStatus).toBe("rule-approved");
+    expect(state.status).toEqual({});
+  });
+
   it("replaces tool output on update because partialResult is cumulative", () => {
     const state = run([
       { type: "tool_execution_start", toolCallId: "t1", toolName: "bash", args: { command: "ls" } },

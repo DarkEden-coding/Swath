@@ -32,6 +32,8 @@ export interface PiToolEntry {
   startedAt: number;
   endedAt?: number;
   isError: boolean;
+  /** Approval outcome published by the tool-review extension for this call. */
+  reviewStatus?: string;
   reasoningLevel?: PiThinkingLevel;
   parallelGroup?: { id: string; index: number; total: number };
 }
@@ -245,6 +247,16 @@ function applyExtensionUi(state: PiPaneState, event: PiExtensionUiRequest): PiPa
       };
 
     case "setStatus": {
+      const toolCallId = event.statusKey.startsWith("tool-review:")
+        ? event.statusKey.slice("tool-review:".length)
+        : undefined;
+      if (toolCallId) {
+        return updateEntry(
+          state,
+          (entry) => entry.kind === "tool" && entry.toolCallId === toolCallId,
+          (entry) => ({ ...(entry as PiToolEntry), reviewStatus: event.statusText }),
+        );
+      }
       const status = { ...state.status };
       if (event.statusText === undefined) delete status[event.statusKey];
       else status[event.statusKey] = event.statusText;

@@ -125,6 +125,7 @@ function ToolSection({
             <span>◷ timeout {entry.args.timeout}s</span>
           ) : null}
           {entry.parallelGroup ? <span>⇉ Parallel</span> : null}
+          {entry.reviewStatus ? <AnsiText text={entry.reviewStatus} /> : null}
           <span>{statusLabel(entry)}</span>
         </div>
       ) : null}
@@ -147,6 +148,7 @@ function ToolCard({ entry }: { entry: PiToolEntry }): JSX.Element {
         {typeof entry.args?.timeout === "number" ? (
           <span>◷ timeout {entry.args.timeout}s</span>
         ) : null}
+        {entry.reviewStatus ? <AnsiText text={entry.reviewStatus} /> : null}
         <span>{statusLabel(entry)}</span>
       </div>
       <ToolSection entry={entry} showHeader={false} />
@@ -158,6 +160,7 @@ function ParallelToolGroup({ entries }: { entries: PiToolEntry[] }): JSX.Element
   const running = entries.some((entry) => entry.endedAt === undefined);
   const failed = entries.some((entry) => entry.isError);
   const color = failed ? "var(--pi-red)" : reasoningColor(entries[0]);
+  const reviewStatuses = [...new Set(entries.map((entry) => entry.reviewStatus).filter(Boolean))] as string[];
   return (
     <div
       className="pi-tool-card pi-parallel-group"
@@ -165,6 +168,7 @@ function ParallelToolGroup({ entries }: { entries: PiToolEntry[] }): JSX.Element
     >
       <div className="pi-tool-border-status">
         <span>⇉ Parallel</span>
+        {reviewStatuses.map((status) => <AnsiText key={status} text={status} />)}
         <span>{running ? "● Running" : failed ? "✕ Failed" : "✓ Completed"}</span>
       </div>
       {entries.map((entry, index) => (
