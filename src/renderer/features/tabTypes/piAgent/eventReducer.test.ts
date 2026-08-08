@@ -295,11 +295,11 @@ describe("reducePiEvent", () => {
         id: "status-1",
         method: "setStatus",
         statusKey: "tool-review:t1",
-        statusText: "rule-approved",
+        statusText: "auto-approved rule-created",
       },
     ]);
 
-    expect((state.entries[0] as PiToolEntry).reviewStatus).toBe("rule-approved");
+    expect((state.entries[0] as PiToolEntry).reviewStatus).toBe("auto-approved rule-created");
     expect(state.status).toEqual({});
   });
 
