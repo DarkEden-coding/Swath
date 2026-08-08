@@ -60,8 +60,48 @@ function callLabel(entry: PiToolEntry): string {
 }
 
 function statusLabel(entry: PiToolEntry): string {
+  if (entry.phase === "generating") return "◌ Preparing";
+  if (entry.phase === "ready") return "◌ Ready";
   if (entry.endedAt === undefined) return "● Running";
   return entry.isError ? "✕ Failed" : "✓ Completed";
+}
+
+/** Shows the requested edit immediately, before the tool returns its authoritative diff. */
+function PlannedEdit({ entry }: { entry: PiToolEntry }): JSX.Element | null {
+  if (entry.toolName !== "edit" || entry.details) return null;
+  const changes = Array.isArray(entry.args?.edits)
+    ? entry.args.edits
+    : entry.args?.oldText !== undefined || entry.args?.newText !== undefined
+      ? [entry.args]
+      : [];
+  if (!changes.length) return null;
+  return (
+    <div className="overflow-x-auto font-mono text-[12px] leading-relaxed">
+      {changes.map((change, index) => {
+        const edit = change as Record<string, unknown>;
+        return (
+          <div key={index} className="border-t border-[var(--pi-border-muted)]">
+            {typeof edit.oldText === "string" ? (
+              <pre className="whitespace-pre-wrap bg-[#2b1417] px-2 text-[var(--pi-red)]">
+                {edit.oldText
+                  .split("\n")
+                  .map((line) => `- ${line}`)
+                  .join("\n")}
+              </pre>
+            ) : null}
+            {typeof edit.newText === "string" ? (
+              <pre className="whitespace-pre-wrap bg-[#12261a] px-2 text-[var(--pi-green)]">
+                {edit.newText
+                  .split("\n")
+                  .map((line) => `+ ${line}`)
+                  .join("\n")}
+              </pre>
+            ) : null}
+          </div>
+        );
+      })}
+    </div>
+  );
 }
 
 interface ToolBodyProps {
@@ -83,7 +123,13 @@ function ToolBody({ entry }: ToolBodyProps): JSX.Element {
         {callLabel(entry)}
       </div>
       {diff ? <DiffView entry={entry} /> : null}
-      {!diff ? (
+      {!diff ? <PlannedEdit entry={entry} /> : null}
+      {!diff && entry.phase === "generating" ? (
+        <pre className="pi-tool-output whitespace-pre-wrap break-all">
+          {entry.partialArgs || "Building arguments…"}
+        </pre>
+      ) : null}
+      {!diff && entry.phase !== "generating" && entry.toolName !== "edit" ? (
         <pre className="pi-tool-output">
           {shown.length ? (
             <AnsiText text={shown.join("\n")} />
@@ -160,7 +206,9 @@ function ParallelToolGroup({ entries }: { entries: PiToolEntry[] }): JSX.Element
   const running = entries.some((entry) => entry.endedAt === undefined);
   const failed = entries.some((entry) => entry.isError);
   const color = failed ? "var(--pi-red)" : reasoningColor(entries[0]);
-  const reviewStatuses = [...new Set(entries.map((entry) => entry.reviewStatus).filter(Boolean))] as string[];
+  const reviewStatuses = [
+    ...new Set(entries.map((entry) => entry.reviewStatus).filter(Boolean)),
+  ] as string[];
   return (
     <div
       className="pi-tool-card pi-parallel-group"
@@ -168,7 +216,9 @@ function ParallelToolGroup({ entries }: { entries: PiToolEntry[] }): JSX.Element
     >
       <div className="pi-tool-border-status">
         <span>⇉ Parallel</span>
-        {reviewStatuses.map((status) => <AnsiText key={status} text={status} />)}
+        {reviewStatuses.map((status) => (
+          <AnsiText key={status} text={status} />
+        ))}
         <span>{running ? "● Running" : failed ? "✕ Failed" : "✓ Completed"}</span>
       </div>
       {entries.map((entry, index) => (
@@ -216,9 +266,11 @@ function Message({ entry }: { entry: PiMessageEntry }): JSX.Element {
 export function Transcript({
   entries,
   working = false,
+  operationStatus,
 }: {
   entries: PiEntry[];
   working?: boolean;
+  operationStatus?: string;
 }): JSX.Element {
   const rendered: JSX.Element[] = [];
   for (let index = 0; index < entries.length; index += 1) {
@@ -248,7 +300,9 @@ export function Transcript({
   return (
     <div className="pi-transcript">
       {rendered}
-      {working ? <div className="text-[var(--pi-dim)]">working…</div> : null}
+      {working || operationStatus ? (
+        <div className="text-[var(--pi-dim)]">{operationStatus ?? "working…"}</div>
+      ) : null}
     </div>
   );
 }

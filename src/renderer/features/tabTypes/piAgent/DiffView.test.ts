@@ -9,6 +9,7 @@ function tool(details: Record<string, unknown> | undefined): PiToolEntry {
     toolCallId: "t1",
     toolName: "edit",
     output: "",
+    phase: "completed",
     startedAt: 0,
     isError: false,
     details,
@@ -36,7 +37,8 @@ const editInfo = {
 /** Captured verbatim from baseline pi, without the pi-diff package. */
 const plainPatch = {
   diff: " 1 line one\n-2 line two\n+2 line TWO changed\n 3 line three",
-  patch: "--- sample.txt\n+++ sample.txt\n@@ -1,3 +1,3 @@\n line one\n-line two\n+line TWO changed\n line three\n",
+  patch:
+    "--- sample.txt\n+++ sample.txt\n@@ -1,3 +1,3 @@\n line one\n-line two\n+line TWO changed\n line three\n",
   firstChangedLine: 2,
 };
 

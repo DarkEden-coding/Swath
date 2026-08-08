@@ -28,6 +28,9 @@ export interface PiToolEntry {
   args?: Record<string, unknown>;
   /** Accumulated output text; `tool_execution_update` replaces rather than appends. */
   output: string;
+  /** Raw JSON arguments while Pi is still streaming the tool call. */
+  partialArgs?: string;
+  phase: "generating" | "ready" | "running" | "completed";
   details?: Record<string, unknown>;
   startedAt: number;
   endedAt?: number;
@@ -87,6 +90,8 @@ export interface PiPaneState {
   state: PiState | null;
   isStreaming: boolean;
   isCompacting: boolean;
+  /** Current retry/compaction detail shown beside the generic working indicator. */
+  operationStatus?: string;
   pendingCount: number;
   /** Text pi asked us to prefill into the composer, consumed by the UI. */
   editorText?: string;
@@ -96,6 +101,8 @@ export interface PiPaneState {
   error?: string;
   /** Tool-call batches discovered while the assistant message streams. */
   toolGroups: Record<string, { id: string; index: number; total: number }>;
+  /** Provisional cards keyed by streamed content index until `toolcall_end` supplies an id. */
+  streamingTools: Record<number, string>;
   /** Monotonic id source, kept in state so the reducer stays pure. */
   seq: number;
 }
@@ -118,6 +125,7 @@ export function initialPiPaneState(): PiPaneState {
     pendingCount: 0,
     exited: false,
     toolGroups: {},
+    streamingTools: {},
     seq: 0,
   };
 }
@@ -288,6 +296,87 @@ function applyExtensionUi(state: PiPaneState, event: PiExtensionUiRequest): PiPa
   }
 }
 
+/** Applies one current RPC message delta, including tool calls before execution starts. */
+function applyMessageDelta(
+  state: PiPaneState,
+  event: Extract<PiIncoming, { type: "message_update" }>,
+): PiPaneState {
+  const delta = event.assistantMessageEvent;
+  if (!delta) return state;
+  const messageId = openMessageId(state);
+
+  if (
+    (delta.type === "text_delta" || delta.type === "thinking_delta") &&
+    messageId &&
+    delta.delta
+  ) {
+    return updateEntry(
+      state,
+      (entry) => entry.kind === "message" && entry.id === messageId,
+      (entry) => ({
+        ...(entry as PiMessageEntry),
+        [delta.type === "text_delta" ? "text" : "thinking"]:
+          (entry as PiMessageEntry)[delta.type === "text_delta" ? "text" : "thinking"] +
+          delta.delta,
+      }),
+    );
+  }
+
+  const index = delta.contentIndex;
+  if (index === undefined || !delta.type.startsWith("toolcall_")) return state;
+  if (delta.type === "toolcall_start") {
+    const id = `tool-stream-${state.seq}`;
+    const entry: PiToolEntry = {
+      kind: "tool",
+      id,
+      toolCallId: id,
+      toolName: "tool",
+      output: "",
+      partialArgs: "",
+      phase: "generating",
+      startedAt: Date.now(),
+      isError: false,
+      reasoningLevel: state.state?.thinkingLevel,
+    };
+    return {
+      ...state,
+      seq: state.seq + 1,
+      entries: [...state.entries, entry],
+      streamingTools: { ...state.streamingTools, [index]: id },
+    };
+  }
+
+  const provisionalId = state.streamingTools[index];
+  if (!provisionalId) return state;
+  if (delta.type === "toolcall_delta") {
+    return updateEntry(
+      state,
+      (entry) => entry.kind === "tool" && entry.id === provisionalId,
+      (entry) => ({
+        ...(entry as PiToolEntry),
+        partialArgs: (entry as PiToolEntry).partialArgs + (delta.delta ?? ""),
+      }),
+    );
+  }
+  if (delta.type === "toolcall_end" && delta.toolCall) {
+    const call = delta.toolCall;
+    return updateEntry(
+      state,
+      (entry) => entry.kind === "tool" && entry.id === provisionalId,
+      (entry) => ({
+        ...(entry as PiToolEntry),
+        id: call.id,
+        toolCallId: call.id,
+        toolName: call.name,
+        args: call.arguments,
+        partialArgs: undefined,
+        phase: "ready",
+      }),
+    );
+  }
+  return state;
+}
+
 /** Applies one pi event. Unknown event types leave state untouched. */
 export function reducePiEvent(state: PiPaneState, event: PiIncoming): PiPaneState {
   switch (event.type) {
@@ -309,15 +398,16 @@ export function reducePiEvent(state: PiPaneState, event: PiIncoming): PiPaneStat
 
     case "message_update":
     case "message_end": {
-      const role = event.message?.role;
-      if (role !== "user" && role !== "assistant") return state;
-      const targetId = openMessageId(state);
-      if (!targetId) return state;
-      // content is cumulative, so replace rather than append.
-      const { text, thinking } = readMessage(event.message);
-      const usage = role === "assistant" ? event.message.usage : undefined;
+      const deltaState = event.type === "message_update" ? applyMessageDelta(state, event) : state;
+      const message = event.message;
+      // Current RPC updates are delta-only. Older Pi versions also include a cumulative message.
+      if (message?.role !== "user" && message?.role !== "assistant") return deltaState;
+      const targetId = openMessageId(deltaState);
+      if (!targetId) return deltaState;
+      const { text, thinking } = readMessage(message);
+      const usage = message.role === "assistant" ? message.usage : undefined;
       const closing = event.type === "message_end";
-      const groupedState = recordToolGroups(state, event.message);
+      const groupedState = recordToolGroups(deltaState, message);
       return updateEntry(
         groupedState,
         (entry) => entry.kind === "message" && entry.id === targetId,
@@ -326,13 +416,29 @@ export function reducePiEvent(state: PiPaneState, event: PiIncoming): PiPaneStat
           text,
           thinking,
           usage: usage ?? (entry as PiMessageEntry).usage,
-          error: messageError(event.message),
+          error: messageError(message),
           streaming: !closing,
         }),
       );
     }
 
     case "tool_execution_start": {
+      const existing = state.entries.some(
+        (entry) => entry.kind === "tool" && entry.toolCallId === event.toolCallId,
+      );
+      if (existing) {
+        return updateEntry(
+          state,
+          (entry) => entry.kind === "tool" && entry.toolCallId === event.toolCallId,
+          (entry) => ({
+            ...(entry as PiToolEntry),
+            toolName: event.toolName,
+            args: event.args ?? (entry as PiToolEntry).args,
+            phase: "running",
+            parallelGroup: state.toolGroups[event.toolCallId],
+          }),
+        );
+      }
       const entry: PiToolEntry = {
         kind: "tool",
         id: event.toolCallId,
@@ -340,6 +446,7 @@ export function reducePiEvent(state: PiPaneState, event: PiIncoming): PiPaneStat
         toolName: event.toolName,
         args: event.args,
         output: "",
+        phase: "running",
         startedAt: Date.now(),
         isError: false,
         reasoningLevel: state.state?.thinkingLevel,
@@ -369,6 +476,7 @@ export function reducePiEvent(state: PiPaneState, event: PiIncoming): PiPaneStat
           output: resultText(event.result) || (entry as PiToolEntry).output,
           details: event.result?.details ?? (entry as PiToolEntry).details,
           endedAt: Date.now(),
+          phase: "completed",
           isError: event.isError === true,
         }),
       );
@@ -387,10 +495,53 @@ export function reducePiEvent(state: PiPaneState, event: PiIncoming): PiPaneStat
       };
 
     case "compaction_start":
-      return { ...state, isCompacting: true };
+      return {
+        ...state,
+        isCompacting: true,
+        operationStatus: `Compacting${event.reason ? ` (${event.reason})` : ""}…`,
+      };
 
     case "compaction_end":
-      return { ...state, isCompacting: false };
+      return {
+        ...state,
+        isCompacting: false,
+        operationStatus: event.errorMessage
+          ? `Compaction failed: ${event.errorMessage}`
+          : event.aborted
+            ? "Compaction cancelled"
+            : event.willRetry
+              ? "Compacted; retrying prompt…"
+              : undefined,
+      };
+
+    case "auto_retry_start":
+      return {
+        ...state,
+        operationStatus: `Retry ${event.attempt}/${event.maxAttempts} in ${Math.ceil(event.delayMs / 1000)}s${event.errorMessage ? `: ${event.errorMessage}` : ""}`,
+      };
+
+    case "auto_retry_end":
+      return {
+        ...state,
+        operationStatus: event.success
+          ? undefined
+          : `Retry failed${event.finalError ? `: ${event.finalError}` : ""}`,
+      };
+
+    case "summarization_retry_scheduled":
+      return {
+        ...state,
+        operationStatus: `Summary retry ${event.attempt}/${event.maxAttempts} in ${Math.ceil(event.delayMs / 1000)}s`,
+      };
+
+    case "summarization_retry_attempt_start":
+      return {
+        ...state,
+        operationStatus: `Retrying ${event.source === "compaction" ? "compaction" : "branch summary"}…`,
+      };
+
+    case "summarization_retry_finished":
+      return { ...state, operationStatus: undefined };
 
     case "extension_error":
       return {
@@ -521,6 +672,7 @@ export function hydrateFromMessages(state: PiPaneState, messages: PiMessage[]): 
             toolName: block.name,
             args: block.arguments,
             output: "",
+            phase: "completed",
             startedAt: message.timestamp ?? 0,
             isError: false,
             parallelGroup: groupId ? { id: groupId, index, total: calls.length } : undefined,
@@ -540,6 +692,7 @@ export function hydrateFromMessages(state: PiPaneState, messages: PiMessage[]): 
         .join("");
       if (tool) {
         tool.output = output;
+        tool.phase = "completed";
         tool.isError = message.isError === true;
         tool.endedAt = message.timestamp ?? tool.startedAt;
       } else {
@@ -550,6 +703,7 @@ export function hydrateFromMessages(state: PiPaneState, messages: PiMessage[]): 
           toolCallId: message.toolCallId,
           toolName: message.toolName,
           output,
+          phase: "completed",
           startedAt: message.timestamp ?? 0,
           endedAt: message.timestamp ?? 0,
           isError: message.isError === true,

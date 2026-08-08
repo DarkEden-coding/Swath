@@ -182,11 +182,23 @@ export type PiMessage =
     }
   | { role: "bashExecution"; command: string; output?: string; timestamp?: number };
 
-/** Streaming sub-event on `message_update`; the pane only needs its discriminator. */
+/** Delta carried by current Pi RPC `message_update` events. */
 export interface PiAssistantMessageEvent {
-  type: string;
+  type:
+    | "text_start"
+    | "text_delta"
+    | "text_end"
+    | "thinking_start"
+    | "thinking_delta"
+    | "thinking_end"
+    | "toolcall_start"
+    | "toolcall_delta"
+    | "toolcall_end"
+    | string;
   contentIndex?: number;
   delta?: string;
+  content?: string;
+  toolCall?: Extract<PiContentBlock, { type: "toolCall" }>;
 }
 
 /** Records read from pi stdout. Unknown `type` values are ignored by the reducer. */
@@ -205,7 +217,7 @@ export type PiIncoming =
   | { type: "turn_start" }
   | { type: "turn_end" }
   | { type: "message_start"; message: PiMessage }
-  | { type: "message_update"; message: PiMessage; assistantMessageEvent?: PiAssistantMessageEvent }
+  | { type: "message_update"; message?: PiMessage; assistantMessageEvent?: PiAssistantMessageEvent }
   | { type: "message_end"; message: PiMessage }
   | {
       type: "tool_execution_start";
@@ -227,8 +239,35 @@ export type PiIncoming =
       isError?: boolean;
     }
   | { type: "queue_update"; pending?: number; steering?: string[]; followUp?: string[] }
-  | { type: "compaction_start" }
-  | { type: "compaction_end" }
+  | { type: "compaction_start"; reason?: "manual" | "threshold" | "overflow" }
+  | {
+      type: "compaction_end";
+      reason?: "manual" | "threshold" | "overflow";
+      aborted?: boolean;
+      errorMessage?: string;
+      willRetry?: boolean;
+    }
+  | {
+      type: "auto_retry_start";
+      attempt: number;
+      maxAttempts: number;
+      delayMs: number;
+      errorMessage?: string;
+    }
+  | { type: "auto_retry_end"; success: boolean; attempt: number; finalError?: string }
+  | {
+      type: "summarization_retry_scheduled";
+      attempt: number;
+      maxAttempts: number;
+      delayMs: number;
+      errorMessage?: string;
+    }
+  | {
+      type: "summarization_retry_attempt_start";
+      source: "compaction" | "branchSummary";
+      reason?: "manual" | "threshold" | "overflow";
+    }
+  | { type: "summarization_retry_finished" }
   | { type: "extension_error"; error?: string }
   | PiExtensionUiRequest;
 

@@ -197,7 +197,11 @@ export function PiAgentPane({ workspace, view, pane }: PaneComponentProps): JSX.
                       : `Starting pi in ${cwd}…`}
               </div>
             ) : (
-              <Transcript entries={state.entries} working={state.isStreaming} />
+              <Transcript
+                entries={state.entries}
+                working={state.isStreaming}
+                operationStatus={state.operationStatus}
+              />
             )}
           </div>
 

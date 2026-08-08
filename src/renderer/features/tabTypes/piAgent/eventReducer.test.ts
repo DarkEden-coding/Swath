@@ -182,6 +182,86 @@ describe("reducePiEvent", () => {
     expect(message.streaming).toBe(false);
   });
 
+  it("assembles current delta-only RPC text and thinking updates", () => {
+    const state = run([
+      { type: "message_start", message: { role: "assistant", content: [] } },
+      {
+        type: "message_update",
+        assistantMessageEvent: { type: "thinking_delta", contentIndex: 0, delta: "hmm" },
+      },
+      {
+        type: "message_update",
+        assistantMessageEvent: { type: "text_delta", contentIndex: 1, delta: "Hello" },
+      },
+      {
+        type: "message_update",
+        assistantMessageEvent: { type: "text_delta", contentIndex: 1, delta: " world" },
+      },
+      {
+        type: "message_end",
+        message: {
+          role: "assistant",
+          content: [
+            { type: "thinking", thinking: "hmm" },
+            { type: "text", text: "Hello world" },
+          ],
+        },
+      },
+    ]);
+
+    expect(state.entries[0]).toMatchObject({
+      text: "Hello world",
+      thinking: "hmm",
+      streaming: false,
+    });
+  });
+
+  it("shows a delta-only tool call while its arguments are being generated", () => {
+    let state = run([
+      { type: "message_start", message: { role: "assistant", content: [] } },
+      {
+        type: "message_update",
+        assistantMessageEvent: { type: "toolcall_start", contentIndex: 0 },
+      },
+      {
+        type: "message_update",
+        assistantMessageEvent: {
+          type: "toolcall_delta",
+          contentIndex: 0,
+          delta: '{"path":"a.ts"}',
+        },
+      },
+    ]);
+    expect(state.entries[1]).toMatchObject({
+      kind: "tool",
+      phase: "generating",
+      partialArgs: '{"path":"a.ts"}',
+    });
+
+    state = run(
+      [
+        {
+          type: "message_update",
+          assistantMessageEvent: {
+            type: "toolcall_end",
+            contentIndex: 0,
+            toolCall: { type: "toolCall", id: "t1", name: "edit", arguments: { path: "a.ts" } },
+          },
+        },
+        {
+          type: "tool_execution_start",
+          toolCallId: "t1",
+          toolName: "edit",
+          args: { path: "a.ts" },
+        },
+      ],
+      state,
+    );
+    const tools = state.entries.filter((entry): entry is PiToolEntry => entry.kind === "tool");
+    expect(tools).toHaveLength(1);
+    expect(tools[0]).toMatchObject({ toolCallId: "t1", toolName: "edit", phase: "running" });
+  });
+
   it("keeps thinking separate from text", () => {
     const state = run([
       { type: "message_start", message: { role: "assistant", content: [] } },
@@ -392,6 +472,21 @@ describe("reducePiEvent", () => {
     expect(state.isStreaming).toBe(false);
   });
 
+  it("surfaces retry progress", () => {
+    let state = run([
+      {
+        type: "auto_retry_start",
+        attempt: 2,
+        maxAttempts: 3,
+        delayMs: 1500,
+        errorMessage: "overloaded",
+      },
+    ]);
+    expect(state.operationStatus).toBe("Retry 2/3 in 2s: overloaded");
+    state = run([{ type: "auto_retry_end", success: true, attempt: 2 }], state);
+    expect(state.operationStatus).toBeUndefined();
+  });
+
   it("stores get_state and get_commands responses, and surfaces failures", () => {
     let state = run([
       {
@@ -469,7 +564,9 @@ describe("malformed events", () => {
     ] as unknown as PiIncoming[];
 
     expect(() => run(events)).not.toThrow();
-    expect(hydrateFromMessages(initialPiPaneState(), [undefined, { role: "assistant" }] as never)
-      .entries).toHaveLength(0);
+    expect(
+      hydrateFromMessages(initialPiPaneState(), [undefined, { role: "assistant" }] as never)
+        .entries,
+    ).toHaveLength(0);
   });
 });
