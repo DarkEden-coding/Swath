@@ -161,7 +161,10 @@ export function PiAgentPane({ workspace, view, pane }: PaneComponentProps): JSX.
       active={isActive}
       title={state.title ?? state.state?.sessionName ?? "pi"}
       statusClass={state.exited ? "exited" : state.isStreaming ? "running" : "dormant"}
-      onActivate={() => appActions.setActivePane(workspace.id, view.id, paneId)}
+      onActivate={() => {
+        pinnedRef.current = true;
+        appActions.setActivePane(workspace.id, view.id, paneId);
+      }}
       onSplitRight={(kind) => appActions.splitPane(workspace.id, view.id, paneId, "vertical", kind)}
       onSplitDown={(kind) =>
         appActions.splitPane(workspace.id, view.id, paneId, "horizontal", kind)
