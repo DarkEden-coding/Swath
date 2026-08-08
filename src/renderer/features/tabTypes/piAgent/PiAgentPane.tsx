@@ -79,7 +79,9 @@ export function PiAgentPane({ workspace, view, pane }: PaneComponentProps): JSX.
   const [appliedEditorText, setAppliedEditorText] = useState<string | undefined>(undefined);
   const [treeOpen, setTreeOpen] = useState(false);
   const [resumeOpen, setResumeOpen] = useState(false);
+  const [showScrollToBottom, setShowScrollToBottom] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const scrollContentRef = useRef<HTMLDivElement>(null);
   const pinnedRef = useRef(true);
 
   const commands = useMemo<PiCommand[]>(
@@ -137,6 +139,22 @@ export function PiAgentPane({ workspace, view, pane }: PaneComponentProps): JSX.
     return () => window.cancelAnimationFrame(frame);
   }, [isActive, state.entries]);
 
+  // Keep follow mode pinned when message wrapping, the composer, or the pane itself changes height.
+  useEffect(() => {
+    if (!isActive) return;
+    const node = scrollRef.current;
+    const content = scrollContentRef.current;
+    if (!node || !content) return;
+
+    const observer = new ResizeObserver(() => {
+      if (pinnedRef.current) node.scrollTop = node.scrollHeight;
+      setShowScrollToBottom(node.scrollHeight - node.scrollTop - node.clientHeight >= 40);
+    });
+    observer.observe(node);
+    observer.observe(content);
+    return () => observer.disconnect();
+  }, [isActive]);
+
   const widgetsAbove = Object.values(state.widgets).filter((w) => w.placement === "aboveEditor");
   const widgetsBelow = Object.values(state.widgets).filter((w) => w.placement === "belowEditor");
 
@@ -171,8 +189,8 @@ export function PiAgentPane({ workspace, view, pane }: PaneComponentProps): JSX.
       }
       onClose={() => appActions.closePane(workspace.id, view.id, paneId)}
     >
-      <div className="pi-agent relative flex h-full min-h-0">
-        <div className="flex min-w-0 flex-1 flex-col">
+      <div className="pi-agent relative flex h-full min-h-0 overflow-hidden">
+        <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
           {state.notices.length > 0 ? (
             <div className="shrink-0 border-b border-[var(--pi-border-muted)]">
               {state.notices.slice(-3).map((notice) => (
@@ -181,31 +199,62 @@ export function PiAgentPane({ workspace, view, pane }: PaneComponentProps): JSX.
             </div>
           ) : null}
 
-          <div
-            ref={scrollRef}
-            className="min-h-0 flex-1 overflow-auto"
-            onScroll={(event) => {
-              const node = event.currentTarget;
-              pinnedRef.current = node.scrollHeight - node.scrollTop - node.clientHeight < 40;
-            }}
-          >
-            {state.entries.length === 0 ? (
-              <div className="grid h-full place-items-center px-6 text-center text-sm text-[var(--pi-dim)]">
-                {state.exited
-                  ? "pi exited."
-                  : state.error
-                    ? state.error
-                    : state.state
-                      ? "Start a new chat with pi."
-                      : `Starting pi in ${cwd}…`}
+          <div className="relative min-h-0 flex-1">
+            <div
+              ref={scrollRef}
+              className="h-full overflow-auto"
+              onScroll={(event) => {
+                const node = event.currentTarget;
+                const pinned = node.scrollHeight - node.scrollTop - node.clientHeight < 40;
+                pinnedRef.current = pinned;
+                setShowScrollToBottom(!pinned);
+              }}
+            >
+              <div ref={scrollContentRef} className="min-h-full">
+                {state.entries.length === 0 ? (
+                  <div className="grid h-full place-items-center px-6 text-center text-sm text-[var(--pi-dim)]">
+                    {state.exited
+                      ? "pi exited."
+                      : state.error
+                        ? state.error
+                        : state.state
+                          ? "Start a new chat with pi."
+                          : `Starting pi in ${cwd}…`}
+                  </div>
+                ) : (
+                  <Transcript
+                    entries={state.entries}
+                    working={state.isStreaming}
+                    operationStatus={state.operationStatus}
+                  />
+                )}
               </div>
-            ) : (
-              <Transcript
-                entries={state.entries}
-                working={state.isStreaming}
-                operationStatus={state.operationStatus}
-              />
-            )}
+            </div>
+            <button
+              type="button"
+              className={`absolute bottom-3 left-1/2 z-10 grid h-8 w-8 -translate-x-1/2 place-items-center rounded-full border border-[#30363d] bg-[#161b22]/95 text-[#8b949e] shadow-[0_4px_14px_rgba(0,0,0,0.4)] backdrop-blur-sm transition-[opacity,transform,background-color,border-color,color] duration-200 ease-out hover:border-[#484f58] hover:bg-[#21262d] hover:text-[#f0f6fc] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#2f81f7] ${showScrollToBottom && isActive ? "translate-y-0 opacity-100" : "pointer-events-none translate-y-2 opacity-0"}`}
+              aria-label="Scroll to bottom"
+              aria-hidden={!showScrollToBottom || !isActive}
+              tabIndex={showScrollToBottom && isActive ? 0 : -1}
+              title="Scroll to bottom"
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => {
+                const node = scrollRef.current;
+                if (!node) return;
+                pinnedRef.current = true;
+                node.scrollTop = node.scrollHeight;
+              }}
+            >
+              <svg aria-hidden="true" viewBox="0 0 16 16" className="h-4 w-4" fill="none">
+                <path
+                  d="M3.5 6 8 10.5 12.5 6"
+                  stroke="currentColor"
+                  strokeWidth="1.6"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
+            </button>
           </div>
 
           {renderWidgets(widgetsAbove)}
