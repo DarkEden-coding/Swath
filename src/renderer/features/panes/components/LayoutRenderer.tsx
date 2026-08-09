@@ -7,7 +7,7 @@ import type {
   Workspace,
   WorkspaceView,
 } from "../../../../shared/types";
-import { setSplitRatio } from "../../../app/appActions";
+import { previewSplitRatio, setSplitRatio } from "../../../app/appActions";
 import { getPaneRegistration } from "../paneRegistry";
 
 interface LayoutRendererProps {
@@ -64,16 +64,29 @@ function SplitRenderer({ workspace, view, settings, node }: SplitRendererProps):
     event.preventDefault();
     const rect = host.getBoundingClientRect();
 
+    // Committing per pointermove rebuilt the whole config (and hit disk) on every
+    // event. Preview at most once per frame, then persist once on release.
+    let frame = 0;
+    let latestRatio: number | null = null;
+
     const onMove = (moveEvent: PointerEvent): void => {
       const position = vertical ? moveEvent.clientX - rect.left : moveEvent.clientY - rect.top;
       const total = vertical ? rect.width : rect.height;
       if (total <= 0) return;
-      setSplitRatio(workspace.id, view.id, node.id, position / total);
+      latestRatio = position / total;
+      if (frame) return;
+      frame = requestAnimationFrame(() => {
+        frame = 0;
+        if (latestRatio !== null) previewSplitRatio(workspace.id, view.id, node.id, latestRatio);
+      });
     };
 
     const onUp = (): void => {
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
+      if (frame) cancelAnimationFrame(frame);
+      frame = 0;
+      if (latestRatio !== null) setSplitRatio(workspace.id, view.id, node.id, latestRatio);
     };
 
     window.addEventListener("pointermove", onMove);

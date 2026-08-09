@@ -94,6 +94,19 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
 
   const isActive = activePaneId === paneId || view.activePaneId === paneId;
 
+  const paneCwd = paneMeta?.cwd ?? paneMeta?.metadata?.cwd ?? workspace.path;
+  const paneEnv = paneMeta?.env ?? normalizeEnv(paneMeta?.metadata?.env);
+  // `withConfig` structurally clones the whole config, so pane env/shell objects
+  // get a fresh identity on every commit. Key the session effect on their content
+  // instead; otherwise unrelated UI updates detach and reattach the terminal.
+  const paneEnvKey = JSON.stringify(paneEnv ?? null);
+  const paneShellProfileKey = paneShellProfile?.id ?? "";
+  const sessionInputRef = useRef({ cwd: paneCwd, env: paneEnv, shellProfile: paneShellProfile });
+
+  useEffect(() => {
+    sessionInputRef.current = { cwd: paneCwd, env: paneEnv, shellProfile: paneShellProfile };
+  });
+
   useEffect(() => {
     bannerSentRef.current = false;
   }, [paneId, view.id]);
@@ -142,17 +155,11 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
     fitRef.current = fit;
     searchRef.current = null;
 
-    const currentCwd = paneMeta?.cwd ?? paneMeta?.metadata?.cwd ?? workspace.path;
+    const currentCwd = sessionInputRef.current.cwd;
 
+    // Buffer state, not pixel distance: a pane that has silently dropped out of
+    // follow mode sits a row short of the bottom, which a pixel threshold hides.
     const updateScrollToBottomButton = (): void => {
-      const viewport = host.querySelector<HTMLElement>(".xterm-viewport");
-      if (viewport) {
-        const distanceFromBottom =
-          viewport.scrollHeight - viewport.clientHeight - viewport.scrollTop;
-        setShowScrollToBottom(distanceFromBottom > 24);
-        return;
-      }
-
       const buffer = terminal.buffer.active;
       setShowScrollToBottom(buffer.viewportY < buffer.baseY);
     };
@@ -181,11 +188,8 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
           cwd: currentCwd,
           cols: terminal.cols,
           rows: terminal.rows,
-          shellProfile: paneShellProfile,
-          env:
-            paneMeta?.env ??
-            normalizeEnv(paneMeta?.metadata?.env) ??
-            initialSettingsRef.current.globalEnv,
+          shellProfile: sessionInputRef.current.shellProfile,
+          env: sessionInputRef.current.env ?? initialSettingsRef.current.globalEnv,
         })
         .then(() => {
           sessionReady = null;
@@ -216,7 +220,7 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
     inputControllerRef.current?.dispose();
     inputControllerRef.current = createTerminalInputController({
       terminal,
-      shellProfile: paneShellProfile,
+      shellProfile: sessionInputRef.current.shellProfile,
       readClipboard: readTerminalPastePayload,
       writeClipboardText: (text) => window.swath.clipboard.writeText(text),
       writeTerminalData: writeToSession,
@@ -247,7 +251,13 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
     requestAnimationFrame(() => {
       fitAndResize();
       if (cachedEntry) {
-        restoreTerminalScrollState(cachedEntry);
+        // Restore a frame later: resizing reflows the buffer (moving baseY) and
+        // xterm's own viewport refresh is itself deferred to the next frame.
+        requestAnimationFrame(() => {
+          if (termRef.current !== terminal) return;
+          restoreTerminalScrollState(cachedEntry);
+          updateScrollToBottomButton();
+        });
         terminal.focus();
       } else if (startedSessions.has(paneId)) {
         void terminalClient.replay(paneId);
@@ -365,17 +375,7 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
       fitRef.current = null;
       searchRef.current = null;
     };
-  }, [
-    isActive,
-    paneId,
-    paneMeta?.cwd,
-    paneMeta?.env,
-    paneMeta?.metadata?.cwd,
-    paneMeta?.metadata?.env,
-    paneShellProfile,
-    view.id,
-    workspace.path,
-  ]);
+  }, [isActive, paneId, paneCwd, paneEnvKey, paneShellProfileKey, view.id]);
 
   useEffect(() => {
     const terminal = termRef.current;
@@ -433,7 +433,11 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
     setRunning(true);
     termRef.current?.reset();
     const entry = terminalCache.get(paneId);
-    if (entry) entry.stopped = false;
+    if (entry) {
+      entry.stopped = false;
+      // The reset buffer invalidates any captured anchor; fall back to the bottom.
+      entry.scrollState = undefined;
+    }
     setExited(false);
     void terminalClient.restart(paneId);
   };
@@ -561,8 +565,10 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
         title="Scroll to bottom"
         onMouseDown={(event) => event.preventDefault()}
         onClick={() => {
-          const viewport = hostRef.current?.querySelector<HTMLElement>(".xterm-viewport");
-          viewport?.scrollTo({ top: viewport.scrollHeight, behavior: "smooth" });
+          // Must go through xterm: writing viewport.scrollTop directly round-trips
+          // through a lossy pixel→row conversion that can leave the pane one row
+          // short of the bottom, permanently latching it out of follow mode.
+          termRef.current?.scrollToBottom();
           termRef.current?.focus();
         }}
       >

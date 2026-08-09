@@ -15,6 +15,7 @@ interface FakeTerminalState {
   scrollToBottom: ReturnType<typeof vi.fn>;
   scrollToLine: ReturnType<typeof vi.fn>;
   scrollToTop: ReturnType<typeof vi.fn>;
+  scrollLines: ReturnType<typeof vi.fn>;
 }
 
 /** Create the minimal xterm surface needed by the scroll-state tests. */
@@ -32,6 +33,7 @@ function createEntry(
     scrollToBottom: vi.fn(),
     scrollToLine: vi.fn(),
     scrollToTop: vi.fn(),
+    scrollLines: vi.fn(),
   };
   const xterm = {
     buffer: {
@@ -49,6 +51,7 @@ function createEntry(
     scrollToBottom: terminal.scrollToBottom,
     scrollToLine: terminal.scrollToLine,
     scrollToTop: terminal.scrollToTop,
+    scrollLines: terminal.scrollLines,
   } as unknown as Terminal;
 
   return {
@@ -75,7 +78,7 @@ describe("terminal scroll ownership", () => {
     expect(terminal.scrollToLine).not.toHaveBeenCalled();
   });
 
-  it("restores the same absolute history line after reattachment", () => {
+  it("restores the same bottom-relative history position after reattachment", () => {
     const { entry, terminal } = createEntry(100, 60);
     captureTerminalScrollState(entry);
 
@@ -83,11 +86,12 @@ describe("terminal scroll ownership", () => {
     terminal.viewportY = 120;
     restoreTerminalScrollState(entry);
 
-    expect(terminal.scrollToLine).toHaveBeenCalledWith(60);
-    expect(terminal.scrollToBottom).not.toHaveBeenCalled();
+    // 40 rows above the bottom of a buffer that grew to 120 while detached.
+    expect(terminal.scrollToLine).toHaveBeenCalledWith(80);
+    expect(terminal.scrollToTop).not.toHaveBeenCalled();
   });
 
-  it("restores follow mode only when the detached viewport was exactly at the bottom", () => {
+  it("restores follow mode by scrolling to the live bottom", () => {
     const { entry, terminal } = createEntry(100, 100);
     captureTerminalScrollState(entry);
 
@@ -95,8 +99,36 @@ describe("terminal scroll ownership", () => {
     terminal.viewportY = 0;
     restoreTerminalScrollState(entry);
 
-    expect(terminal.scrollToTop).toHaveBeenCalledOnce();
-    expect(terminal.scrollToBottom).toHaveBeenCalledOnce();
-    expect(terminal.scrollToLine).not.toHaveBeenCalled();
+    expect(terminal.scrollToLine).toHaveBeenCalledWith(120);
+    expect(terminal.scrollToTop).not.toHaveBeenCalled();
+  });
+
+  it("treats a viewport one row short of the bottom as still following", () => {
+    const { entry, terminal } = createEntry(100, 99);
+    captureTerminalScrollState(entry);
+
+    terminal.baseY = 140;
+    restoreTerminalScrollState(entry);
+
+    expect(terminal.scrollToLine).toHaveBeenCalledWith(140);
+  });
+
+  it("defaults to the bottom when no anchor was captured", () => {
+    const { entry, terminal } = createEntry(100, 20);
+
+    restoreTerminalScrollState(entry);
+
+    expect(terminal.scrollToLine).toHaveBeenCalledWith(100);
+  });
+
+  it("nudges the viewport so a reattached element resyncs its scroll offset", () => {
+    const { entry, terminal } = createEntry(100, 100);
+    captureTerminalScrollState(entry);
+
+    // Buffer position is unchanged after reattach, so xterm would skip its DOM sync.
+    restoreTerminalScrollState(entry);
+
+    expect(terminal.scrollLines).toHaveBeenCalledWith(-1);
+    expect(terminal.scrollToLine).toHaveBeenCalledWith(100);
   });
 });

@@ -225,6 +225,22 @@ export function setSplitRatio(
   withConfig((config) => paneActions.setSplitRatio(config, workspaceId, viewId, splitId, ratio));
 }
 
+/** Updates a split ratio in memory only, for drag previews that persist on release. */
+export function previewSplitRatio(
+  workspaceId: string,
+  viewId: string,
+  splitId: string,
+  ratio: number,
+): void {
+  const current = useConfigStore.getState().config;
+  if (!current) return;
+  useConfigStore
+    .getState()
+    .setConfig(
+      paneActions.setSplitRatio(structuredClone(current), workspaceId, viewId, splitId, ratio),
+    );
+}
+
 /** Renames a pane. */
 export function renamePane(
   workspaceId: string,
