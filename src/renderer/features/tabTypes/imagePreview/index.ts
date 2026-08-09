@@ -1,0 +1,1 @@
+export { imagePreviewTabType } from "./imagePreviewTabType";

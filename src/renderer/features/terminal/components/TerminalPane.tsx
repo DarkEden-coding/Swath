@@ -8,6 +8,7 @@ import {
   type MouseEvent,
 } from "react";
 import { FitAddon } from "@xterm/addon-fit";
+import { ImageAddon } from "@xterm/addon-image";
 import { SearchAddon } from "@xterm/addon-search";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { Terminal } from "@xterm/xterm";
@@ -27,7 +28,12 @@ import {
   createTerminalInputController,
   type TerminalInputController,
 } from "../input/terminalInputController";
-import { TERMINAL_SCROLLBACK_LINES } from "../../../../shared/memoryLimits";
+import {
+  IMAGE_ADDON_SEQUENCE_SIZE_LIMIT,
+  IMAGE_ADDON_STORAGE_LIMIT_MB,
+  TERMINAL_SCROLLBACK_LINES,
+} from "../../../../shared/memoryLimits";
+import { parseSwathImageOsc } from "../osc/swathImageOsc";
 import {
   captureTerminalScrollState,
   detachCachedTerminalElement,
@@ -63,7 +69,36 @@ function removeForeignTerminalElements(
   });
 }
 
+/** Creates ImageAddon options with conservative IIP/SIXEL limits from memoryLimits. */
+function createImageAddon(): ImageAddon {
+  return new ImageAddon({
+    enableSizeReports: false,
+    showPlaceholder: true,
+    iipSupport: true,
+    sixelSupport: true,
+    storageLimit: IMAGE_ADDON_STORAGE_LIMIT_MB,
+    iipSizeLimit: IMAGE_ADDON_SEQUENCE_SIZE_LIMIT,
+    sixelSizeLimit: IMAGE_ADDON_SEQUENCE_SIZE_LIMIT,
+  });
+}
+
 /** Render and manage the cached xterm instance for a workspace pane. */
+/**
+ * The grid `fit` proposes, or null when the pane has no usable size.
+ *
+ * `proposeDimensions()` divides by the measured cell size, so a pane that is hidden or mid-layout
+ * yields NaN or Infinity — and `Terminal.resize` throws "This API only accepts integers" on those,
+ * from a ResizeObserver callback where nothing catches it.
+ */
+function fitDimensions(fit: FitAddon): { cols: number; rows: number } | null {
+  const proposed = fit.proposeDimensions();
+  if (!proposed) return null;
+  const cols = Math.floor(proposed.cols - TERMINAL_COL_RESERVE);
+  const rows = Math.floor(proposed.rows);
+  if (!Number.isFinite(cols) || !Number.isFinite(rows)) return null;
+  return { cols: Math.max(2, cols), rows: Math.max(1, rows) };
+}
+
 export function TerminalPane({ workspace, view, pane, settings }: PaneComponentProps): JSX.Element {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<Terminal | null>(null);
@@ -128,7 +163,7 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
     const terminal =
       cachedEntry?.terminal ??
       new Terminal({
-        allowProposedApi: false,
+        allowProposedApi: true,
         convertEol: true,
         cursorBlink: initialSettingsRef.current.cursorBlink,
         cursorStyle: initialSettingsRef.current.cursorStyle,
@@ -140,6 +175,7 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
       });
 
     const fit = cachedEntry?.fit ?? new FitAddon();
+    const image = cachedEntry?.image ?? createImageAddon();
     if (cachedEntry) {
       const terminalElement = terminal.element;
       removeForeignTerminalElements(host, terminalElement);
@@ -148,6 +184,7 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
     } else {
       removeForeignTerminalElements(host, undefined);
       terminal.loadAddon(fit);
+      terminal.loadAddon(image);
       terminal.open(host);
     }
 
@@ -234,12 +271,11 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
 
     const fitAndResize = (): void => {
       if (!termRef.current || !fitRef.current) return;
-      const dimensions = fitRef.current.proposeDimensions();
+      const dimensions = fitDimensions(fitRef.current);
       if (!dimensions) return;
 
-      const cols = Math.max(2, dimensions.cols - TERMINAL_COL_RESERVE);
-      if (terminal.cols !== cols || terminal.rows !== dimensions.rows) {
-        terminal.resize(cols, dimensions.rows);
+      if (terminal.cols !== dimensions.cols || terminal.rows !== dimensions.rows) {
+        terminal.resize(dimensions.cols, dimensions.rows);
       }
       if (startedSessions.has(paneId))
         terminalClient.resize({ sessionId: paneId, cols: terminal.cols, rows: terminal.rows });
@@ -320,10 +356,25 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
         });
 
     if (!cachedEntry) {
+      const oscDisposable = terminal.parser.registerOscHandler(777, (data) => {
+        const parsed = parseSwathImageOsc(data);
+        if (parsed.kind === "ignore") return false;
+        if (parsed.kind === "path") {
+          // Fire-and-forget so the parser is not paused on UI/config work.
+          queueMicrotask(() => {
+            appActions.upsertImagePreviewFromPane(workspace.id, view.id, paneId, parsed.path);
+          });
+        }
+        // Consume matching malformed payloads so they do not leak into the buffer.
+        return true;
+      });
+
       terminalCache.set(paneId, {
         terminal,
         fit,
+        image,
         disposeResources: () => {
+          oscDisposable.dispose();
           disposable?.dispose();
           removeDataListener?.();
           removeExitListener?.();
@@ -375,7 +426,7 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
       fitRef.current = null;
       searchRef.current = null;
     };
-  }, [isActive, paneId, paneCwd, paneEnvKey, paneShellProfileKey, view.id]);
+  }, [isActive, paneId, paneCwd, paneEnvKey, paneShellProfileKey, view.id, workspace.id]);
 
   useEffect(() => {
     const terminal = termRef.current;
@@ -387,11 +438,10 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
     terminal.options.cursorBlink = settings.cursorBlink;
     terminal.options.cursorStyle = settings.cursorStyle;
     requestAnimationFrame(() => {
-      const dimensions = fitRef.current?.proposeDimensions();
+      const dimensions = fitRef.current ? fitDimensions(fitRef.current) : null;
       if (!termRef.current || !dimensions) return;
-      const cols = Math.max(2, dimensions.cols - TERMINAL_COL_RESERVE);
-      if (termRef.current.cols !== cols || termRef.current.rows !== dimensions.rows) {
-        termRef.current.resize(cols, dimensions.rows);
+      if (termRef.current.cols !== dimensions.cols || termRef.current.rows !== dimensions.rows) {
+        termRef.current.resize(dimensions.cols, dimensions.rows);
       }
       if (startedSessions.has(paneId)) {
         terminalClient.resize({

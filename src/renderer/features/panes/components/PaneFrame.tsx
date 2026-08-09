@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import type { PaneKind } from "../../../../shared/types";
+import { ErrorBoundary } from "../../../components/ErrorBoundary";
 import { PaneToolbar } from "./PaneToolbar";
 
 interface PaneFrameProps {
@@ -62,7 +63,7 @@ export function PaneFrame({
         onSplitDown={onSplitDown}
         onClose={onClose}
       />
-      {children}
+      <ErrorBoundary label={`Pane "${title}"`}>{children}</ErrorBoundary>
     </div>
   );
 }

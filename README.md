@@ -140,10 +140,13 @@ Tauri writes artifacts under `src-tauri/target/release/bundle/`.
 src/shared/      Domain types and renderer/backend command contracts
 src/renderer/    React UI split into app, state, services, domain, and features
 src-tauri/       Tauri/Rust backend, commands, PTY, SQLite, git, menu, bundle config
+integrations/pi/ Optional pi coding-agent extensions (e.g. Swath image preview)
 scripts/         Install helpers and tests
 docs/screenshots README screenshots
 public/          Static renderer assets
 ```
+
+Pi users: see [Pi image preview integration](docs/features/pi-image-preview.md) to install `show_image` / `/preview`.
 
 The core persisted model is generic: a `Workspace` owns named `WorkspaceView` records, each view owns a split `LayoutNode` tree, and each leaf is a `PaneLeaf` with a `PaneKind` such as `terminal`. Terminal processes remain runtime-only and are attached to persisted pane IDs when a pane is started.
 

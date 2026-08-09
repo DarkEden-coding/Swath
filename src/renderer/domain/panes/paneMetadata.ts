@@ -55,6 +55,30 @@ const metadata: Record<PaneKind, PaneKindMetadata> = {
       };
     },
   },
+  imagePreview: {
+    kind: "imagePreview",
+    label: "Image Preview",
+    createPaneMeta(_settings, cwd) {
+      return {
+        kind: "imagePreview",
+        cwd,
+        title: "Image Preview",
+        metadata: { cwd, title: "Image Preview" },
+      };
+    },
+  },
+  piAgent: {
+    kind: "piAgent",
+    label: "Pi Agent",
+    createPaneMeta(_settings, cwd) {
+      return {
+        kind: "piAgent",
+        cwd,
+        title: "pi",
+        metadata: { cwd, title: "pi" },
+      };
+    },
+  },
 };
 
 export function getPaneKindMetadata(kind: PaneKind): PaneKindMetadata {

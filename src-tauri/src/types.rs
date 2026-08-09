@@ -114,6 +114,10 @@ pub struct PaneMetadata {
     pub env: Option<serde_json::Value>,
     #[serde(default)]
     pub session_id: Option<String>,
+    #[serde(default)]
+    pub image_path: Option<String>,
+    #[serde(default)]
+    pub image_title: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -250,6 +254,12 @@ pub struct TerminalExitEventPayload {
 pub struct TerminalClipboardPayload {
     pub text: String,
     pub has_image: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_data: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_width: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_height: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

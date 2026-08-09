@@ -241,7 +241,7 @@ export function GitHistorySection({
         <span className="text-[10px]">{commits.length}</span>
       </button>
       {open && (
-        <div className="mt-1 rounded border border-swath-border/50">
+        <div className="mt-1 overflow-hidden rounded-md border border-swath-border/50 bg-gradient-to-b from-white/[0.025] to-transparent shadow-inner">
           {commits.length === 0 ? (
             <p className="px-2 py-3 text-swath-muted">No commits yet.</p>
           ) : (

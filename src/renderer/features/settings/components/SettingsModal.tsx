@@ -1,9 +1,15 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import type { ShellProfile } from "../../../../shared/types";
 import * as appActions from "../../../app/appActions";
 import { useConfigStore } from "../../../state/configStore";
 import { useUiStore } from "../../../state/uiStore";
 import { IconClose } from "../../shell/icons";
+import {
+  clearErrorLog,
+  getErrorLog,
+  subscribeToErrorLog,
+  type ErrorEntry,
+} from "../../../lib/errorLog";
 
 const fieldLabel = "flex flex-col gap-[7px] text-xs font-semibold text-swath-muted";
 
@@ -295,6 +301,8 @@ export function SettingsModal(): JSX.Element | null {
             </button>
           </div>
         </section>
+
+        <DiagnosticsSection />
       </section>
     </div>
   );
@@ -341,4 +349,78 @@ function ShellProfileRow({
 
 function splitArgs(value: string): string[] {
   return value.match(/(?:[^\s"]+|"[^"]*")+/g)?.map((arg) => arg.replace(/^"|"$/g, "")) ?? [];
+}
+
+/**
+ * Warnings recorded this session, newest first.
+ *
+ * Only failures that leave the app unusable interrupt with the crash overlay; everything else is
+ * collected here with the interaction that preceded it, so a warning nobody saw is still
+ * reportable after the fact.
+ */
+function DiagnosticsSection(): JSX.Element {
+  const entries = useSyncExternalStore(subscribeToErrorLog, getErrorLog);
+
+  return (
+    <section className="mt-6 border-t border-swath-border pt-[18px]">
+      <div className="mb-1 flex items-center justify-between gap-2">
+        <h3 className="text-[15px]">Diagnostics</h3>
+        {entries.length > 0 ? (
+          <button type="button" className={secondaryBtn} onClick={clearErrorLog}>
+            Clear
+          </button>
+        ) : null}
+      </div>
+      <p className="mb-3 text-xs text-swath-muted-2">
+        Warnings recorded since Swath started. They are not saved between runs.
+      </p>
+
+      {entries.length === 0 ? (
+        <p className="text-xs text-swath-muted-2">Nothing has gone wrong yet.</p>
+      ) : (
+        <div className="grid gap-2">
+          {entries.map((entry) => (
+            <DiagnosticsRow key={entry.id} entry={entry} />
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function DiagnosticsRow({ entry }: { entry: ErrorEntry }): JSX.Element {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <div className="rounded-2xl border border-swath-border bg-swath-bg p-2.5">
+      <div className="flex items-baseline justify-between gap-2">
+        <strong className={`text-[13px] ${entry.critical ? "text-swath-danger" : ""}`}>
+          {entry.source}
+        </strong>
+        <span className="shrink-0 font-mono text-xs text-swath-muted-2">
+          {new Date(entry.time).toLocaleTimeString()}
+        </span>
+      </div>
+      <div className="mt-0.5 break-words font-mono text-xs text-swath-text">{entry.message}</div>
+      <div className="mt-0.5 text-xs text-swath-muted-2">
+        {entry.context ? `Triggered by: ${entry.context.action}` : "No recent interaction"}
+      </div>
+      {entry.stack ? (
+        <>
+          <button
+            type="button"
+            className="mt-2 text-xs text-swath-accent-strong hover:underline"
+            onClick={() => setOpen((value) => !value)}
+          >
+            {open ? "Hide details" : "Show details"}
+          </button>
+          {open ? (
+            <pre className="mt-1 max-h-56 overflow-auto whitespace-pre-wrap font-mono text-[11px] text-swath-muted-2">
+              {entry.stack}
+            </pre>
+          ) : null}
+        </>
+      ) : null}
+    </div>
+  );
 }

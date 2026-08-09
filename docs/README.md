@@ -9,6 +9,7 @@
 - [Tab system](./features/tab-system.md)
 - [Terminal pane](./features/terminal.md)
 - [Git manager pane](./features/git-manager.md)
+- [Pi image preview integration](./features/pi-image-preview.md)
 - [Maintenance guide](./maintenance.md)
 - [Adding pane and tab types](./adding-pane-types.md)
 

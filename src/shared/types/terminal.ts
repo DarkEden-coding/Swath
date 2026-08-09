@@ -36,6 +36,10 @@ export interface TerminalSessionExitEvent {
 export interface TerminalClipboardPayload {
   text: string;
   hasImage: boolean;
+  /** Base64-encoded RGBA pixels, present when the clipboard contains an image. */
+  imageData?: string;
+  imageWidth?: number;
+  imageHeight?: number;
 }
 
 export interface TerminalPastePermissionStatus {

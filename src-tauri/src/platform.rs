@@ -3,6 +3,7 @@ use crate::types::{
     TerminalPastePermissionStatus,
 };
 use anyhow::{anyhow, Result};
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use tauri::AppHandle;
 use tauri_plugin_clipboard_manager::ClipboardExt;
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
@@ -61,18 +62,14 @@ pub async fn confirm(app: AppHandle, request: ConfirmDialogRequest) -> Result<bo
 }
 
 pub fn read_clipboard_for_terminal(app: AppHandle) -> Result<TerminalClipboardPayload> {
-    if let Ok(text) = app.clipboard().read_text() {
-        if !text.is_empty() {
-            return Ok(TerminalClipboardPayload {
-                text,
-                has_image: false,
-            });
-        }
-    }
-
+    let text = app.clipboard().read_text().unwrap_or_default();
+    let image = app.clipboard().read_image().ok();
     Ok(TerminalClipboardPayload {
-        text: String::new(),
-        has_image: app.clipboard().read_image().is_ok(),
+        text,
+        has_image: image.is_some(),
+        image_data: image.as_ref().map(|image| BASE64.encode(image.rgba())),
+        image_width: image.as_ref().map(|image| image.width()),
+        image_height: image.as_ref().map(|image| image.height()),
     })
 }
 

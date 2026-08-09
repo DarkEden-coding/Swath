@@ -1,5 +1,7 @@
 import type { SwathApi } from "../../shared/ipc/swath";
 import type { GitRpcRequest } from "../../shared/ipc/gitRpc";
+import type { ImageRpcRequest } from "../../shared/ipc/imageRpc";
+import type { PiRpcRequest } from "../../shared/ipc/piRpc";
 import type { AppConfig } from "../../shared/types";
 
 /** Demo configuration used only by Vite's browser development mode. */
@@ -205,6 +207,22 @@ export function createBrowserStubSwath(): SwathApi {
         return { exitCode: 1, stdout: "", stderr: "Unavailable" };
       },
       onData: () => () => {},
+    },
+    image: {
+      rpc: async (request: ImageRpcRequest) => {
+        void request;
+        return {
+          ok: false,
+          error: "Image loading is unavailable in browser development mode",
+        };
+      },
+    },
+    pi: {
+      rpc: async (request: PiRpcRequest) => {
+        void request;
+        return { ok: false, error: "pi is unavailable in browser development mode" };
+      },
+      onEvent: () => () => {},
     },
   };
 }
