@@ -53,7 +53,7 @@ impl PiManager {
     fn spawn(&self, app: &AppHandle, pane_id: &str, cwd: &str, extra_args: &[String]) -> PiResult {
         self.kill(pane_id)?;
 
-        let mut command = Command::new("pi");
+        let mut command = pi_command();
         command
             .arg("--mode")
             .arg("rpc")
@@ -163,6 +163,17 @@ impl PiManager {
             .unwrap_or_default();
         Ok(json!({ "stderr": text }))
     }
+}
+
+/// Builds the platform-appropriate command for the npm-installed pi executable.
+fn pi_command() -> Command {
+    // Windows' CreateProcess does not search PATHEXT, so it cannot resolve npm's extensionless
+    // `pi` shim. Rust handles the explicit batch-file path through cmd.exe.
+    #[cfg(target_os = "windows")]
+    return Command::new("pi.cmd");
+
+    #[cfg(not(target_os = "windows"))]
+    Command::new("pi")
 }
 
 /// The user's real `PATH`, as a login shell reports it.
@@ -450,6 +461,13 @@ mod tests {
         fs::write(dir.join("b.jsonl"), "not json\n").unwrap();
         assert_eq!(list_sessions(&dir).len(), 1);
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Windows must target npm's `.cmd` shim explicitly; CreateProcess does not use PATHEXT.
+    #[test]
+    #[cfg(target_os = "windows")]
+    fn pi_command_uses_the_windows_npm_shim() {
+        assert_eq!(pi_command().get_program(), "pi.cmd");
     }
 
     /// The GUI `PATH` repair has to produce a usable `PATH` on a real machine — a GUI app
