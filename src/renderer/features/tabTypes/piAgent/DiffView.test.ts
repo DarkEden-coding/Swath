@@ -42,7 +42,41 @@ const plainPatch = {
   firstChangedLine: 2,
 };
 
+/** Captured verbatim from `apply_patch`'s `tool_execution_end` (`@heyhuynhgiabuu/pi-diff`). */
+const applyPatchInfo = {
+  _type: "applyPatchInfo",
+  result: {
+    ok: true,
+    applied: [
+      {
+        path: "sample.txt",
+        action: "update",
+        bytes: 42,
+        diff: "  line one\n- line two\n+ line TWO changed\n  line three\n",
+      },
+      { path: "new.txt", action: "add", bytes: 12, newContent: "fresh file\n" },
+    ],
+    errors: [],
+  },
+};
+
 describe("hasDiff", () => {
+  it("detects the apply_patch payload that previously rendered no preview at all", () => {
+    expect(hasDiff(tool(applyPatchInfo))).toBe(true);
+  });
+
+  it("ignores an apply_patch result that applied nothing", () => {
+    expect(
+      hasDiff(tool({ _type: "applyPatchInfo", result: { ok: false, applied: [], errors: [{}] } })),
+    ).toBe(false);
+  });
+
+  it("ignores an applyPatchInfo whose changes carry no path", () => {
+    expect(
+      hasDiff(tool({ _type: "applyPatchInfo", result: { applied: [{ action: "update" }] } })),
+    ).toBe(false);
+  });
+
   it("detects the structured pi-diff payload", () => {
     expect(hasDiff(tool(editInfo))).toBe(true);
   });

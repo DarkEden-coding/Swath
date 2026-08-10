@@ -421,6 +421,53 @@ against a live pi process through the Tauri IPC boundary. Specifically unproven 
 streaming throughput (§3.4), `project_trust` dialogs, and extension widget rendering.
 Run `npm run dev` locally and open a Pi Agent tab to close this gap.
 
+---
+
+## 10. Live tool rendering
+
+Tool cards originally only became informative once the tool *returned*: arguments streamed in as raw
+JSON text, `apply_patch` showed no preview at all, and long-argument tools like `parallel_agents`
+arrived as one unreadable blob. Cards are now driven by their **arguments**, which stream, so they
+fill in as the model writes the call.
+
+Three pieces make that work:
+
+| Piece | File | What it does |
+|---|---|---|
+| Partial-JSON parser | `partialJson.ts` | Recovers the settled fields from a truncated argument buffer. Completes a truncated *string* (that is the value being typed); drops any other incomplete member rather than guessing. |
+| Tool name at `toolcall_start` | `eventReducer.ts` | `toolcall_start` carries no name of its own, but the cumulative `message` beside it already holds the `toolCall` block with `name` set. Reading it there is what lets a card pick its renderer from the first delta instead of waiting for `toolcall_end`. |
+| Tool view registry | `toolViews.tsx` | Maps a tool name to a header label and an argument-driven preview. |
+
+### What each tool shows while generating
+
+- `edit` — the `- old` / `+ new` replacement blocks, growing line by line. No gutter: the edit has not
+  been located in the file yet, so line numbers would be a guess. The numbered `pi-diff` result
+  replaces it on completion.
+- `write` / `create` — the new content as a syntax-highlighted block of additions.
+- `apply_patch` — one section per entry in `changes`, each rendered to suit its action (replacement
+  pair for `update`, whole-file block for `add`, path arrow for `move`).
+- `parallel_agents` — one row per task with its name, model and reasoning level, and its prompt
+  streaming in place.
+- `bash`, `read`, `grep`, `find`, `ls`, the search tools, `todo_web`, `ask_user_questions`,
+  `background_terminal`, `remember` — a header built from the arguments that matter, plus fields.
+- **Everything else** — `genericView` renders any arguments as labelled rows, with a caret on the
+  field currently being written. A new extension tool gets a live structured card for free; adding an
+  entry to `TOOL_VIEWS` is only needed when the generic one looks wrong.
+
+A preview is drawn from a *request*, not a result, so while the tool has not completed it carries a
+dashed left edge (`.pi-tool-preview`) to distinguish it from an applied change.
+
+### Results
+
+`apply_patch` results previously fell through to the generic ANSI card because `DiffView` knew only
+the `editInfo` and baseline-`patch` shapes. It now also reads
+`{ _type: "applyPatchInfo", result: { applied: [...] } }` and renders each file's change, so the tool
+gets the same styled diff as `edit`.
+
+Reading arguments is O(buffer) and a delta re-renders the whole transcript, so `ToolBody` memoises
+the parse on `entry.args` / `entry.partialArgs`. Without it every open card would re-parse on every
+token of every other card.
+
 ### Corrections made during implementation
 
 - The reducer originally accumulated `message_update` deltas from a guessed

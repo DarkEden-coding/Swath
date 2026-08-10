@@ -1,10 +1,12 @@
 /** Native transcript styled after the active `reference-tool-cards` Pi theme. */
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { AnsiText } from "../../../lib/ansi";
 import { Markdown } from "../../../lib/markdown";
 import { DiffView, hasDiff } from "./DiffView";
 import type { PiEntry, PiMessageEntry, PiToolEntry } from "./eventReducer";
+import { readableArgs } from "./partialJson";
+import { resolveToolView } from "./toolViews";
 
 const COLLAPSED_LINES = 8;
 
@@ -38,9 +40,8 @@ function reasoningColor(entry: PiToolEntry): string {
   }
 }
 
-/** Summarises the most useful argument without dumping a whole JSON payload. */
-function argSummary(entry: PiToolEntry): string {
-  const args = entry.args;
+/** Summarises the most useful argument, used as the card's hover title. */
+function argSummary(args: Record<string, unknown> | undefined): string {
   if (!args) return "";
   for (const key of ["command", "path", "file_path", "pattern", "query", "action"]) {
     const value = args[key];
@@ -49,13 +50,9 @@ function argSummary(entry: PiToolEntry): string {
   return "";
 }
 
-/** Human-readable call label for the generic RPC tool renderer. */
-function callLabel(entry: PiToolEntry): string {
-  const summary = argSummary(entry);
-  if (entry.toolName === "bash" && summary) return `$ ${summary}`;
-  if (entry.toolName === "read" && summary) return `→ Read ${summary}`;
-  if (entry.toolName === "edit" && summary) return `✎ Edit ${summary}`;
-  if (entry.toolName === "write" && summary) return `✎ Write ${summary}`;
+/** Header line for a tool whose view supplies no label of its own. */
+function fallbackLabel(entry: PiToolEntry, args: Record<string, unknown> | undefined): string {
+  const summary = argSummary(args);
   return summary ? `${entry.toolName}  ${summary}` : entry.toolName;
 }
 
@@ -66,48 +63,14 @@ function statusLabel(entry: PiToolEntry): string {
   return entry.isError ? "✕ Failed" : "✓ Completed";
 }
 
-/** Shows the requested edit immediately, before the tool returns its authoritative diff. */
-function PlannedEdit({ entry }: { entry: PiToolEntry }): JSX.Element | null {
-  if (entry.toolName !== "edit" || entry.details) return null;
-  const changes = Array.isArray(entry.args?.edits)
-    ? entry.args.edits
-    : entry.args?.oldText !== undefined || entry.args?.newText !== undefined
-      ? [entry.args]
-      : [];
-  if (!changes.length) return null;
-  return (
-    <div className="overflow-x-auto font-mono text-[12px] leading-relaxed">
-      {changes.map((change, index) => {
-        const edit = change as Record<string, unknown>;
-        return (
-          <div key={index} className="border-t border-[var(--pi-border-muted)]">
-            {typeof edit.oldText === "string" ? (
-              <pre className="whitespace-pre-wrap bg-[#2b1417] px-2 text-[var(--pi-red)]">
-                {edit.oldText
-                  .split("\n")
-                  .map((line) => `- ${line}`)
-                  .join("\n")}
-              </pre>
-            ) : null}
-            {typeof edit.newText === "string" ? (
-              <pre className="whitespace-pre-wrap bg-[#12261a] px-2 text-[var(--pi-green)]">
-                {edit.newText
-                  .split("\n")
-                  .map((line) => `+ ${line}`)
-                  .join("\n")}
-              </pre>
-            ) : null}
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
 interface ToolBodyProps {
   entry: PiToolEntry;
 }
 
+/**
+ * The card body: an argument-driven preview that fills in live, superseded by the tool's own diff
+ * once it returns one, plus the output stream.
+ */
 function ToolBody({ entry }: ToolBodyProps): JSX.Element {
   const [expanded, setExpanded] = useState(false);
   const lines = entry.output ? entry.output.replace(/\n$/, "").split("\n") : [];
@@ -115,21 +78,44 @@ function ToolBody({ entry }: ToolBodyProps): JSX.Element {
   const shown = expanded ? lines : lines.slice(0, COLLAPSED_LINES);
   const diff = hasDiff(entry);
 
+  const view = resolveToolView(entry.toolName);
+  // A delta re-renders the whole transcript, so without this every open card would re-parse its
+  // buffer on every token of every other card.
+  const args = useMemo(
+    () => readableArgs(entry),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- these two fields are the whole input
+    [entry.args, entry.partialArgs],
+  );
+  const streaming = entry.phase === "generating";
+  const Preview = view.Preview;
+  const preview =
+    !diff && Preview && args ? <Preview args={args} entry={entry} streaming={streaming} /> : null;
+  const label = (args && view.label?.(args, entry)) || fallbackLabel(entry, args);
+
+  // Once a preview or diff is on screen, the tool's textual summary is redundant noise; keep the
+  // output block for tools that actually stream something worth reading.
+  const showOutput = !diff && (lines.length > 0 || (!preview && !streaming));
+  // Nothing parsed out of the buffer yet — show the raw bytes rather than an empty card.
+  const showRawArgs = streaming && !preview && !diff;
+
   const stateClass = entry.isError ? " is-error" : entry.endedAt === undefined ? " is-running" : "";
 
   return (
     <div className={`pi-tool-inner${stateClass}`}>
-      <div className="pi-tool-call" title={argSummary(entry)}>
-        {callLabel(entry)}
+      <div className="pi-tool-call" title={argSummary(args)}>
+        {label}
+        {streaming ? <span className="pi-streaming-cursor">▍</span> : null}
       </div>
       {diff ? <DiffView entry={entry} /> : null}
-      {!diff ? <PlannedEdit entry={entry} /> : null}
-      {!diff && entry.phase === "generating" ? (
+      {preview ? (
+        <div className={entry.phase === "completed" ? undefined : "pi-tool-preview"}>{preview}</div>
+      ) : null}
+      {showRawArgs ? (
         <pre className="pi-tool-output whitespace-pre-wrap break-all">
           {entry.partialArgs || "Building arguments…"}
         </pre>
       ) : null}
-      {!diff && entry.phase !== "generating" && entry.toolName !== "edit" ? (
+      {showOutput ? (
         <pre className="pi-tool-output">
           {shown.length ? (
             <AnsiText text={shown.join("\n")} />

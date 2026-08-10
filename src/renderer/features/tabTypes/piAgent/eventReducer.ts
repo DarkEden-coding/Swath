@@ -296,6 +296,20 @@ function applyExtensionUi(state: PiPaneState, event: PiExtensionUiRequest): PiPa
   }
 }
 
+/**
+ * The tool name for a streaming call, read from the cumulative message rather than the delta.
+ *
+ * `toolcall_start` carries no name of its own, but the `message` alongside it already holds the
+ * `toolCall` block with `name` populated (verified in `fixtures/turn.jsonl`). Picking it up here is
+ * what lets a tool card choose its per-tool renderer while arguments are still streaming, instead
+ * of waiting for `toolcall_end`.
+ */
+function toolNameAt(message: PiMessage | undefined, index: number): string | undefined {
+  if (!message || message.role !== "assistant") return undefined;
+  const block = contentBlocks(message)[index];
+  return block?.type === "toolCall" && block.name ? block.name : undefined;
+}
+
 /** Applies one current RPC message delta, including tool calls before execution starts. */
 function applyMessageDelta(
   state: PiPaneState,
@@ -330,7 +344,7 @@ function applyMessageDelta(
       kind: "tool",
       id,
       toolCallId: id,
-      toolName: "tool",
+      toolName: toolNameAt(event.message, index) ?? "tool",
       output: "",
       partialArgs: "",
       phase: "generating",
@@ -349,11 +363,14 @@ function applyMessageDelta(
   const provisionalId = state.streamingTools[index];
   if (!provisionalId) return state;
   if (delta.type === "toolcall_delta") {
+    // Providers that withhold the name at `toolcall_start` still fill it in on a later update.
+    const name = toolNameAt(event.message, index);
     return updateEntry(
       state,
       (entry) => entry.kind === "tool" && entry.id === provisionalId,
       (entry) => ({
         ...(entry as PiToolEntry),
+        toolName: name ?? (entry as PiToolEntry).toolName,
         partialArgs: (entry as PiToolEntry).partialArgs + (delta.delta ?? ""),
       }),
     );

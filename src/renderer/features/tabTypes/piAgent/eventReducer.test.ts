@@ -262,6 +262,69 @@ describe("reducePiEvent", () => {
     expect(tools[0]).toMatchObject({ toolCallId: "t1", toolName: "edit", phase: "running" });
   });
 
+  it("learns the tool name from the message at toolcall_start", () => {
+    // Without this the card is called "tool" until `toolcall_end`, so no per-tool preview can be
+    // chosen while the arguments are still streaming.
+    const state = run([
+      { type: "message_start", message: { role: "assistant", content: [] } },
+      {
+        type: "message_update",
+        assistantMessageEvent: { type: "toolcall_start", contentIndex: 0 },
+        message: {
+          role: "assistant",
+          content: [{ type: "toolCall", id: "call_1", name: "edit", arguments: {} }],
+        },
+      },
+    ]);
+    expect(state.entries[1]).toMatchObject({ kind: "tool", toolName: "edit", phase: "generating" });
+  });
+
+  it("picks the tool name up from a later delta when the start event omits it", () => {
+    const state = run([
+      { type: "message_start", message: { role: "assistant", content: [] } },
+      {
+        type: "message_update",
+        assistantMessageEvent: { type: "toolcall_start", contentIndex: 0 },
+      },
+      {
+        type: "message_update",
+        assistantMessageEvent: { type: "toolcall_delta", contentIndex: 0, delta: '{"path":"a' },
+        message: {
+          role: "assistant",
+          content: [{ type: "toolCall", id: "call_1", name: "write", arguments: {} }],
+        },
+      },
+    ]);
+    expect(state.entries[1]).toMatchObject({ toolName: "write", partialArgs: '{"path":"a' });
+  });
+
+  it("names the second streaming call from its own content index", () => {
+    const state = run([
+      { type: "message_start", message: { role: "assistant", content: [] } },
+      {
+        type: "message_update",
+        assistantMessageEvent: { type: "toolcall_start", contentIndex: 0 },
+        message: {
+          role: "assistant",
+          content: [{ type: "toolCall", id: "a", name: "read", arguments: {} }],
+        },
+      },
+      {
+        type: "message_update",
+        assistantMessageEvent: { type: "toolcall_start", contentIndex: 1 },
+        message: {
+          role: "assistant",
+          content: [
+            { type: "toolCall", id: "a", name: "read", arguments: {} },
+            { type: "toolCall", id: "b", name: "grep", arguments: {} },
+          ],
+        },
+      },
+    ]);
+    const tools = state.entries.filter((entry): entry is PiToolEntry => entry.kind === "tool");
+    expect(tools.map((tool) => tool.toolName)).toEqual(["read", "grep"]);
+  });
+
   it("keeps thinking separate from text", () => {
     const state = run([
       { type: "message_start", message: { role: "assistant", content: [] } },
