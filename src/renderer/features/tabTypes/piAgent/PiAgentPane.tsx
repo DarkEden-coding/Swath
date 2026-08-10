@@ -89,13 +89,14 @@ export function PiAgentPane({ workspace, view, pane }: PaneComponentProps): JSX.
       { name: "new", description: "Start a new chat", source: "builtin" },
       { name: "rename", description: "Rename this chat", source: "builtin" },
       { name: "compact", description: "Compact conversation context", source: "builtin" },
+      { name: "reload", description: "Reload pi extensions and resources", source: "builtin" },
       { name: "model", description: "Cycle to the next model", source: "builtin" },
       { name: "thinking", description: "Cycle reasoning level", source: "builtin" },
       { name: "tree", description: "Toggle the session tree", source: "builtin" },
       { name: "resume", description: "Resume a previous chat", source: "builtin" },
       ...state.commands.filter(
         (command) =>
-          !["new", "rename", "compact", "model", "thinking", "tree", "resume"].includes(
+          !["new", "rename", "compact", "reload", "model", "thinking", "tree", "resume"].includes(
             command.name,
           ),
       ),
@@ -108,6 +109,8 @@ export function PiAgentPane({ workspace, view, pane }: PaneComponentProps): JSX.
     const [command, ...args] = message.trim().split(/\s+/);
     if (command === "/new") agent.newSession();
     else if (command === "/compact") agent.compact();
+    // Pi's built-in `/reload` is TUI-only; restarting its RPC child reloads the same resources.
+    else if (command === "/reload") agent.restart();
     else if (command === "/model") agent.cycleModel();
     else if (command === "/thinking") agent.cycleThinking();
     else if (command === "/tree") {
