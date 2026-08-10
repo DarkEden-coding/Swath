@@ -11,6 +11,8 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::{Arc, Mutex};
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
 use tauri::{AppHandle, Emitter};
 
 /// Event channel carrying `{ paneId, line }` stdout records and `{ paneId, exit }` notices.
@@ -170,7 +172,12 @@ fn pi_command() -> Command {
     // Windows' CreateProcess does not search PATHEXT, so it cannot resolve npm's extensionless
     // `pi` shim. Rust handles the explicit batch-file path through cmd.exe.
     #[cfg(target_os = "windows")]
-    return Command::new("pi.cmd");
+    {
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        let mut command = Command::new("pi.cmd");
+        command.creation_flags(CREATE_NO_WINDOW);
+        return command;
+    }
 
     #[cfg(not(target_os = "windows"))]
     Command::new("pi")
