@@ -158,9 +158,5 @@ export function installErrorLog(): void {
     lastInteraction = { action, at: Date.now() };
   };
   window.addEventListener("click", (event) => remember("click", event.target), true);
-  window.addEventListener(
-    "keydown",
-    (event) => remember(`key ${event.key}`, event.target),
-    true,
-  );
+  window.addEventListener("keydown", (event) => remember(`key ${event.key}`, event.target), true);
 }

@@ -9,6 +9,7 @@ import type {
   TerminalSessionStartRequest,
   TerminalSessionStatus,
 } from "../types";
+import type { FilesRpcRequest } from "./filesRpc";
 import type { GitRpcRequest } from "./gitRpc";
 import type { ImageRpcRequest } from "./imageRpc";
 import type { PiRpcRequest } from "./piRpc";
@@ -34,6 +35,7 @@ export const TauriCommands = {
   terminalIsBusy: "terminal_is_busy",
   gitRpc: "git_rpc",
   imageRpc: "image_rpc",
+  filesRpc: "files_rpc",
   piRpc: "pi_rpc",
 } as const;
 
@@ -74,9 +76,14 @@ export interface SwathApi {
   image: {
     rpc(request: ImageRpcRequest): Promise<unknown>;
   };
+  files: {
+    rpc(request: FilesRpcRequest): Promise<unknown>;
+  };
   pi: {
     rpc(request: PiRpcRequest): Promise<unknown>;
     /** Subscribes to stdout lines and exit notices for every pi pane. */
-    onEvent(callback: (paneId: string, line: string | undefined, exited: boolean) => void): () => void;
+    onEvent(
+      callback: (paneId: string, line: string | undefined, exited: boolean) => void,
+    ): () => void;
   };
 }

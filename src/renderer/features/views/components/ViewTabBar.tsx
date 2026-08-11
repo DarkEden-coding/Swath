@@ -4,6 +4,7 @@ import * as appActions from "../../../app/appActions";
 import {
   IconChevronsLeft,
   IconClose,
+  IconFolder,
   IconGitBranch,
   IconImage,
   IconPlus,
@@ -29,6 +30,8 @@ function healthClass(health: ViewHealth | undefined): string {
 function tabTypeIcon(kind: PaneKind): JSX.Element {
   if (kind === "gitManager")
     return <IconGitBranch width={16} height={16} className="block shrink-0 text-swath-accent" />;
+  if (kind === "fileBrowser")
+    return <IconFolder width={16} height={16} className="block shrink-0 text-swath-accent" />;
   if (kind === "imagePreview")
     return <IconImage width={16} height={16} className="block shrink-0 text-swath-accent" />;
   if (kind === "piAgent")

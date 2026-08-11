@@ -2,11 +2,21 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as appActions from "../../../app/appActions";
 import { findPane } from "../../../domain/layout/layoutTree";
 import { useUiStore } from "../../../state/uiStore";
-import { gitClient, type GitLogEntry, type GitRunResult, type GitStatusResult } from "../../../services/gitClient";
+import {
+  gitClient,
+  type GitLogEntry,
+  type GitRunResult,
+  type GitStatusResult,
+} from "../../../services/gitClient";
 import { PaneFrame } from "../../panes/components/PaneFrame";
 import type { PaneComponentProps } from "../../panes/paneTypes";
 import { GitChangesSection, GitHistorySection } from "./GitManagerSections";
-import { changePaths, uniqueSortedPaths, appendGitTerminalText, normalizeGitTerminalText } from "./gitManagerUtils";
+import {
+  changePaths,
+  uniqueSortedPaths,
+  appendGitTerminalText,
+  normalizeGitTerminalText,
+} from "./gitManagerUtils";
 import { useOnClickOutside } from "./useOnClickOutside";
 import {
   IconArrowDown,
@@ -595,9 +605,7 @@ export function GitManagerPane({ workspace, view, pane }: PaneComponentProps): J
               <span className="text-[10px] font-semibold uppercase tracking-wide text-swath-muted">
                 Terminal
               </span>
-              {busy ? (
-                <span className="text-[10px] text-swath-accent">running…</span>
-              ) : null}
+              {busy ? <span className="text-[10px] text-swath-accent">running…</span> : null}
             </div>
             <pre className="m-0 whitespace-pre-wrap break-words">{log}</pre>
           </div>

@@ -1,5 +1,6 @@
 mod commands;
 mod config;
+mod files;
 mod git;
 mod image;
 #[cfg(not(target_os = "windows"))]
@@ -57,6 +58,7 @@ pub fn run() {
             commands::terminal_is_busy,
             commands::git_rpc,
             commands::image_rpc,
+            commands::files_rpc,
             commands::pi_rpc,
         ])
         .build(tauri::generate_context!())

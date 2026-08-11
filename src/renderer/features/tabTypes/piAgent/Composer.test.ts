@@ -29,7 +29,11 @@ describe("image placeholders", () => {
   });
 
   it("caps attachments at the per-message maximum", () => {
-    const many = attachImages("", [], Array.from({ length: 12 }, (_, index) => png(String(index))));
+    const many = attachImages(
+      "",
+      [],
+      Array.from({ length: 12 }, (_, index) => png(String(index))),
+    );
     expect(many.images).toHaveLength(8);
   });
 

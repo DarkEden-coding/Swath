@@ -186,9 +186,7 @@ export function ImagePreviewPane({ workspace, view, pane }: PaneComponentProps):
           {loadState.status === "ready" ? (
             <div
               className={
-                fit
-                  ? "h-full w-full"
-                  : "flex min-h-full min-w-full items-center justify-center p-4"
+                fit ? "h-full w-full" : "flex min-h-full min-w-full items-center justify-center p-4"
               }
             >
               {/* Fit scales by the smaller axis and crops the overflow, so the pane is always

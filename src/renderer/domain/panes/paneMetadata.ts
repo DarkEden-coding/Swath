@@ -67,6 +67,18 @@ const metadata: Record<PaneKind, PaneKindMetadata> = {
       };
     },
   },
+  fileBrowser: {
+    kind: "fileBrowser",
+    label: "Files",
+    createPaneMeta(_settings, cwd) {
+      return {
+        kind: "fileBrowser",
+        cwd,
+        title: "Files",
+        metadata: { cwd, title: "Files" },
+      };
+    },
+  },
   piAgent: {
     kind: "piAgent",
     label: "Pi Agent",

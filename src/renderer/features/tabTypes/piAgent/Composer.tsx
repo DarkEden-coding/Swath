@@ -40,7 +40,8 @@ export function attachImages(
   added: PiImageContent[],
 ): { text: string; images: AttachedImage[] } {
   let counter = images.reduce(
-    (highest, image) => Math.max(highest, Number(/\[Image (\d+)]/.exec(image.placeholder)?.[1] ?? 0)),
+    (highest, image) =>
+      Math.max(highest, Number(/\[Image (\d+)]/.exec(image.placeholder)?.[1] ?? 0)),
     0,
   );
   const attached = added.slice(0, MAX_IMAGES - images.length).map((image) => {

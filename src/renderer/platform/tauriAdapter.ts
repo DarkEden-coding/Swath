@@ -4,6 +4,7 @@ import { IpcChannels } from "../../shared/ipc/channels";
 import { TauriCommands } from "../../shared/ipc/swath";
 import type { SwathApi } from "../../shared/ipc/swath";
 import type { AppConfig } from "../../shared/types";
+import type { FilesRpcRequest } from "../../shared/ipc/filesRpc";
 import type { GitRpcRequest } from "../../shared/ipc/gitRpc";
 import type { ImageRpcRequest } from "../../shared/ipc/imageRpc";
 import type { PiHostEvent, PiRpcRequest } from "../../shared/ipc/piRpc";
@@ -121,6 +122,9 @@ export function createTauriSwath(): SwathApi {
     },
     image: {
       rpc: (request: ImageRpcRequest) => invoke(TauriCommands.imageRpc, { request }),
+    },
+    files: {
+      rpc: (request: FilesRpcRequest) => invoke(TauriCommands.filesRpc, { request }),
     },
     pi: {
       rpc: (request: PiRpcRequest) => invoke(TauriCommands.piRpc, { request }),

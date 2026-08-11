@@ -9,17 +9,17 @@ Status: **implemented.** See §9 for what is built and what remains unverified.
 
 ## 1. Decisions taken
 
-| Question | Decision |
-|---|---|
-| Visual fidelity | Match the TUI design closely, but with real GUI elements — scrollable regions, click-to-expand, selectable text, syntax-highlighted diffs. |
-| Extension coverage | All of them, unified into one UI surface. |
-| Session management | Full tree navigation — resume, fork, clone, visual branch tree. |
-| Process model | Dedicated tab, one `pi --mode rpc` child process per tab, over pipes. |
-| Theming | App's existing theme for chrome; extension content already carries its own ANSI colors. |
-| Composer | Image paste/drag-drop, `@file` mentions with completion, model + thinking switchers. Follow-up only, no steering. |
-| Tool rendering | One generic ANSI card + a diff viewer. Per-tool renderers only where the generic one falls short. |
-| Delivery | Full plan, built straight through. |
-| Libraries | `marked` + `prism-react-renderer`; ANSI parser hand-written. |
+| Question           | Decision                                                                                                                                   |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| Visual fidelity    | Match the TUI design closely, but with real GUI elements — scrollable regions, click-to-expand, selectable text, syntax-highlighted diffs. |
+| Extension coverage | All of them, unified into one UI surface.                                                                                                  |
+| Session management | Full tree navigation — resume, fork, clone, visual branch tree.                                                                            |
+| Process model      | Dedicated tab, one `pi --mode rpc` child process per tab, over pipes.                                                                      |
+| Theming            | App's existing theme for chrome; extension content already carries its own ANSI colors.                                                    |
+| Composer           | Image paste/drag-drop, `@file` mentions with completion, model + thinking switchers. Follow-up only, no steering.                          |
+| Tool rendering     | One generic ANSI card + a diff viewer. Per-tool renderers only where the generic one falls short.                                          |
+| Delivery           | Full plan, built straight through.                                                                                                         |
+| Libraries          | `marked` + `prism-react-renderer`; ANSI parser hand-written.                                                                               |
 
 ---
 
@@ -59,11 +59,11 @@ current config produced exactly the surfaces visible in the reference screenshot
 Two categories:
 
 - **Fire-and-forget** — `notify`, `setStatus`, `setWidget`, `setTitle`, `set_editor_text`.
-  Payloads are ANSI-colored strings. One generic renderer covers every current *and future* extension.
+  Payloads are ANSI-colored strings. One generic renderer covers every current _and future_ extension.
 - **Dialogs** — `select`, `confirm`, `input`, `editor`. Emit a request with an `id` and block until
   we send `extension_ui_response` with a matching `id`. Optional `timeout` auto-resolves agent-side.
 
-### 2.3 What does *not* survive RPC — this is the actual work
+### 2.3 What does _not_ survive RPC — this is the actual work
 
 In RPC mode `ctx.ui.custom()` returns `undefined`, and `setFooter`, `setHeader`,
 `setWorkingMessage`, `setWorkingIndicator`, `setEditorComponent`, `setToolsExpanded` are no-ops.
@@ -78,7 +78,7 @@ be re-implemented natively in React:
 - pi's footer block — `~/.pi/agent (main)`, `↑149k ↓22k R3.7M CH99.4% $1.615 (sub) 50.0%/272k (auto)`,
   `(openai-codex) gpt-5.6-terra • medium`. Rebuilt from `get_state` + `get_session_stats`.
 
-**Verified: structured tool results *do* survive.** `rpc.md` (971–1016) confirms
+**Verified: structured tool results _do_ survive.** `rpc.md` (971–1016) confirms
 `tool_execution_end` serializes `result.details`, so `pi-diff`'s `editInfo`/`multiEditInfo` payload
 reaches the renderer intact — the diff viewer can render from structured data rather than
 reconstructing diffs from `old_string`/`new_string` args.
@@ -112,32 +112,32 @@ The docs' outline is easy to misread here, and the naive reading is wrong:
 
 Scanned `~/.pi/agent/extensions` for TUI-only vs RPC-visible API usage:
 
-| Extension | TUI-only hooks | RPC-visible hooks | Notes |
-|---|---|---|---|
-| `parallel-agents.ts` (55 KB) | 0 | 33 | Centerpiece. Fully drivable over RPC. |
-| `memories.ts` | 1 | 25 | Pure dialogs — see §2.7. |
-| `background-terminals.ts` | 1 | 10 | Widget + tool. |
-| `todo.ts` | 1 | 9 | Pure dialogs — see §2.7. |
-| `clipboard-image-paste.ts` | 0 | 6 | Emits attached-images widget. |
-| `tool-cards.ts` | 0 (patches prototypes) | 6 | Presentation must be re-implemented. |
-| `track-edits.ts` | 0 | 6 | `/open-changes`. |
-| `brave-search.ts` | 1 | 4 | |
-| `context7-search.ts` | 0 | 4 | |
-| `banner-stats.ts` | 0 | 3 | Widget only — free. |
-| `continue.ts` | 0 | 2 | |
-| `exa-search.ts` | 0 | 1 | |
-| `user-query.ts` | 1 | 1 | |
-| `optimize-grep.ts` | 0 | 0 | Transparent. |
+| Extension                    | TUI-only hooks         | RPC-visible hooks | Notes                                 |
+| ---------------------------- | ---------------------- | ----------------- | ------------------------------------- |
+| `parallel-agents.ts` (55 KB) | 0                      | 33                | Centerpiece. Fully drivable over RPC. |
+| `memories.ts`                | 1                      | 25                | Pure dialogs — see §2.7.              |
+| `background-terminals.ts`    | 1                      | 10                | Widget + tool.                        |
+| `todo.ts`                    | 1                      | 9                 | Pure dialogs — see §2.7.              |
+| `clipboard-image-paste.ts`   | 0                      | 6                 | Emits attached-images widget.         |
+| `tool-cards.ts`              | 0 (patches prototypes) | 6                 | Presentation must be re-implemented.  |
+| `track-edits.ts`             | 0                      | 6                 | `/open-changes`.                      |
+| `brave-search.ts`            | 1                      | 4                 |                                       |
+| `context7-search.ts`         | 0                      | 4                 |                                       |
+| `banner-stats.ts`            | 0                      | 3                 | Widget only — free.                   |
+| `continue.ts`                | 0                      | 2                 |                                       |
+| `exa-search.ts`              | 0                      | 1                 |                                       |
+| `user-query.ts`              | 1                      | 1                 |                                       |
+| `optimize-grep.ts`           | 0                      | 0                 | Transparent.                          |
 
 Plus npm packages: `pi-cursor-sdk` (9 commands), `pi-fff` (3), `@heyhuynhgiabuu/pi-pretty`,
 `@heyhuynhgiabuu/pi-diff`, `@netandreus/pi-cursor-provider`.
 
 `get_commands` returns all 25 slash commands with descriptions and source metadata — that response
-*is* the spec for the command palette, so the palette needs no per-extension knowledge.
+_is_ the spec for the command palette, so the palette needs no per-extension knowledge.
 
 ### 2.6 Custom extension tools
 
-Extensions register tools whose *output also needs rendering* — the screenshot's
+Extensions register tools whose _output also needs rendering_ — the screenshot's
 `Added read_results to parallel_agents_control` is a custom tool card, not a built-in. Confirmed
 registered in the current config:
 
@@ -152,10 +152,10 @@ renderers — add one only when a specific tool's output actually looks bad.
 
 Checked what `/memories`, `/todo` and `/parallel-agents` actually call:
 
-| Extension | `ui.*` calls used |
-|---|---|
-| `memories.ts` | 12 `notify`, 3 `setWidget`, 2 `confirm`, 2 `select`, 1 `editor` |
-| `todo.ts` | 3 `notify`, 1 `select`, 1 `input`, 1 `confirm` |
+| Extension            | `ui.*` calls used                                               |
+| -------------------- | --------------------------------------------------------------- |
+| `memories.ts`        | 12 `notify`, 3 `setWidget`, 2 `confirm`, 2 `select`, 1 `editor` |
+| `todo.ts`            | 3 `notify`, 1 `select`, 1 `input`, 1 `confirm`                  |
 | `parallel-agents.ts` | 8 `notify`, 7 `select`, 6 `input`, 5 `setWidget`, 4 `setStatus` |
 
 **Every one of these is RPC-supported.** These extensions are 100% dialogs, widgets and status
@@ -229,7 +229,7 @@ living in this repo that registers a tool (`show_image`) and a command (`/previe
 Swath by writing OSC 777 (`\x1b]777;swath-image=<base64>`) to stdout, which `TerminalPane` picks up
 via `osc/swathImageOsc.ts`.
 
-**That channel does not exist in this pane.** In RPC mode stdout *is* the JSONL protocol stream —
+**That channel does not exist in this pane.** In RPC mode stdout _is_ the JSONL protocol stream —
 writing a raw OSC blob into it injects non-JSON bytes between records and corrupts framing.
 
 It needs no fix, because the same extension already carries the data structurally:
@@ -247,7 +247,7 @@ The OSC path stays for when pi runs in a real terminal pane.
 
 ### 3.4 Streaming: measure first
 
-`message_update` fires at token rate, which *may* saturate Tauri IPC. It also may not. Ship the
+`message_update` fires at token rate, which _may_ saturate Tauri IPC. It also may not. Ship the
 straightforward version: emit every line, replace message content in the store.
 
 If it janks, the fix is ~5 lines renderer-side — buffer deltas in a ref, flush on
@@ -258,13 +258,13 @@ If it janks, the fix is ~5 lines renderer-side — buffer deltas in a ref, flush
 
 Swath owns **presentation only**. Everything else is pi's:
 
-| Swath | pi |
-|---|---|
-| Painting the transcript, cards, diffs, dialogs | Conversation, tools, models, sessions, compaction, retry |
-| Formatting numbers pi computed | Computing them (`get_session_stats`) |
-| Card timing from event timestamps | Emitting the timestamps |
-| `@file` completion UI | Expanding `@path` in the prompt |
-| Process lifecycle; pane id used as the session key | All session state (its own session file) |
+| Swath                                              | pi                                                       |
+| -------------------------------------------------- | -------------------------------------------------------- |
+| Painting the transcript, cards, diffs, dialogs     | Conversation, tools, models, sessions, compaction, retry |
+| Formatting numbers pi computed                     | Computing them (`get_session_stats`)                     |
+| Card timing from event timestamps                  | Emitting the timestamps                                  |
+| `@file` completion UI                              | Expanding `@path` in the prompt                          |
+| Process lifecycle; pane id used as the session key | All session state (its own session file)                 |
 
 New agent functionality goes in a **pi extension**, not in Swath — see §3.3. Extensions are also the
 supported way to reach back into Swath.
@@ -275,8 +275,8 @@ supported way to reach back into Swath.
 
 ### Rust
 
-| File | Purpose |
-|---|---|
+| File                        | Purpose                                                                          |
+| --------------------------- | -------------------------------------------------------------------------------- |
 | `src-tauri/src/pi_agent.rs` | Spawn/kill per pane, stdin writer, stdout line reader, stderr capture. One file. |
 
 Wire into `lib.rs` (state) and `commands.rs` (`pi_rpc`).
@@ -324,7 +324,7 @@ hand-written; only SGR is needed, and no existing dep does it.
 **1 — Pipe.** `pi_agent.rs` spawn/kill + line I/O, `pi_rpc` command, `piRpc.ts` types, `piAgent`
 registered with a pane that dumps raw JSON. Spawn with the **pane's cwd** — it drives AGENTS.md
 discovery and project-local `.pi` extensions. Include a bare `DialogHost` here: `project_trust`
-fires at startup and blocks in an untrusted directory. *Milestone: live event stream in a tab.*
+fires at startup and blocks in an untrusted directory. _Milestone: live event stream in a tab._
 
 **2 — Store + reducer.** `piAgentStore` and pure `eventReducer`: message assembly from
 `message_start/update/end` deltas, tool lifecycle from `tool_execution_*` (replace-on-update, not
@@ -336,7 +336,7 @@ other tool — built-in and extension — uses the generic ANSI body.
 
 **4 — Chrome + dialogs.** `FooterBar` from `get_state` + `get_session_stats`, `WidgetStack`,
 `StatusChips`, styled `DialogHost` with the `extension_ui_response` round-trip and timeout handling.
-*This is the step that makes memories, todo and parallel-agents work — see §2.7.*
+_This is the step that makes memories, todo and parallel-agents work — see §2.7._
 
 **5 — Composer.** Input, image paste/drag-drop → base64 on `prompt`, `@file` completion, slash
 palette from `get_commands`, model + thinking pickers. Sends with
@@ -351,21 +351,21 @@ Then: crash handling (surface stderr, restart), `isBusy`, `closePane` cleanup.
 
 ## 6. Cut from the original plan
 
-| Cut | Why |
-|---|---|
-| `protocol.rs` serde types | Rust forwards opaque lines (§3.1). Survives pi upgrades for free. |
-| `parsePiRpcRequest` validators | No trust boundary; pi validates (§3.2). |
-| Rust-side delta coalescing | Speculative. rAF batching renderer-side if it janks (§3.3). |
-| Transcript virtualization | `content-visibility: auto` first. |
-| ParallelAgents / Todo / Memories panels + side-panel shell | Those extensions are pure dialogs + widgets (§2.7). |
-| `renderers/extensions/` tier (4 files) | Generic ANSI card covers them. Add one when it looks bad. |
-| Separate Bash/Read/Write/MultiEdit renderers | All are "header + monospace body". One component. |
-| `piAgentClient.ts` service | One `invoke` call; lives in the store. |
-| `theme/piTheme.ts` | Extension content already arrives as truecolor ANSI. App theme for chrome. Parse pi's theme only if it visibly clashes. |
-| `export_html` feature work | pi already has the `export_html` command; wire the button, don't build an exporter. |
-| Steering UI | Not wanted. `followUp` only. |
-| `get_entries` timing replay | Live timing comes from event timestamps. Replayed-history chrome is a nicety. |
-| All `pi*` pane metadata, including `piSessionId` | pi's session file persists these; `--session-id <paneId>` reattaches without storing anything. |
+| Cut                                                        | Why                                                                                                                     |
+| ---------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `protocol.rs` serde types                                  | Rust forwards opaque lines (§3.1). Survives pi upgrades for free.                                                       |
+| `parsePiRpcRequest` validators                             | No trust boundary; pi validates (§3.2).                                                                                 |
+| Rust-side delta coalescing                                 | Speculative. rAF batching renderer-side if it janks (§3.3).                                                             |
+| Transcript virtualization                                  | `content-visibility: auto` first.                                                                                       |
+| ParallelAgents / Todo / Memories panels + side-panel shell | Those extensions are pure dialogs + widgets (§2.7).                                                                     |
+| `renderers/extensions/` tier (4 files)                     | Generic ANSI card covers them. Add one when it looks bad.                                                               |
+| Separate Bash/Read/Write/MultiEdit renderers               | All are "header + monospace body". One component.                                                                       |
+| `piAgentClient.ts` service                                 | One `invoke` call; lives in the store.                                                                                  |
+| `theme/piTheme.ts`                                         | Extension content already arrives as truecolor ANSI. App theme for chrome. Parse pi's theme only if it visibly clashes. |
+| `export_html` feature work                                 | pi already has the `export_html` command; wire the button, don't build an exporter.                                     |
+| Steering UI                                                | Not wanted. `followUp` only.                                                                                            |
+| `get_entries` timing replay                                | Live timing comes from event timestamps. Replayed-history chrome is a nicety.                                           |
+| All `pi*` pane metadata, including `piSessionId`           | pi's session file persists these; `--session-id <paneId>` reattaches without storing anything.                          |
 
 Files: 24 → 13. Rust files: 2 → 1.
 
@@ -373,14 +373,14 @@ Files: 24 → 13. Rust files: 2 → 1.
 
 ## 7. Risks
 
-| Risk | Mitigation |
-|---|---|
-| Tool card fidelity drifts from the TUI | `tool-cards.ts` is the reference implementation; port its layout rather than eyeballing the screenshot. |
-| Streaming throughput | Measure, then §3.3. |
-| pi version drift | Rust is protocol-agnostic; renderer asserts on `get_state` shape at startup and shows a clear error. |
-| `pi` not on PATH | Detect at spawn, actionable empty state. |
-| `project_trust` blocks startup | Bare `DialogHost` ships in step 1. |
-| Concurrent TUI pi on the same session file | GUI is owner; warn on `session_info_changed`. |
+| Risk                                       | Mitigation                                                                                              |
+| ------------------------------------------ | ------------------------------------------------------------------------------------------------------- |
+| Tool card fidelity drifts from the TUI     | `tool-cards.ts` is the reference implementation; port its layout rather than eyeballing the screenshot. |
+| Streaming throughput                       | Measure, then §3.3.                                                                                     |
+| pi version drift                           | Rust is protocol-agnostic; renderer asserts on `get_state` shape at startup and shows a clear error.    |
+| `pi` not on PATH                           | Detect at spawn, actionable empty state.                                                                |
+| `project_trust` blocks startup             | Bare `DialogHost` ships in step 1.                                                                      |
+| Concurrent TUI pi on the same session file | GUI is owner; warn on `session_info_changed`.                                                           |
 
 ## 8. Open items
 
@@ -389,21 +389,22 @@ Files: 24 → 13. Rust files: 2 → 1.
   to a plain file walk.
 
 ---
+
 ## 9. Implementation status
 
 **Complete.** All planned steps are built.
 
-| Step | What landed |
-|---|---|
-| 1 — Pipe | `src-tauri/src/pi_agent.rs`: spawn/send/kill/stderr + a bounded file walk for `@` completion, one thread per stream, stdout lines forwarded verbatim. `pi_rpc` command, `pi:rpc`/`pi:event` channels, `piRpc.ts` types, `piAgent` registered in `paneKinds`, registry, `paneMetadata` and `ViewTabBar`. `std::process` + threads; no tokio. |
-| 2 — Store + reducer | `eventReducer.ts` (pure, no module-level mutable state) and `usePiAgent.ts` (`useReducer`). Validated against a real captured turn. |
-| 2b — Session reattach | Spawns with `--session-id <paneId>` and hydrates from `get_messages`; history rebuilds tool cards from `toolCall` blocks + `toolResult` messages, since `tool_execution_*` is not replayed. |
-| 3 — Transcript | `lib/ansi.tsx` SGR parser, `lib/markdown.tsx` (marked tokens → React, no `dangerouslySetInnerHTML`), `prism-react-renderer` highlighting, tool cards with click-to-expand, collapsible thinking, streaming cursor. |
-| 4 — Diffs | `DiffView.tsx` handles both real payload shapes: structured `pi-diff` `editInfo` and baseline `patch`. |
-| 5 — Chrome + dialogs | `DialogHost` (select/confirm/input/editor), widget stacks above and below the composer, status chips, and a footer with token/cost/context stats plus model and thinking pickers. |
-| 6 — Composer | Image paste and drag-drop, `@file` completion, `/command` palette from `get_commands`, Enter to send, follow-up queueing while streaming. |
-| 7 — Sessions | New, rename, compact, and a `SessionTree` panel from `get_tree` with fork. |
-| 8 — `show_image` | The pane watches `tool_execution_end` for `show_image` and opens an `imagePreview` pane from `result.details.path` (§3.3). |
+| Step                  | What landed                                                                                                                                                                                                                                                                                                                                 |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1 — Pipe              | `src-tauri/src/pi_agent.rs`: spawn/send/kill/stderr + a bounded file walk for `@` completion, one thread per stream, stdout lines forwarded verbatim. `pi_rpc` command, `pi:rpc`/`pi:event` channels, `piRpc.ts` types, `piAgent` registered in `paneKinds`, registry, `paneMetadata` and `ViewTabBar`. `std::process` + threads; no tokio. |
+| 2 — Store + reducer   | `eventReducer.ts` (pure, no module-level mutable state) and `usePiAgent.ts` (`useReducer`). Validated against a real captured turn.                                                                                                                                                                                                         |
+| 2b — Session reattach | Spawns with `--session-id <paneId>` and hydrates from `get_messages`; history rebuilds tool cards from `toolCall` blocks + `toolResult` messages, since `tool_execution_*` is not replayed.                                                                                                                                                 |
+| 3 — Transcript        | `lib/ansi.tsx` SGR parser, `lib/markdown.tsx` (marked tokens → React, no `dangerouslySetInnerHTML`), `prism-react-renderer` highlighting, tool cards with click-to-expand, collapsible thinking, streaming cursor.                                                                                                                          |
+| 4 — Diffs             | `DiffView.tsx` handles both real payload shapes: structured `pi-diff` `editInfo` and baseline `patch`.                                                                                                                                                                                                                                      |
+| 5 — Chrome + dialogs  | `DialogHost` (select/confirm/input/editor), widget stacks above and below the composer, status chips, and a footer with token/cost/context stats plus model and thinking pickers.                                                                                                                                                           |
+| 6 — Composer          | Image paste and drag-drop, `@file` completion, `/command` palette from `get_commands`, Enter to send, follow-up queueing while streaming.                                                                                                                                                                                                   |
+| 7 — Sessions          | New, rename, compact, and a `SessionTree` panel from `get_tree` with fork.                                                                                                                                                                                                                                                                  |
+| 8 — `show_image`      | The pane watches `tool_execution_end` for `show_image` and opens an `imagePreview` pane from `result.details.path` (§3.3).                                                                                                                                                                                                                  |
 
 Checks: `tsc --noEmit` clean, `eslint --max-warnings=0` clean, **87 tests**, `vite build` and
 `cargo check` clean.
