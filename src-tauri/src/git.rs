@@ -1,5 +1,6 @@
 use crate::types::{GitDataEvent, GIT_RUN_MAX_BUFFER_BYTES};
 use serde_json::{json, Value};
+use std::collections::HashSet;
 use std::error::Error;
 use std::io::Read;
 use std::process::{Command, Stdio};
@@ -302,6 +303,11 @@ fn get_log(cwd: &str) -> Value {
     if run_git(cwd, &["rev-parse", "-q", "--verify", "HEAD"], None).exit_code != 0 {
         return json!({ "ok": true, "commits": [] });
     }
+    let remote_only: HashSet<String> = run_git(cwd, &["rev-list", "HEAD..@{upstream}"], None)
+        .stdout
+        .lines()
+        .map(str::to_owned)
+        .collect();
     let fmt = format!("--pretty=format:%H{RS}%P{RS}%h{RS}%s{RS}%an{RS}%cr{RS}%D");
     let r = run_git(
         cwd,
@@ -339,7 +345,7 @@ fn get_log(cwd: &str) -> Value {
             .split_whitespace()
             .filter(|p| p.len() == 40 && p.chars().all(|c| c.is_ascii_hexdigit()))
             .collect();
-        commits.push(json!({ "graph": graph, "hash": parts[0], "parents": parents, "short": parts[2], "subject": parts[3], "author": parts[4], "date": parts[5], "refs": parts[6] }));
+        commits.push(json!({ "graph": graph, "hash": parts[0], "parents": parents, "short": parts[2], "subject": parts[3], "author": parts[4], "date": parts[5], "refs": parts[6], "remoteOnly": remote_only.contains(parts[0]) }));
     }
     json!({ "ok": true, "commits": commits })
 }

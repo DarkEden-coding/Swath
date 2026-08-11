@@ -34,6 +34,7 @@ export interface GitLogEntry {
   author: string;
   date: string;
   refs: string;
+  remoteOnly: boolean;
 }
 
 export interface GitLogResult {
@@ -124,6 +125,7 @@ function parseLog(raw: unknown): GitLogResult {
         author: typeof row.author === "string" ? row.author : "",
         date: typeof row.date === "string" ? row.date : "",
         refs: typeof row.refs === "string" ? row.refs : "",
+        remoteOnly: row.remoteOnly === true,
       });
     }
   }

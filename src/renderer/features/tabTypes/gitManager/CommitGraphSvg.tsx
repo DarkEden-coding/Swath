@@ -20,6 +20,7 @@ interface GraphPath {
   toCol: number;
   fromRow: number;
   toRow: number;
+  remoteOnly: boolean;
 }
 
 interface GraphNode {
@@ -27,6 +28,7 @@ interface GraphNode {
   col: number;
   row: number;
   merge: boolean;
+  remoteOnly: boolean;
 }
 
 export interface CommitGraphLayout {
@@ -45,6 +47,9 @@ export function buildCommitGraphLayout(commits: readonly GitLogEntry[]): CommitG
   const paths: GraphPath[] = [];
   const nodes: GraphNode[] = [];
   let cols = 1;
+  const remoteHashes = new Set(
+    commits.filter((commit) => commit.remoteOnly).map((commit) => commit.hash),
+  );
 
   commits.forEach((commit, row) => {
     let col = lanes.indexOf(commit.hash);
@@ -54,7 +59,13 @@ export function buildCommitGraphLayout(commits: readonly GitLogEntry[]): CommitG
     }
 
     const parents = uniqueParents(commit.parents);
-    nodes.push({ key: `cg-node-${commit.hash}`, col, row, merge: parents.length > 1 });
+    nodes.push({
+      key: `cg-node-${commit.hash}`,
+      col,
+      row,
+      merge: parents.length > 1,
+      remoteOnly: commit.remoteOnly,
+    });
 
     const nextLanes = [...lanes];
     if (parents.length === 0) {
@@ -75,6 +86,7 @@ export function buildCommitGraphLayout(commits: readonly GitLogEntry[]): CommitG
           toCol: parentCol,
           fromRow: row,
           toRow: row + 1,
+          remoteOnly: commit.remoteOnly,
         });
       });
     }
@@ -89,6 +101,7 @@ export function buildCommitGraphLayout(commits: readonly GitLogEntry[]): CommitG
         toCol: nextCol,
         fromRow: row,
         toRow: row + 1,
+        remoteOnly: remoteHashes.has(hash),
       });
     });
 
@@ -172,6 +185,7 @@ export function CommitGraphSvg({
               stroke={`url(#${gradientPrefix}-path-${index})`}
               strokeWidth={8}
               strokeLinecap="round"
+              opacity={path.remoteOnly ? 0 : 1}
             />
           );
         })}
@@ -192,8 +206,9 @@ export function CommitGraphSvg({
               key={path.key}
               d={d}
               fill="none"
-              stroke={`url(#${gradientPrefix}-path-${index})`}
-              strokeWidth={strokeW}
+              stroke={path.remoteOnly ? "#8d939c" : `url(#${gradientPrefix}-path-${index})`}
+              strokeWidth={path.remoteOnly ? 2 : strokeW}
+              strokeDasharray={path.remoteOnly ? "2 5" : undefined}
               strokeLinecap="round"
               strokeLinejoin="round"
             />
@@ -214,7 +229,11 @@ export function CommitGraphSvg({
               cx={xForCol(node.col)}
               cy={yForRow(node.row)}
               r={node.merge ? 5.7 : 4.7}
-              fill={`url(#${gradientPrefix}-node-${node.col % LANE_STROKES.length})`}
+              fill={
+                node.remoteOnly
+                  ? "#8d939c"
+                  : `url(#${gradientPrefix}-node-${node.col % LANE_STROKES.length})`
+              }
               stroke="#0d1117"
               strokeWidth="2"
             />
