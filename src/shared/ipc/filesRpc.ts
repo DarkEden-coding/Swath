@@ -4,6 +4,7 @@
  */
 export type FilesRpcRequest =
   | { op: "list"; cwd: string; path: string }
+  | { op: "readText"; cwd: string; path: string }
   | { op: "rename"; cwd: string; from: string; to: string }
   | { op: "trash"; cwd: string; path: string };
 
@@ -35,7 +36,7 @@ export function parseFilesRpcRequest(raw: unknown): FilesRpcRequest | null {
   if (!isRecord(raw)) return null;
   const cwd = stringField(raw, "cwd")?.trim();
   if (!cwd) return null;
-  if (raw.op === "list" || raw.op === "trash") {
+  if (raw.op === "list" || raw.op === "readText" || raw.op === "trash") {
     const path = stringField(raw, "path");
     if (path === null) return null;
     return { op: raw.op, cwd, path: path.trim() };

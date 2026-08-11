@@ -3,6 +3,7 @@ import {
   baseName,
   canDropInto,
   isImagePath,
+  isMarkdownPath,
   isValidName,
   joinPath,
   parentPath,
@@ -46,10 +47,13 @@ describe("isValidName", () => {
   });
 });
 
-describe("isImagePath", () => {
-  it("matches previewable extensions only", () => {
+describe("previewable paths", () => {
+  it("matches supported image and Markdown extensions", () => {
     expect(isImagePath("assets/logo.PNG")).toBe(true);
     expect(isImagePath("notes.md")).toBe(false);
+    expect(isMarkdownPath("README.md")).toBe(true);
+    expect(isMarkdownPath("docs/guide.MARKDOWN")).toBe(true);
+    expect(isMarkdownPath("notes.txt")).toBe(false);
     expect(isImagePath(".gitignore")).toBe(false);
   });
 });

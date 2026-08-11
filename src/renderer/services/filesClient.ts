@@ -24,6 +24,15 @@ export async function listDir(cwd: string, path: string): Promise<FilesEntry[]> 
   return success.entries;
 }
 
+/** Reads a UTF-8 text file relative to `cwd`. */
+export async function readTextFile(cwd: string, path: string): Promise<string> {
+  const raw = await filesRpc({ op: "readText", cwd, path });
+  if (!isRecord(raw) || raw.ok !== true || typeof raw.text !== "string") {
+    throw errorFrom(raw, "Unable to read file");
+  }
+  return raw.text;
+}
+
 /** Moves or renames an entry; both paths are relative to `cwd`. */
 export async function renameEntry(cwd: string, from: string, to: string): Promise<void> {
   const raw = await filesRpc({ op: "rename", cwd, from, to });
@@ -38,6 +47,7 @@ export async function trashEntry(cwd: string, path: string): Promise<void> {
 
 export const filesClient = {
   list: listDir,
+  readText: readTextFile,
   rename: renameEntry,
   trash: trashEntry,
 };

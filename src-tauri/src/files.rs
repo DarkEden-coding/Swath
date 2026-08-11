@@ -8,6 +8,8 @@ use serde_json::{json, Value};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+const TEXT_MAX_BYTES: u64 = 2 * 1024 * 1024;
+
 type FilesResult = Result<Value, String>;
 
 /// Dispatches a JSON files RPC request.
@@ -19,6 +21,7 @@ pub fn rpc(request: Value) -> FilesResult {
         .trim();
     match op {
         "list" => list_dir(&request),
+        "readText" => read_text(&request),
         "rename" => rename_entry(&request),
         "trash" => trash_entry(&request),
         "" => Err("Invalid files request: missing op".into()),
@@ -148,6 +151,21 @@ fn list_dir(request: &Value) -> FilesResult {
     Ok(json!({ "ok": true, "path": relative, "entries": entries }))
 }
 
+/// Reads a bounded UTF-8 text file under the workspace root.
+fn read_text(request: &Value) -> FilesResult {
+    let root = canonical_root(field(request, "cwd"))?;
+    let path = resolve_existing(&root, field(request, "path"))?;
+    let meta = fs::metadata(&path).map_err(|err| format!("Unable to read file metadata: {err}"))?;
+    if !meta.is_file() {
+        return Err("Path is not a file".into());
+    }
+    if meta.len() > TEXT_MAX_BYTES {
+        return Err("File exceeds 2 MiB preview limit".into());
+    }
+    let text = fs::read_to_string(path).map_err(|err| format!("Unable to read UTF-8 file: {err}"))?;
+    Ok(json!({ "ok": true, "text": text }))
+}
+
 /// Renames or moves an entry; both endpoints are containment-checked.
 fn rename_entry(request: &Value) -> FilesResult {
     let root = canonical_root(field(request, "cwd"))?;
@@ -208,6 +226,20 @@ mod tests {
         assert_eq!(entries[0]["isDir"], true);
         assert_eq!(entries[1]["name"], "a.txt");
         assert_eq!(entries[1]["isDir"], false);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn reads_utf8_text_files() {
+        let dir = temp_dir("read-text");
+        fs::write(dir.join("README.md"), "# Hello").unwrap();
+        let response = rpc(json!({
+            "op": "readText",
+            "cwd": dir.to_string_lossy(),
+            "path": "README.md"
+        }))
+        .unwrap();
+        assert_eq!(response["text"], "# Hello");
         let _ = fs::remove_dir_all(dir);
     }
 

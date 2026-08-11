@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useState, type DragEvent } from "react";
-import type { FilesEntry } from "../../../../shared/ipc";
+import { isLoadedAskImage, parseAskImagesResponse, type FilesEntry } from "../../../../shared/ipc";
 import * as appActions from "../../../app/appActions";
 import { findPane } from "../../../domain/layout/layoutTree";
 import { dialogClient } from "../../../services/dialogClient";
 import { filesClient } from "../../../services/filesClient";
+import { Markdown } from "../../../lib/markdown";
 import { useUiStore } from "../../../state/uiStore";
 import { PaneFrame } from "../../panes/components/PaneFrame";
 import type { PaneComponentProps } from "../../panes/paneTypes";
@@ -15,11 +16,24 @@ import {
   IconRefresh,
   IconTrash,
 } from "../../shell/icons";
-import { baseName, canDropInto, isValidName, joinPath, parentPath } from "./fileBrowserUtils";
+import {
+  baseName,
+  canDropInto,
+  isImagePath,
+  isMarkdownPath,
+  isValidName,
+  joinPath,
+  parentPath,
+} from "./fileBrowserUtils";
 
 const ROOT = "";
 
 type DirEntries = Record<string, FilesEntry[]>;
+type Preview =
+  | { status: "loading"; path: string }
+  | { status: "image"; path: string; dataUrl: string }
+  | { status: "markdown"; path: string; text: string }
+  | { status: "error"; path: string; message: string };
 
 /**
  * Workspace-rooted file tree with rename, drag-to-move, and trash. All paths are
@@ -41,6 +55,7 @@ export function FileBrowserPane({ workspace, view, pane }: PaneComponentProps): 
   const [dropDir, setDropDir] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [preview, setPreview] = useState<Preview | null>(null);
 
   /** Reloads the given directories, dropping any that no longer resolve. */
   const loadDirs = useCallback(
@@ -131,9 +146,39 @@ export function FileBrowserPane({ workspace, view, pane }: PaneComponentProps): 
     await mutate(() => filesClient.trash(cwd, path), [parentPath(path)]);
   };
 
-  // Files have no in-app viewer since the image preview pane was removed; only dirs expand.
+  /** Opens directories and previews supported files in this pane. */
   const openEntry = (entry: FilesEntry): void => {
-    if (entry.isDir) toggleDir(entry.path);
+    if (entry.isDir) {
+      toggleDir(entry.path);
+      return;
+    }
+    if (!isImagePath(entry.path) && !isMarkdownPath(entry.path)) return;
+
+    setPreview({ status: "loading", path: entry.path });
+    const load = isImagePath(entry.path)
+      ? window.swath.askImages.load({ cwd, paths: [entry.path] }).then((raw) => {
+          const image = parseAskImagesResponse(raw)?.[0];
+          if (!image || !isLoadedAskImage(image)) {
+            throw new Error(image?.error || "Unable to load image");
+          }
+          return { status: "image", path: entry.path, dataUrl: image.dataUrl } as const;
+        })
+      : filesClient
+          .readText(cwd, entry.path)
+          .then((text) => ({ status: "markdown", path: entry.path, text }) as const);
+    void load
+      .then((result) => setPreview((current) => (current?.path === entry.path ? result : current)))
+      .catch((loadError: unknown) =>
+        setPreview((current) =>
+          current?.path === entry.path
+            ? {
+                status: "error",
+                path: entry.path,
+                message: loadError instanceof Error ? loadError.message : String(loadError),
+              }
+            : current,
+        ),
+      );
   };
 
   const dropHandlers = (
@@ -184,8 +229,11 @@ export function FileBrowserPane({ workspace, view, pane }: PaneComponentProps): 
             setDropDir(null);
           }}
           {...(entry.isDir ? dropHandlers(entry.path) : {})}
-          onClick={() => setSelected(entry.path)}
-          onDoubleClick={() => openEntry(entry)}
+          onClick={() => {
+            setSelected(entry.path);
+            if (!entry.isDir) openEntry(entry);
+          }}
+          onDoubleClick={() => entry.isDir && openEntry(entry)}
         >
           {entry.isDir ? (
             <button
@@ -292,12 +340,38 @@ export function FileBrowserPane({ workspace, view, pane }: PaneComponentProps): 
             {error}
           </div>
         ) : null}
-        <div className="min-h-0 flex-1 overflow-auto py-1" {...dropHandlers(ROOT)}>
-          {(entries[ROOT] ?? []).length === 0 && !error ? (
-            <div className="px-3 py-2 text-[12px] text-swath-muted">This folder is empty.</div>
-          ) : (
-            renderRows(ROOT, 0)
-          )}
+        <div className="flex min-h-0 flex-1">
+          <div
+            className={`${preview ? "w-72 shrink-0 border-r border-swath-border" : "flex-1"} overflow-auto py-1`}
+            {...dropHandlers(ROOT)}
+          >
+            {(entries[ROOT] ?? []).length === 0 && !error ? (
+              <div className="px-3 py-2 text-[12px] text-swath-muted">This folder is empty.</div>
+            ) : (
+              renderRows(ROOT, 0)
+            )}
+          </div>
+          {preview ? (
+            <div className="pi-agent min-w-0 flex-1 overflow-auto bg-swath-bg p-4">
+              {preview.status === "loading" ? (
+                <div className="grid h-full place-items-center text-swath-muted">Loading…</div>
+              ) : null}
+              {preview.status === "error" ? (
+                <div className="grid h-full place-items-center text-center text-swath-warn">
+                  {preview.message}
+                </div>
+              ) : null}
+              {preview.status === "image" ? (
+                <img
+                  src={preview.dataUrl}
+                  alt={baseName(preview.path)}
+                  className="h-full w-full object-contain"
+                  draggable={false}
+                />
+              ) : null}
+              {preview.status === "markdown" ? <Markdown text={preview.text} /> : null}
+            </div>
+          ) : null}
         </div>
       </div>
     </PaneFrame>

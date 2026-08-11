@@ -4,6 +4,7 @@
  */
 
 const IMAGE_EXTENSIONS = new Set(["png", "jpg", "jpeg", "gif", "webp"]);
+const MARKDOWN_EXTENSIONS = new Set(["md", "markdown"]);
 
 /** Joins a parent directory and a leaf name into a relative path. */
 export function joinPath(parent: string, name: string): string {
@@ -43,9 +44,19 @@ export function isValidName(name: string): boolean {
   return trimmed !== "" && trimmed !== "." && trimmed !== ".." && !/[/\\]/.test(trimmed);
 }
 
-/** True when the file can be shown in the image preview tab. */
-export function isImagePath(path: string): boolean {
+/** Returns the lower-case extension of a file path. */
+function extension(path: string): string {
   const name = baseName(path);
   const dot = name.lastIndexOf(".");
-  return dot > 0 && IMAGE_EXTENSIONS.has(name.slice(dot + 1).toLowerCase());
+  return dot > 0 ? name.slice(dot + 1).toLowerCase() : "";
+}
+
+/** True when the file can be shown as an image. */
+export function isImagePath(path: string): boolean {
+  return IMAGE_EXTENSIONS.has(extension(path));
+}
+
+/** True when the file can be rendered as Markdown. */
+export function isMarkdownPath(path: string): boolean {
+  return MARKDOWN_EXTENSIONS.has(extension(path));
 }
