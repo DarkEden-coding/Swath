@@ -1,7 +1,7 @@
+mod ask_images;
 mod commands;
 mod config;
 mod git;
-mod image;
 #[cfg(not(target_os = "windows"))]
 mod menu;
 mod pi_agent;
@@ -56,7 +56,7 @@ pub fn run() {
             commands::terminal_set_streaming,
             commands::terminal_is_busy,
             commands::git_rpc,
-            commands::image_rpc,
+            commands::ask_images_load,
             commands::pi_rpc,
         ])
         .build(tauri::generate_context!())

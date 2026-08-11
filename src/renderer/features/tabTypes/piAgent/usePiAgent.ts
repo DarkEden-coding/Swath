@@ -77,16 +77,7 @@ export interface PiAgentController {
   dismissNotice: (id: string) => void;
 }
 
-/**
- * @param onShowImage called when the agent runs the Swath `show_image` tool. In RPC mode the
- * extension's OSC 777 channel is unavailable (stdout carries the protocol), so the path is read
- * from the tool result's `details` instead.
- */
-export function usePiAgent(
-  paneId: string,
-  cwd: string | undefined,
-  onShowImage?: (path: string) => void,
-): PiAgentController {
+export function usePiAgent(paneId: string, cwd: string | undefined): PiAgentController {
   const [state, dispatch] = useReducer(
     reducer,
     paneId,
@@ -164,11 +155,9 @@ export function usePiAgent(
     void window.swath.pi.rpc({ op: "kill", paneId }).finally(spawn);
   }, [paneId, spawn]);
 
-  // Kept in refs so the subscription is created once per pane rather than on every render.
-  const showImageRef = useRef(onShowImage);
+  // Kept in a ref so the subscription is created once per pane rather than on every render.
   const sendRef = useRef(send);
   useEffect(() => {
-    showImageRef.current = onShowImage;
     sendRef.current = send;
   });
 
@@ -196,13 +185,6 @@ export function usePiAgent(
 
       const event = parsePiLine(line);
       if (!event) return;
-
-      // Swath integration tools signal through result.details, not OSC — see
-      // docs/features/pi-agent-pane.md §3.3.
-      if (event.type === "tool_execution_end" && event.toolName === "show_image") {
-        const path = event.result?.details?.path;
-        if (typeof path === "string" && path) showImageRef.current?.(path);
-      }
 
       // Session replacement rebinds extensions before the response arrives. Do not reset here:
       // that would erase the replacement session's freshly emitted widgets and model list.

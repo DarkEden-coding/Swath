@@ -1,6 +1,6 @@
 import type { SwathApi } from "../../shared/ipc/swath";
 import type { GitRpcRequest } from "../../shared/ipc/gitRpc";
-import type { ImageRpcRequest } from "../../shared/ipc/imageRpc";
+import type { AskImagesRequest } from "../../shared/ipc/askImages";
 import type { PiRpcRequest } from "../../shared/ipc/piRpc";
 import type { AppConfig } from "../../shared/types";
 
@@ -208,14 +208,13 @@ export function createBrowserStubSwath(): SwathApi {
       },
       onData: () => () => {},
     },
-    image: {
-      rpc: async (request: ImageRpcRequest) => {
-        void request;
-        return {
-          ok: false,
+    askImages: {
+      load: async (request: AskImagesRequest) => ({
+        images: request.paths.map((path) => ({
+          path,
           error: "Image loading is unavailable in browser development mode",
-        };
-      },
+        })),
+      }),
     },
     pi: {
       rpc: async (request: PiRpcRequest) => {

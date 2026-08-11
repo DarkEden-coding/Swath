@@ -7,10 +7,14 @@
  */
 
 import { useState } from "react";
+import { AskQuestionsDialog } from "./AskQuestionsDialog";
+import { parseAskQuestionsTitle } from "./askQuestions";
 import type { PiDialog } from "./eventReducer";
 
 interface DialogHostProps {
   dialog: PiDialog | undefined;
+  /** Workspace directory, used to resolve images attached to `ask_user_questions`. */
+  cwd: string;
   onAnswer: (
     id: string,
     response: { value?: string; confirmed?: boolean; cancelled?: true },
@@ -21,13 +25,27 @@ interface DialogHostProps {
  * Callers must pass `key={dialog?.id}` so each dialog gets a fresh draft rather than
  * inheriting the previous one's text.
  */
-export function DialogHost({ dialog, onAnswer }: DialogHostProps): JSX.Element | null {
+export function DialogHost({ dialog, cwd, onAnswer }: DialogHostProps): JSX.Element | null {
   const [draft, setDraft] = useState(dialog?.method === "editor" ? (dialog.prefill ?? "") : "");
   const [selected, setSelected] = useState(0);
 
   if (!dialog) return null;
 
   const cancel = (): void => onAnswer(dialog.id, { cancelled: true });
+
+  // `ask_user_questions` tunnels its whole question set through a select title, because pi's
+  // RPC protocol has no richer dialog method. See `askQuestions.ts`.
+  const askQuestions = dialog.method === "select" ? parseAskQuestionsTitle(dialog.title) : null;
+  if (askQuestions) {
+    return (
+      <AskQuestionsDialog
+        questions={askQuestions}
+        cwd={cwd}
+        onSubmit={(value) => onAnswer(dialog.id, { value })}
+        onCancel={cancel}
+      />
+    );
+  }
 
   return (
     <div className="absolute inset-0 z-20 grid place-items-center bg-black/50 p-4">

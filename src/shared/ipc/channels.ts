@@ -20,7 +20,7 @@ export const IpcChannels = {
   appCommand: "app:command",
   gitRpc: "git:rpc",
   gitData: "git:data",
-  imageRpc: "image:rpc",
+  askImagesLoad: "ask-images:load",
   piRpc: "pi:rpc",
   piEvent: "pi:event",
   browserOpenExternal: "browser:open-external",

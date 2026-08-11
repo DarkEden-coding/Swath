@@ -351,7 +351,7 @@ function ParallelAgentsPreview({ args, streaming }: ToolViewProps): JSX.Element 
   );
 }
 
-/** `ask_user_questions` — `{ questions: [{ question, options: string[] }] }`. */
+/** `ask_user_questions` — `{ questions: [{ question, options: string[], images?: string[] }] }`. */
 function QuestionsPreview({ args, streaming }: ToolViewProps): JSX.Element | null {
   const questions = list(args, "questions").filter(isRecord);
   if (!questions.length) return null;
@@ -362,6 +362,9 @@ function QuestionsPreview({ args, streaming }: ToolViewProps): JSX.Element | nul
         const question = str(item, "question");
         const options = list(item, "options").filter(
           (option): option is string => typeof option === "string",
+        );
+        const images = list(item, "images").filter(
+          (image): image is string => typeof image === "string",
         );
         return (
           <div key={index} className="pi-field pi-field-block">
@@ -376,6 +379,11 @@ function QuestionsPreview({ args, streaming }: ToolViewProps): JSX.Element | nul
                   · {option}
                 </div>
               ))}
+              {images.length ? (
+                <div className="pi-dim break-words">
+                  🖼 {images.length} image{images.length === 1 ? "" : "s"}
+                </div>
+              ) : null}
             </div>
           </div>
         );
@@ -543,7 +551,6 @@ const TOOL_VIEWS: Record<string, ToolView> = {
     label: (args) => `✱ Remember ${str(args, "action") ?? ""}`.trimEnd(),
   },
 
-  show_image: { label: pathLabel("▣", "Image") },
 };
 
 /** Search tools all take a query and differ only in name. */

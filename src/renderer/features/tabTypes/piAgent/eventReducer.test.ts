@@ -389,14 +389,14 @@ describe("reducePiEvent", () => {
 
   it("records tool completion, details and error state", () => {
     const state = run([
-      { type: "tool_execution_start", toolCallId: "t1", toolName: "show_image" },
+      { type: "tool_execution_start", toolCallId: "t1", toolName: "read" },
       {
         type: "tool_execution_end",
         toolCallId: "t1",
-        toolName: "show_image",
+        toolName: "read",
         result: {
           content: [{ type: "text", text: "done" }],
-          details: { path: "/tmp/a.png" },
+          details: { path: "/tmp/a.txt" },
         },
         isError: false,
       },
@@ -404,7 +404,7 @@ describe("reducePiEvent", () => {
 
     const tool = state.entries[0] as PiToolEntry;
     expect(tool.output).toBe("done");
-    expect(tool.details).toEqual({ path: "/tmp/a.png" });
+    expect(tool.details).toEqual({ path: "/tmp/a.txt" });
     expect(tool.endedAt).toBeTypeOf("number");
     expect(tool.isError).toBe(false);
   });

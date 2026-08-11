@@ -5,7 +5,7 @@
  * See `docs/features/pi-agent-pane.md`.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { PiCommand } from "../../../../shared/ipc/piRpc";
 import * as appActions from "../../../app/appActions";
 import { findPane } from "../../../domain/layout/layoutTree";
@@ -57,15 +57,7 @@ export function PiAgentPane({ workspace, view, pane }: PaneComponentProps): JSX.
   const cwd = (paneMeta?.cwd ?? paneMeta?.metadata?.cwd ?? workspace.path).trim() || workspace.path;
   const isActive = activePaneId === paneId || view.activePaneId === paneId;
 
-  // The `show_image` tool opens a preview pane beside this one.
-  const showImage = useCallback(
-    (path: string) => {
-      appActions.upsertImagePreviewFromPane(workspace.id, view.id, paneId, path);
-    },
-    [workspace.id, view.id, paneId],
-  );
-
-  const agent = usePiAgent(paneId, cwd, showImage);
+  const agent = usePiAgent(paneId, cwd);
   const { state } = agent;
   // Draft and attachments are cached alongside the transcript so a tab switch does not lose them.
   const [draft, setDraft] = useState(() => piPaneCache.get(paneId)?.draft ?? "");
@@ -330,6 +322,7 @@ export function PiAgentPane({ workspace, view, pane }: PaneComponentProps): JSX.
         <DialogHost
           key={state.dialogs[0]?.id ?? "none"}
           dialog={state.dialogs[0]}
+          cwd={cwd}
           onAnswer={agent.answerDialog}
         />
       </div>
