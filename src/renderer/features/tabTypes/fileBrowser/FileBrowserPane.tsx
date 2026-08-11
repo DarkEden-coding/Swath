@@ -15,14 +15,7 @@ import {
   IconRefresh,
   IconTrash,
 } from "../../shell/icons";
-import {
-  baseName,
-  canDropInto,
-  isImagePath,
-  isValidName,
-  joinPath,
-  parentPath,
-} from "./fileBrowserUtils";
+import { baseName, canDropInto, isValidName, joinPath, parentPath } from "./fileBrowserUtils";
 
 const ROOT = "";
 
@@ -138,13 +131,9 @@ export function FileBrowserPane({ workspace, view, pane }: PaneComponentProps): 
     await mutate(() => filesClient.trash(cwd, path), [parentPath(path)]);
   };
 
+  // Files have no in-app viewer since the image preview pane was removed; only dirs expand.
   const openEntry = (entry: FilesEntry): void => {
-    if (entry.isDir) {
-      toggleDir(entry.path);
-      return;
-    }
-    if (!isImagePath(entry.path)) return;
-    appActions.upsertImagePreviewFromPane(workspace.id, view.id, paneId, entry.path, entry.name);
+    if (entry.isDir) toggleDir(entry.path);
   };
 
   const dropHandlers = (

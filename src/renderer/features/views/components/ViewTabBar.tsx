@@ -6,7 +6,6 @@ import {
   IconClose,
   IconFolder,
   IconGitBranch,
-  IconImage,
   IconPlus,
   IconSparkle,
   IconTerminal,
@@ -32,8 +31,6 @@ function tabTypeIcon(kind: PaneKind): JSX.Element {
     return <IconGitBranch width={16} height={16} className="block shrink-0 text-swath-accent" />;
   if (kind === "fileBrowser")
     return <IconFolder width={16} height={16} className="block shrink-0 text-swath-accent" />;
-  if (kind === "imagePreview")
-    return <IconImage width={16} height={16} className="block shrink-0 text-swath-accent" />;
   if (kind === "piAgent")
     return <IconSparkle width={16} height={16} className="block shrink-0 text-swath-accent" />;
   return <IconTerminal width={16} height={16} className="block shrink-0 text-swath-accent" />;

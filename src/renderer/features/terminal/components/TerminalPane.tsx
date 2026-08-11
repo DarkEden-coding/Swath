@@ -33,7 +33,6 @@ import {
   IMAGE_ADDON_STORAGE_LIMIT_MB,
   TERMINAL_SCROLLBACK_LINES,
 } from "../../../../shared/memoryLimits";
-import { parseSwathImageOsc } from "../osc/swathImageOsc";
 import {
   captureTerminalScrollState,
   detachCachedTerminalElement,
@@ -356,25 +355,11 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
         });
 
     if (!cachedEntry) {
-      const oscDisposable = terminal.parser.registerOscHandler(777, (data) => {
-        const parsed = parseSwathImageOsc(data);
-        if (parsed.kind === "ignore") return false;
-        if (parsed.kind === "path") {
-          // Fire-and-forget so the parser is not paused on UI/config work.
-          queueMicrotask(() => {
-            appActions.upsertImagePreviewFromPane(workspace.id, view.id, paneId, parsed.path);
-          });
-        }
-        // Consume matching malformed payloads so they do not leak into the buffer.
-        return true;
-      });
-
       terminalCache.set(paneId, {
         terminal,
         fit,
         image,
         disposeResources: () => {
-          oscDisposable.dispose();
           disposable?.dispose();
           removeDataListener?.();
           removeExitListener?.();

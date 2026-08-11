@@ -23,10 +23,6 @@ export interface PaneMetadata {
   shellProfile?: ShellProfile | null;
   env?: Record<string, string> | PaneEnvVar[];
   sessionId?: string;
-  /** Absolute or cwd-relative path for an imagePreview pane (bytes loaded via RPC). */
-  imagePath?: string;
-  /** Display title for an imagePreview pane (typically the basename). */
-  imageTitle?: string;
 }
 
 export interface PaneLeaf {

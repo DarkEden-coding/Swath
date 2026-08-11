@@ -55,18 +55,6 @@ const metadata: Record<PaneKind, PaneKindMetadata> = {
       };
     },
   },
-  imagePreview: {
-    kind: "imagePreview",
-    label: "Image Preview",
-    createPaneMeta(_settings, cwd) {
-      return {
-        kind: "imagePreview",
-        cwd,
-        title: "Image Preview",
-        metadata: { cwd, title: "Image Preview" },
-      };
-    },
-  },
   fileBrowser: {
     kind: "fileBrowser",
     label: "Files",

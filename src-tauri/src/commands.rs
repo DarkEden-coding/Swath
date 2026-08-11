@@ -1,5 +1,5 @@
 use crate::types::*;
-use crate::{config, files, git, image, pi_agent, platform, AppState};
+use crate::{ask_images, config, files, git, pi_agent, platform, AppState};
 use tauri::{AppHandle, State, Window};
 
 pub type CommandResult<T> = Result<T, String>;
@@ -164,8 +164,8 @@ pub async fn git_rpc(
 }
 
 #[tauri::command]
-pub async fn image_rpc(request: serde_json::Value) -> CommandResult<serde_json::Value> {
-    tauri::async_runtime::spawn_blocking(move || image::rpc(request))
+pub async fn ask_images_load(request: serde_json::Value) -> CommandResult<serde_json::Value> {
+    tauri::async_runtime::spawn_blocking(move || ask_images::load(request))
         .await
         .map_err(|err| err.to_string())?
 }

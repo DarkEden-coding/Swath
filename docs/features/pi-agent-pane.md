@@ -224,26 +224,23 @@ real trust boundary. Here the renderer sends JSON to pi, which validates it and 
 
 ### 3.3 Swath integration extensions — do not write OSC to stdout
 
-`integrations/pi/show-image.ts` is the existing pattern for adding functionality: a pi extension
-living in this repo that registers a tool (`show_image`) and a command (`/preview`), then signals
-Swath by writing OSC 777 (`\x1b]777;swath-image=<base64>`) to stdout, which `TerminalPane` picks up
-via `osc/swathImageOsc.ts`.
+In RPC mode stdout _is_ the JSONL protocol stream. Writing a raw OSC blob into it injects
+non-JSON bytes between records and corrupts framing, so an extension must never signal Swath
+that way.
 
-**That channel does not exist in this pane.** In RPC mode stdout _is_ the JSONL protocol stream —
-writing a raw OSC blob into it injects non-JSON bytes between records and corrupts framing.
+**The general rule for Swath-integration extensions:** return structured data in `details` and
+let the pane react to `tool_execution_end` — `details` is serialized verbatim (§2.3). Guard any
+terminal writes with `ctx.mode === "tui"`.
 
-It needs no fix, because the same extension already carries the data structurally:
-
-```ts
-return { content: [...], details: result };   // result = { path, mime, bytes }
-```
-
-`tool_execution_end` serializes `result.details` (§2.3), so the pane opens the preview by watching
-for `toolName === "show_image"` and reading `result.details.path` — no OSC, no extension change.
-
-**The general rule for Swath-integration extensions:** return structured data in `details` and let
-the pane react to `tool_execution_end`. Guard any terminal writes with `ctx.mode === "tui"`.
-The OSC path stays for when pi runs in a real terminal pane.
+Blocking, interactive integrations have a second option, used by `ask_user_questions`
+(`~/.pi/agent/extensions/user-query.ts`). The extension UI protocol is fixed —
+select/confirm/input/editor, with `ctx.ui.custom` available only in `tui` mode — so a richer
+dialog is negotiated through a sentinel instead: the extension calls `ctx.ui.select` with a
+title prefixed `SWATH_ASK_V1:` carrying the whole question set as JSON. `DialogHost` detects the
+prefix and renders `AskQuestionsDialog` (multi-question navigation, attached image previews,
+review-then-submit), replying with a JSON payload. A host that does not recognise the prefix
+picks the single fallback option, and the extension degrades to asking one question at a time.
+See `piAgent/askQuestions.ts`.
 
 ### 3.4 Streaming: measure first
 
@@ -394,17 +391,17 @@ Files: 24 → 13. Rust files: 2 → 1.
 
 **Complete.** All planned steps are built.
 
-| Step                  | What landed                                                                                                                                                                                                                                                                                                                                 |
-| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1 — Pipe              | `src-tauri/src/pi_agent.rs`: spawn/send/kill/stderr + a bounded file walk for `@` completion, one thread per stream, stdout lines forwarded verbatim. `pi_rpc` command, `pi:rpc`/`pi:event` channels, `piRpc.ts` types, `piAgent` registered in `paneKinds`, registry, `paneMetadata` and `ViewTabBar`. `std::process` + threads; no tokio. |
-| 2 — Store + reducer   | `eventReducer.ts` (pure, no module-level mutable state) and `usePiAgent.ts` (`useReducer`). Validated against a real captured turn.                                                                                                                                                                                                         |
-| 2b — Session reattach | Spawns with `--session-id <paneId>` and hydrates from `get_messages`; history rebuilds tool cards from `toolCall` blocks + `toolResult` messages, since `tool_execution_*` is not replayed.                                                                                                                                                 |
-| 3 — Transcript        | `lib/ansi.tsx` SGR parser, `lib/markdown.tsx` (marked tokens → React, no `dangerouslySetInnerHTML`), `prism-react-renderer` highlighting, tool cards with click-to-expand, collapsible thinking, streaming cursor.                                                                                                                          |
-| 4 — Diffs             | `DiffView.tsx` handles both real payload shapes: structured `pi-diff` `editInfo` and baseline `patch`.                                                                                                                                                                                                                                      |
-| 5 — Chrome + dialogs  | `DialogHost` (select/confirm/input/editor), widget stacks above and below the composer, status chips, and a footer with token/cost/context stats plus model and thinking pickers.                                                                                                                                                           |
-| 6 — Composer          | Image paste and drag-drop, `@file` completion, `/command` palette from `get_commands`, Enter to send, follow-up queueing while streaming.                                                                                                                                                                                                   |
-| 7 — Sessions          | New, rename, compact, and a `SessionTree` panel from `get_tree` with fork.                                                                                                                                                                                                                                                                  |
-| 8 — `show_image`      | The pane watches `tool_execution_end` for `show_image` and opens an `imagePreview` pane from `result.details.path` (§3.3).                                                                                                                                                                                                                  |
+| Step                     | What landed                                                                                                                                                                                                                                                                                                                                 |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1 — Pipe                 | `src-tauri/src/pi_agent.rs`: spawn/send/kill/stderr + a bounded file walk for `@` completion, one thread per stream, stdout lines forwarded verbatim. `pi_rpc` command, `pi:rpc`/`pi:event` channels, `piRpc.ts` types, `piAgent` registered in `paneKinds`, registry, `paneMetadata` and `ViewTabBar`. `std::process` + threads; no tokio. |
+| 2 — Store + reducer      | `eventReducer.ts` (pure, no module-level mutable state) and `usePiAgent.ts` (`useReducer`). Validated against a real captured turn.                                                                                                                                                                                                         |
+| 2b — Session reattach    | Spawns with `--session-id <paneId>` and hydrates from `get_messages`; history rebuilds tool cards from `toolCall` blocks + `toolResult` messages, since `tool_execution_*` is not replayed.                                                                                                                                                 |
+| 3 — Transcript           | `lib/ansi.tsx` SGR parser, `lib/markdown.tsx` (marked tokens → React, no `dangerouslySetInnerHTML`), `prism-react-renderer` highlighting, tool cards with click-to-expand, collapsible thinking, streaming cursor.                                                                                                                          |
+| 4 — Diffs                | `DiffView.tsx` handles both real payload shapes: structured `pi-diff` `editInfo` and baseline `patch`.                                                                                                                                                                                                                                      |
+| 5 — Chrome + dialogs     | `DialogHost` (select/confirm/input/editor), widget stacks above and below the composer, status chips, and a footer with token/cost/context stats plus model and thinking pickers.                                                                                                                                                           |
+| 6 — Composer             | Image paste and drag-drop, `@file` completion, `/command` palette from `get_commands`, Enter to send, follow-up queueing while streaming.                                                                                                                                                                                                   |
+| 7 — Sessions             | New, rename, compact, and a `SessionTree` panel from `get_tree` with fork.                                                                                                                                                                                                                                                                  |
+| 8 — `ask_user_questions` | `DialogHost` detects the `SWATH_ASK_V1:` select sentinel and renders `AskQuestionsDialog`: ←/→ between questions, attached images loaded through `ask_images_load`, review-then-submit (§3.3).                                                                                                                                              |
 
 Checks: `tsc --noEmit` clean, `eslint --max-warnings=0` clean, **87 tests**, `vite build` and
 `cargo check` clean.
@@ -426,18 +423,18 @@ Run `npm run dev` locally and open a Pi Agent tab to close this gap.
 
 ## 10. Live tool rendering
 
-Tool cards originally only became informative once the tool *returned*: arguments streamed in as raw
+Tool cards originally only became informative once the tool _returned_: arguments streamed in as raw
 JSON text, `apply_patch` showed no preview at all, and long-argument tools like `parallel_agents`
 arrived as one unreadable blob. Cards are now driven by their **arguments**, which stream, so they
 fill in as the model writes the call.
 
 Three pieces make that work:
 
-| Piece | File | What it does |
-|---|---|---|
-| Partial-JSON parser | `partialJson.ts` | Recovers the settled fields from a truncated argument buffer. Completes a truncated *string* (that is the value being typed); drops any other incomplete member rather than guessing. |
+| Piece                         | File              | What it does                                                                                                                                                                                                                                               |
+| ----------------------------- | ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Partial-JSON parser           | `partialJson.ts`  | Recovers the settled fields from a truncated argument buffer. Completes a truncated _string_ (that is the value being typed); drops any other incomplete member rather than guessing.                                                                      |
 | Tool name at `toolcall_start` | `eventReducer.ts` | `toolcall_start` carries no name of its own, but the cumulative `message` beside it already holds the `toolCall` block with `name` set. Reading it there is what lets a card pick its renderer from the first delta instead of waiting for `toolcall_end`. |
-| Tool view registry | `toolViews.tsx` | Maps a tool name to a header label and an argument-driven preview. |
+| Tool view registry            | `toolViews.tsx`   | Maps a tool name to a header label and an argument-driven preview.                                                                                                                                                                                         |
 
 ### What each tool shows while generating
 
@@ -455,7 +452,7 @@ Three pieces make that work:
   field currently being written. A new extension tool gets a live structured card for free; adding an
   entry to `TOOL_VIEWS` is only needed when the generic one looks wrong.
 
-A preview is drawn from a *request*, not a result, so while the tool has not completed it carries a
+A preview is drawn from a _request_, not a result, so while the tool has not completed it carries a
 dashed left edge (`.pi-tool-preview`) to distinguish it from an applied change.
 
 ### Results
@@ -476,5 +473,7 @@ token of every other card.
   replacement semantics (§2.4); `fixtures/turn.jsonl` now guards it.
 - A `piSessionId` field was added to `PaneMetadata` and then removed: nothing wrote or read it, and
   `--session-id <paneId>` reattaches without persisting anything new.
-- `upsertImagePreviewFromTerminal` was renamed to `upsertImagePreviewFromPane`; it was already
-  source-pane agnostic and now has two callers.
+- The `imagePreview` pane, its OSC 777 channel, and the `show_image` integration were removed
+  outright: the plumbing spanned four layers to display a file, and nothing else depended on it.
+  Image display now exists only where it is used — inside `ask_user_questions` prompts, via the
+  batch `ask_images_load` command.
