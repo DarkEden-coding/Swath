@@ -5,8 +5,9 @@ import { AnsiText } from "../../../lib/ansi";
 import { Markdown } from "../../../lib/markdown";
 import { DiffView, hasDiff } from "./DiffView";
 import type { PiEntry, PiMessageEntry, PiToolEntry } from "./eventReducer";
+import { LiveFileDiffPreview } from "./LiveFileDiffPreview";
 import { readableArgs } from "./partialJson";
-import { resolveToolView } from "./toolViews";
+import { inferToolName, resolveToolView } from "./toolViews";
 
 const COLLAPSED_LINES = 8;
 
@@ -65,20 +66,20 @@ function statusLabel(entry: PiToolEntry): string {
 
 interface ToolBodyProps {
   entry: PiToolEntry;
+  cwd: string;
 }
 
 /**
  * The card body: an argument-driven preview that fills in live, superseded by the tool's own diff
  * once it returns one, plus the output stream.
  */
-function ToolBody({ entry }: ToolBodyProps): JSX.Element {
+function ToolBody({ entry, cwd }: ToolBodyProps): JSX.Element {
   const [expanded, setExpanded] = useState(false);
   const lines = entry.output ? entry.output.replace(/\n$/, "").split("\n") : [];
   const hidden = Math.max(0, lines.length - COLLAPSED_LINES);
   const shown = expanded ? lines : lines.slice(0, COLLAPSED_LINES);
   const diff = hasDiff(entry);
 
-  const view = resolveToolView(entry.toolName);
   // A delta re-renders the whole transcript, so without this every open card would re-parse its
   // buffer on every token of every other card.
   const args = useMemo(
@@ -86,11 +87,19 @@ function ToolBody({ entry }: ToolBodyProps): JSX.Element {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- these two fields are the whole input
     [entry.args, entry.partialArgs],
   );
+  const toolName = inferToolName(entry.toolName, args);
+  const resolvedView = resolveToolView(toolName);
   const streaming = entry.phase === "generating";
-  const Preview = view.Preview;
-  const preview =
+  const Preview = resolvedView.Preview;
+  const argumentPreview =
     !diff && Preview && args ? <Preview args={args} entry={entry} streaming={streaming} /> : null;
-  const label = (args && view.label?.(args, entry)) || fallbackLabel(entry, args);
+  const preview =
+    !diff && args && (toolName === "edit" || toolName === "apply_patch") ? (
+      <LiveFileDiffPreview toolName={toolName} args={args} cwd={cwd} fallback={argumentPreview} />
+    ) : (
+      argumentPreview
+    );
+  const label = (args && resolvedView.label?.(args, entry)) || fallbackLabel(entry, args);
 
   // Once a preview or diff is on screen, the tool's textual summary is redundant noise; keep the
   // output block for tools that actually stream something worth reading.
@@ -141,9 +150,11 @@ function ToolBody({ entry }: ToolBodyProps): JSX.Element {
 
 function ToolSection({
   entry,
+  cwd,
   showHeader = true,
 }: {
   entry: PiToolEntry;
+  cwd: string;
   showHeader?: boolean;
 }): JSX.Element {
   const duration = formatDuration(entry);
@@ -161,7 +172,7 @@ function ToolSection({
           <span>{statusLabel(entry)}</span>
         </div>
       ) : null}
-      <ToolBody entry={entry} />
+      <ToolBody entry={entry} cwd={cwd} />
       <div className="pi-tool-duration">
         ◷ {duration ? `Took ${duration}` : entry.endedAt ? "Timing unavailable" : "In progress"}
       </div>
@@ -169,7 +180,7 @@ function ToolSection({
   );
 }
 
-function ToolCard({ entry }: { entry: PiToolEntry }): JSX.Element {
+function ToolCard({ entry, cwd }: { entry: PiToolEntry; cwd: string }): JSX.Element {
   const color = entry.isError ? "var(--pi-red)" : reasoningColor(entry);
   return (
     <div
@@ -183,12 +194,12 @@ function ToolCard({ entry }: { entry: PiToolEntry }): JSX.Element {
         {entry.reviewStatus ? <AnsiText text={entry.reviewStatus} /> : null}
         <span>{statusLabel(entry)}</span>
       </div>
-      <ToolSection entry={entry} showHeader={false} />
+      <ToolSection entry={entry} cwd={cwd} showHeader={false} />
     </div>
   );
 }
 
-function ParallelToolGroup({ entries }: { entries: PiToolEntry[] }): JSX.Element {
+function ParallelToolGroup({ entries, cwd }: { entries: PiToolEntry[]; cwd: string }): JSX.Element {
   const running = entries.some((entry) => entry.endedAt === undefined);
   const failed = entries.some((entry) => entry.isError);
   const color = failed ? "var(--pi-red)" : reasoningColor(entries[0]);
@@ -208,7 +219,7 @@ function ParallelToolGroup({ entries }: { entries: PiToolEntry[] }): JSX.Element
         <span>{running ? "● Running" : failed ? "✕ Failed" : "✓ Completed"}</span>
       </div>
       {entries.map((entry, index) => (
-        <ToolSection key={entry.id} entry={entry} showHeader={index > 0} />
+        <ToolSection key={entry.id} entry={entry} cwd={cwd} showHeader={index > 0} />
       ))}
     </div>
   );
@@ -253,10 +264,12 @@ export function Transcript({
   entries,
   working = false,
   operationStatus,
+  cwd,
 }: {
   entries: PiEntry[];
   working?: boolean;
   operationStatus?: string;
+  cwd: string;
 }): JSX.Element {
   const rendered: JSX.Element[] = [];
   for (let index = 0; index < entries.length; index += 1) {
@@ -269,7 +282,7 @@ export function Transcript({
 
     const groupId = entry.parallelGroup?.id;
     if (!groupId) {
-      rendered.push(<ToolCard key={entry.id} entry={entry} />);
+      rendered.push(<ToolCard key={entry.id} entry={entry} cwd={cwd} />);
       continue;
     }
 
@@ -280,7 +293,7 @@ export function Transcript({
       group.push(next);
       index += 1;
     }
-    rendered.push(<ParallelToolGroup key={groupId} entries={group} />);
+    rendered.push(<ParallelToolGroup key={groupId} entries={group} cwd={cwd} />);
   }
 
   return (

@@ -28,14 +28,14 @@ interface AppliedChange {
   movePath?: string;
 }
 
-interface DiffLine {
+export interface DiffLine {
   type: "add" | "del" | "ctx" | "sep";
   content: string;
   oldNum?: number | null;
   newNum?: number | null;
 }
 
-interface StructuredDiff {
+export interface StructuredDiff {
   filePath?: string;
   lines: DiffLine[];
   added: number;
@@ -128,7 +128,8 @@ function marker(type: DiffLine["type"]): string {
   return " ";
 }
 
-function StructuredDiffView({ diff }: { diff: StructuredDiff }): JSX.Element {
+/** Renders a contextual, numbered diff assembled from a live tool call. */
+export function StructuredDiffView({ diff }: { diff: StructuredDiff }): JSX.Element {
   const language = languageFor(diff.filePath);
 
   return (

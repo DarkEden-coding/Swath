@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { PiToolEntry } from "./eventReducer";
 import { parsePartialJson } from "./partialJson";
-import { resolveToolView } from "./toolViews";
+import { inferToolName, resolveToolView } from "./toolViews";
 
 function entry(toolName: string): PiToolEntry {
   return {
@@ -24,6 +24,12 @@ function labelFor(toolName: string, partialArgs: string): string | null | undefi
 }
 
 describe("resolveToolView", () => {
+  it("infers edit tools from arguments when the provider streams no name", () => {
+    expect(inferToolName("tool", { path: "a.ts", edits: [] })).toBe("edit");
+    expect(inferToolName("tool", { changes: [] })).toBe("apply_patch");
+    expect(inferToolName("tool", { query: "leave generic" })).toBe("tool");
+  });
+
   it("falls back to the generic field view for unknown tools", () => {
     const view = resolveToolView("some_future_extension_tool");
     expect(view.Preview).toBeDefined();

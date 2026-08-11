@@ -221,6 +221,7 @@ export function PiAgentPane({ workspace, view, pane }: PaneComponentProps): JSX.
                     entries={state.entries}
                     working={state.isStreaming}
                     operationStatus={state.operationStatus}
+                    cwd={cwd}
                   />
                 )}
               </div>

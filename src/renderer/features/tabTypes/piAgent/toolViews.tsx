@@ -550,7 +550,6 @@ const TOOL_VIEWS: Record<string, ToolView> = {
   remember: {
     label: (args) => `✱ Remember ${str(args, "action") ?? ""}`.trimEnd(),
   },
-
 };
 
 /** Search tools all take a query and differ only in name. */
@@ -570,6 +569,22 @@ for (const name of [
       <FieldList args={args} streaming={streaming} skip={["query"]} />
     ),
   };
+}
+
+/**
+ * Identifies file tools when a provider withholds the tool name until `toolcall_end`.
+ * Their argument shapes are distinct, so the preview does not need to wait for execution to start.
+ */
+export function inferToolName(toolName: string, args: Record<string, unknown> | undefined): string {
+  if (toolName !== "tool" || !args) return toolName;
+  if (Array.isArray(args.changes)) return "apply_patch";
+  if (
+    typeof args.path === "string" &&
+    (Array.isArray(args.edits) || args.oldText !== undefined || args.old_string !== undefined)
+  ) {
+    return "edit";
+  }
+  return toolName;
 }
 
 /** The view for a tool, falling back to the generic field list. */
