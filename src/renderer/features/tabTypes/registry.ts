@@ -1,4 +1,5 @@
 import type { AppSettings, PaneKind, PaneLeaf, WorkspaceView } from "../../../shared/types";
+import { isPaneKind } from "../../../shared/types";
 import { createPaneMeta, createPaneView } from "../../domain/panes/paneMetadata";
 import { terminalTabType } from "./terminal/terminalTabType";
 import { gitManagerTabType } from "./gitManager/gitManagerTabType";
@@ -13,8 +14,9 @@ const tabTypes: Record<PaneKind, TabTypeRegistration> = {
   piAgent: piAgentTabType,
 };
 
-export function getTabType(kind: PaneKind): TabTypeRegistration {
-  return tabTypes[kind];
+/** Returns undefined for a kind this build no longer registers, e.g. one left in an old config. */
+export function getTabType(kind: PaneKind): TabTypeRegistration | undefined {
+  return isPaneKind(kind) ? tabTypes[kind] : undefined;
 }
 
 export function getTabTypes(): TabTypeRegistration[] {

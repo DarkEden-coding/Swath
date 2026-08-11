@@ -9,6 +9,7 @@ import type {
 } from "../../../../shared/types";
 import { previewSplitRatio, setSplitRatio } from "../../../app/appActions";
 import { getPaneRegistration } from "../paneRegistry";
+import { UnavailablePane } from "./UnavailablePane";
 
 interface LayoutRendererProps {
   workspace: Workspace;
@@ -25,7 +26,12 @@ export function LayoutRenderer({
 }: LayoutRendererProps): JSX.Element {
   if (node.type === "pane") {
     const pane = node as PaneLeaf;
-    const { Component } = getPaneRegistration(pane.kind);
+    const registration = getPaneRegistration(pane.kind);
+    // A stored kind this build no longer registers renders as a closeable placeholder; throwing
+    // here would take the whole window down through the critical error boundary.
+    if (!registration)
+      return <UnavailablePane workspace={workspace} view={view} pane={pane} settings={settings} />;
+    const { Component } = registration;
     return (
       <Suspense
         fallback={

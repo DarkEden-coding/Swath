@@ -15,6 +15,7 @@ import { dialogClient } from "../services/dialogClient";
 import { useConfigStore } from "../state/configStore";
 import { useUiStore } from "../state/uiStore";
 import { getTabType } from "../features/tabTypes/registry";
+import { reportError } from "../lib/errorLog";
 
 /** Commits configuration state and schedules persistence. */
 function commit(config: AppConfig, activePaneId?: string | null): void {
@@ -43,19 +44,39 @@ function panesForWorkspace(
   return workspace?.views.flatMap((view) => collectPanes(view.layout)) ?? [];
 }
 
-/** Checks whether any registered pane is busy. */
+/**
+ * Checks whether any registered pane is busy.
+ *
+ * A pane whose kind is no longer registered counts as idle: it owns nothing that could be running,
+ * and a failed lookup here must never stop a close.
+ */
 async function anyBusyRegisteredPane(
   panes: ReturnType<typeof viewActions.panesForView>,
 ): Promise<boolean> {
   const statuses = await Promise.all(
-    panes.map((pane) => getTabType(pane.kind).isBusy?.(pane.id) ?? Promise.resolve(false)),
+    panes.map((pane) => isPaneBusy(pane.kind, pane.id).catch(() => false)),
   );
   return statuses.some(Boolean);
 }
 
-/** Notifies registered tab types that panes are closing. */
+async function isPaneBusy(kind: PaneKind, paneId: string): Promise<boolean> {
+  return (await getTabType(kind)?.isBusy?.(paneId)) ?? false;
+}
+
+/**
+ * Notifies registered tab types that panes are closing.
+ *
+ * Teardown is best effort per pane: one tab type that throws (or one kind that no longer exists)
+ * must not abort the close, or the pane stays on screen and its close button appears dead.
+ */
 function closeRegisteredPanes(panes: ReturnType<typeof viewActions.panesForView>): void {
-  panes.forEach((pane) => getTabType(pane.kind).closePane?.(pane.id));
+  panes.forEach((pane) => {
+    try {
+      getTabType(pane.kind)?.closePane?.(pane.id);
+    } catch (error) {
+      reportError(`Closing pane "${pane.title ?? pane.kind}"`, error);
+    }
+  });
 }
 
 /** Hydrates configuration and restores the active pane. */
@@ -153,7 +174,7 @@ export function closeView(workspaceId: string, viewId: string): void {
     closeRegisteredPanes(panes);
     const result = viewActions.closeView(config, workspaceId, viewId);
     commit(result.config, result.activePaneId);
-  })();
+  })().catch((error: unknown) => reportError("Closing tab", error));
 }
 
 /** Selects a workspace view. */
@@ -194,17 +215,16 @@ export function closePane(workspaceId: string, viewId: string, paneId: string): 
       ?.views.find((item) => item.id === viewId);
     const pane = view ? findPane(view.layout, paneId) : null;
     if (!pane) return;
-    const tabType = getTabType(pane.kind);
     if (
       config.settings.confirmBeforeClosingPane &&
-      (await tabType.isBusy?.(paneId)) &&
+      (await isPaneBusy(pane.kind, paneId).catch(() => false)) &&
       !window.confirm("Close this running pane?")
     )
       return;
-    tabType.closePane?.(paneId);
+    closeRegisteredPanes([pane]);
     const result = paneActions.closePane(config, workspaceId, viewId, paneId);
     commit(result.config, result.activePaneId);
-  })();
+  })().catch((error: unknown) => reportError("Closing pane", error));
 }
 
 /** Sets the active pane for a view. */

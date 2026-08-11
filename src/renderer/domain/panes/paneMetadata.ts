@@ -5,6 +5,7 @@ import type {
   ShellProfile,
   WorkspaceView,
 } from "../../../shared/types";
+import { isPaneKind } from "../../../shared/types";
 import { createId } from "../../utils/ids";
 import { createPaneNode } from "../layout/layoutTree";
 
@@ -81,8 +82,9 @@ const metadata: Record<PaneKind, PaneKindMetadata> = {
   },
 };
 
+/** Falls back to the terminal description for a kind this build does not know. */
 export function getPaneKindMetadata(kind: PaneKind): PaneKindMetadata {
-  return metadata[kind];
+  return (isPaneKind(kind) ? metadata[kind] : undefined) ?? metadata.terminal;
 }
 
 export function createPaneMeta(

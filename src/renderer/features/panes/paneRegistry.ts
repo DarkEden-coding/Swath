@@ -1,5 +1,6 @@
 import type { ComponentType, LazyExoticComponent } from "react";
 import type { PaneKind } from "../../../shared/types";
+import { isPaneKind } from "../../../shared/types";
 import { getTabTypes } from "../tabTypes/registry";
 import type { PaneComponentProps } from "./paneTypes";
 
@@ -19,6 +20,10 @@ function buildPaneRegistry(): Record<PaneKind, PaneRegistration> {
 /** Built from `getTabTypes()` so new tab kinds do not need a separate pane registry edit. */
 export const paneRegistry: Record<PaneKind, PaneRegistration> = buildPaneRegistry();
 
-export function getPaneRegistration(kind: PaneKind): PaneRegistration {
-  return paneRegistry[kind];
+/**
+ * Returns undefined for a kind with no registration — a pane kind removed by an update can still
+ * be named by a stored layout, and a missing registration must not throw during render.
+ */
+export function getPaneRegistration(kind: PaneKind): PaneRegistration | undefined {
+  return isPaneKind(kind) ? paneRegistry[kind] : undefined;
 }
