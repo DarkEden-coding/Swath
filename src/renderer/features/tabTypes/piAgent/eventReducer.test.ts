@@ -366,6 +366,20 @@ describe("reducePiEvent", () => {
     expect(state.status).toEqual({});
   });
 
+  it("keeps cumulative tool-review cost in the Swath footer", () => {
+    const state = run([
+      {
+        type: "extension_ui_request",
+        id: "review-cost",
+        method: "setStatus",
+        statusKey: "tool-review-cost",
+        statusText: "review cost: $0.0042",
+      },
+    ]);
+
+    expect(state.status).toEqual({ "tool-review-cost": "review cost: $0.0042" });
+  });
+
   it("replaces tool output on update because partialResult is cumulative", () => {
     const state = run([
       { type: "tool_execution_start", toolCallId: "t1", toolName: "bash", args: { command: "ls" } },
