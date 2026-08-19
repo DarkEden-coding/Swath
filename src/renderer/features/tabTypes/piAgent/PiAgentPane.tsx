@@ -5,7 +5,7 @@
  * See `docs/features/pi-agent-pane.md`.
  */
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { PiCommand } from "../../../../shared/ipc/piRpc";
 import * as appActions from "../../../app/appActions";
 import { findPane } from "../../../domain/layout/layoutTree";
@@ -22,6 +22,19 @@ import { piPaneCache, type AttachedImage } from "./piPaneCache";
 import { Transcript } from "./Transcript";
 import { usePiAgent } from "./usePiAgent";
 import type { PiNotice } from "./eventReducer";
+
+const BOTTOM_TOLERANCE_PX = 2;
+const USER_SCROLL_INTENT_MS = 250;
+
+/** Resolves follow mode without mistaking a programmatic scroll event for user intent. */
+export function followStateAfterScroll(
+  currentlyFollowing: boolean,
+  userInitiated: boolean,
+  bottomDistance: number,
+): boolean {
+  if (bottomDistance <= BOTTOM_TOLERANCE_PX) return true;
+  return userInitiated ? false : currentlyFollowing;
+}
 
 function NoticeRow({ notice, onDismiss }: { notice: PiNotice; onDismiss: (id: string) => void }) {
   const dismissRef = useRef(onDismiss);
@@ -71,10 +84,58 @@ export function PiAgentPane({ workspace, view, pane }: PaneComponentProps): JSX.
   const [appliedEditorText, setAppliedEditorText] = useState<string | undefined>(undefined);
   const [treeOpen, setTreeOpen] = useState(false);
   const [resumeOpen, setResumeOpen] = useState(false);
-  const [showScrollToBottom, setShowScrollToBottom] = useState(false);
+  const [isFollowing, setIsFollowing] = useState(true);
   const scrollRef = useRef<HTMLDivElement>(null);
   const scrollContentRef = useRef<HTMLDivElement>(null);
-  const pinnedRef = useRef(true);
+  const followingRef = useRef(true);
+  const scrollFrameRef = useRef(0);
+  const userScrollIntentRef = useRef(false);
+  const pointerScrollIntentRef = useRef(false);
+  const userScrollTimerRef = useRef<number | undefined>(undefined);
+
+  /** Updates the rendered follow state and the synchronous value used by observers. */
+  const updateFollowing = useCallback((following: boolean): void => {
+    followingRef.current = following;
+    setIsFollowing(following);
+  }, []);
+
+  /** Clears any pending user-scroll classification before an explicit bottom request. */
+  const clearUserScrollIntent = useCallback((): void => {
+    userScrollIntentRef.current = false;
+    if (userScrollTimerRef.current !== undefined) {
+      window.clearTimeout(userScrollTimerRef.current);
+      userScrollTimerRef.current = undefined;
+    }
+  }, []);
+
+  /** Marks the short window in which a scroll event can represent a user gesture. */
+  const markUserScrollIntent = useCallback((): void => {
+    clearUserScrollIntent();
+    userScrollIntentRef.current = true;
+    userScrollTimerRef.current = window.setTimeout(() => {
+      userScrollIntentRef.current = false;
+      userScrollTimerRef.current = undefined;
+    }, USER_SCROLL_INTENT_MS);
+  }, [clearUserScrollIntent]);
+
+  /** Coalesces all automatic following into one write using the latest layout. */
+  const scheduleScrollToBottom = useCallback((): void => {
+    if (!followingRef.current || scrollFrameRef.current) return;
+    scrollFrameRef.current = window.requestAnimationFrame(() => {
+      scrollFrameRef.current = 0;
+      if (!followingRef.current) return;
+      const node = scrollRef.current;
+      if (node) node.scrollTop = Math.max(0, node.scrollHeight - node.clientHeight);
+    });
+  }, []);
+
+  /** Enables follow mode and aligns the transcript after the current layout settles. */
+  const pinToBottom = useCallback((): void => {
+    pointerScrollIntentRef.current = false;
+    clearUserScrollIntent();
+    updateFollowing(true);
+    scheduleScrollToBottom();
+  }, [clearUserScrollIntent, scheduleScrollToBottom, updateFollowing]);
 
   const commands = useMemo<PiCommand[]>(
     () => [
@@ -124,31 +185,44 @@ export function PiAgentPane({ workspace, view, pane }: PaneComponentProps): JSX.
     setDraft(state.editorText);
   }
 
-  // Follow output while the user is at the bottom; wait for the tab's layout before scrolling.
   useEffect(() => {
-    if (!isActive || !pinnedRef.current) return;
-    const frame = window.requestAnimationFrame(() => {
-      const node = scrollRef.current;
-      if (node) node.scrollTop = node.scrollHeight;
-    });
-    return () => window.cancelAnimationFrame(frame);
-  }, [isActive, state.entries]);
+    const finishPointerScroll = (): void => {
+      if (!pointerScrollIntentRef.current) return;
+      pointerScrollIntentRef.current = false;
+      markUserScrollIntent();
+    };
+    window.addEventListener("pointerup", finishPointerScroll);
+    window.addEventListener("pointercancel", finishPointerScroll);
+    return () => {
+      window.removeEventListener("pointerup", finishPointerScroll);
+      window.removeEventListener("pointercancel", finishPointerScroll);
+    };
+  }, [markUserScrollIntent]);
 
-  // Keep follow mode pinned when message wrapping, the composer, or the pane itself changes height.
+  // Entry and composer updates share the same coalesced writer. Programmatic scroll events cannot
+  // disable following because only a recent user input gesture may do that.
   useEffect(() => {
-    if (!isActive) return;
+    scheduleScrollToBottom();
+  }, [draft, state.entries, scheduleScrollToBottom]);
+
+  // Catch wrapping, asynchronous previews, and pane resizing that do not replace the entries array.
+  useEffect(() => {
     const node = scrollRef.current;
     const content = scrollContentRef.current;
     if (!node || !content) return;
 
-    const observer = new ResizeObserver(() => {
-      if (pinnedRef.current) node.scrollTop = node.scrollHeight;
-      setShowScrollToBottom(node.scrollHeight - node.scrollTop - node.clientHeight >= 40);
-    });
+    const observer = new ResizeObserver(scheduleScrollToBottom);
     observer.observe(node);
     observer.observe(content);
-    return () => observer.disconnect();
-  }, [isActive]);
+    return () => {
+      observer.disconnect();
+      if (scrollFrameRef.current) {
+        window.cancelAnimationFrame(scrollFrameRef.current);
+        scrollFrameRef.current = 0;
+      }
+      clearUserScrollIntent();
+    };
+  }, [clearUserScrollIntent, scheduleScrollToBottom]);
 
   const widgetsAbove = Object.values(state.widgets).filter((w) => w.placement === "aboveEditor");
   const widgetsBelow = Object.values(state.widgets).filter((w) => w.placement === "belowEditor");
@@ -174,10 +248,7 @@ export function PiAgentPane({ workspace, view, pane }: PaneComponentProps): JSX.
       active={isActive}
       title={state.title ?? state.state?.sessionName ?? "pi"}
       statusClass={state.exited ? "exited" : state.isStreaming ? "running" : "dormant"}
-      onActivate={() => {
-        pinnedRef.current = true;
-        appActions.setActivePane(workspace.id, view.id, paneId);
-      }}
+      onActivate={() => appActions.setActivePane(workspace.id, view.id, paneId)}
       onSplitRight={(kind) => appActions.splitPane(workspace.id, view.id, paneId, "vertical", kind)}
       onSplitDown={(kind) =>
         appActions.splitPane(workspace.id, view.id, paneId, "horizontal", kind)
@@ -197,12 +268,42 @@ export function PiAgentPane({ workspace, view, pane }: PaneComponentProps): JSX.
           <div className="relative min-h-0 flex-1">
             <div
               ref={scrollRef}
-              className="h-full overflow-auto"
+              className="h-full overflow-auto [overflow-anchor:none]"
+              tabIndex={0}
+              aria-label="Conversation transcript"
+              onWheel={markUserScrollIntent}
+              onTouchStart={markUserScrollIntent}
+              onTouchMove={markUserScrollIntent}
+              onPointerDown={(event) => {
+                const node = event.currentTarget;
+                const bounds = node.getBoundingClientRect();
+                const scrollbarWidth = node.offsetWidth - node.clientWidth;
+                if (
+                  event.target === node ||
+                  (scrollbarWidth > 0 && event.clientX >= bounds.right - scrollbarWidth)
+                ) {
+                  clearUserScrollIntent();
+                  pointerScrollIntentRef.current = true;
+                }
+              }}
+              onKeyDown={(event) => {
+                if (event.target !== event.currentTarget) return;
+                if (
+                  ["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "].includes(
+                    event.key,
+                  )
+                ) {
+                  markUserScrollIntent();
+                }
+              }}
               onScroll={(event) => {
                 const node = event.currentTarget;
-                const pinned = node.scrollHeight - node.scrollTop - node.clientHeight < 40;
-                pinnedRef.current = pinned;
-                setShowScrollToBottom(!pinned);
+                const next = followStateAfterScroll(
+                  followingRef.current,
+                  userScrollIntentRef.current || pointerScrollIntentRef.current,
+                  node.scrollHeight - node.scrollTop - node.clientHeight,
+                );
+                if (next !== followingRef.current) updateFollowing(next);
               }}
             >
               <div ref={scrollContentRef} className="min-h-full">
@@ -228,18 +329,13 @@ export function PiAgentPane({ workspace, view, pane }: PaneComponentProps): JSX.
             </div>
             <button
               type="button"
-              className={`absolute bottom-3 left-1/2 z-10 grid h-8 w-8 -translate-x-1/2 place-items-center rounded-full border border-[#30363d] bg-[#161b22]/95 text-[#8b949e] shadow-[0_4px_14px_rgba(0,0,0,0.4)] backdrop-blur-sm transition-[opacity,transform,background-color,border-color,color] duration-200 ease-out hover:border-[#484f58] hover:bg-[#21262d] hover:text-[#f0f6fc] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#2f81f7] ${showScrollToBottom && isActive ? "translate-y-0 opacity-100" : "pointer-events-none translate-y-2 opacity-0"}`}
+              className={`absolute bottom-3 left-1/2 z-10 grid h-8 w-8 -translate-x-1/2 place-items-center rounded-full border border-[#30363d] bg-[#161b22]/95 text-[#8b949e] shadow-[0_4px_14px_rgba(0,0,0,0.4)] backdrop-blur-sm transition-[opacity,transform,background-color,border-color,color] duration-200 ease-out hover:border-[#484f58] hover:bg-[#21262d] hover:text-[#f0f6fc] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#2f81f7] ${!isFollowing && isActive ? "translate-y-0 opacity-100" : "pointer-events-none translate-y-2 opacity-0"}`}
               aria-label="Scroll to bottom"
-              aria-hidden={!showScrollToBottom || !isActive}
-              tabIndex={showScrollToBottom && isActive ? 0 : -1}
+              aria-hidden={isFollowing || !isActive}
+              tabIndex={!isFollowing && isActive ? 0 : -1}
               title="Scroll to bottom"
               onMouseDown={(event) => event.preventDefault()}
-              onClick={() => {
-                const node = scrollRef.current;
-                if (!node) return;
-                pinnedRef.current = true;
-                node.scrollTop = node.scrollHeight;
-              }}
+              onClick={pinToBottom}
             >
               <svg aria-hidden="true" viewBox="0 0 16 16" className="h-4 w-4" fill="none">
                 <path
@@ -266,6 +362,7 @@ export function PiAgentPane({ workspace, view, pane }: PaneComponentProps): JSX.
             onChange={setDraft}
             onImagesChange={setImages}
             onSubmit={(message, images) => {
+              pinToBottom();
               if (!images.length && runUiCommand(message)) {
                 setDraft("");
                 return;

@@ -91,6 +91,35 @@ body.is-reordering * {
   font-family: "JetBrains Mono", "Fira Code", "SF Mono", Menlo, Consolas, monospace;
 }
 
+.pi-agent,
+.pi-agent * {
+  scrollbar-color: var(--pi-border) var(--pi-page);
+  scrollbar-width: thin;
+}
+
+.pi-agent ::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+.pi-agent ::-webkit-scrollbar-track {
+  background: var(--pi-page);
+}
+
+.pi-agent ::-webkit-scrollbar-thumb {
+  border: 2px solid var(--pi-page);
+  border-radius: 8px;
+  background: var(--pi-border);
+}
+
+.pi-agent ::-webkit-scrollbar-thumb:hover {
+  background: var(--pi-dim);
+}
+
+.pi-agent ::-webkit-scrollbar-corner {
+  background: var(--pi-page);
+}
+
 .pi-transcript {
   width: 100%;
   min-width: 0;
