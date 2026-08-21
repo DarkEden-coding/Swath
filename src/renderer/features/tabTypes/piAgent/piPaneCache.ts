@@ -7,8 +7,8 @@
  * pane resyncs from pi for anything streamed while it was hidden.
  */
 
-import type { PiImageContent } from "../../../../shared/ipc/piRpc";
-import type { PiPaneState } from "./eventReducer";
+import { parsePiLine, type PiImageContent } from "../../../../shared/ipc/piRpc";
+import { reducePiEvent, type PiPaneState } from "./eventReducer";
 
 export interface AttachedImage extends PiImageContent {
   /** `[Image N]` marker mirroring the pi clipboard-image-paste extension. */
@@ -24,6 +24,34 @@ export interface PiPaneCacheEntry {
 export const piPaneCache = new Map<string, PiPaneCacheEntry>();
 /** Panes whose pi process is already running, so a remount reattaches instead of respawning. */
 export const spawnedPanes = new Set<string>();
+let eventCacheStarted = false;
+const mountedPanes = new Set<string>();
+
+/** Keeps events received while a project or tab is unmounted for its next render. */
+export function mountPiPaneEventCache(paneId: string): () => void {
+  mountedPanes.add(paneId);
+  if (!eventCacheStarted) {
+    eventCacheStarted = true;
+    window.swath.pi.onEvent(cacheHiddenPaneEvent);
+  }
+  return () => mountedPanes.delete(paneId);
+}
+
+/** Applies an event only when React is not mounted to handle it itself. */
+function cacheHiddenPaneEvent(paneId: string, line?: string, exited?: boolean): void {
+  if (mountedPanes.has(paneId)) return;
+  const entry = piPaneCache.get(paneId);
+  if (!entry) return;
+  const state = exited
+    ? { ...entry.state, exited: true, isStreaming: false }
+    : line
+      ? (() => {
+          const event = parsePiLine(line);
+          return event ? reducePiEvent(entry.state, event) : entry.state;
+        })()
+      : entry.state;
+  piPaneCache.set(paneId, { ...entry, state });
+}
 /**
  * Session files adopted through `/resume`, so a restarted pane reopens the resumed conversation
  * rather than its own `--session-id`.

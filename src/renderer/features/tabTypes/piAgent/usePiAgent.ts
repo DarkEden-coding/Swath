@@ -21,7 +21,7 @@ import {
   type PiPaneState,
 } from "./eventReducer";
 import { reportError } from "../../../lib/errorLog";
-import { piPaneCache, resumedSessions, spawnedPanes } from "./piPaneCache";
+import { piPaneCache, resumedSessions, spawnedPanes, mountPiPaneEventCache } from "./piPaneCache";
 
 type Action =
   | { type: "line"; line: string }
@@ -78,6 +78,8 @@ export interface PiAgentController {
 }
 
 export function usePiAgent(paneId: string, cwd: string | undefined): PiAgentController {
+  useEffect(() => mountPiPaneEventCache(paneId), [paneId]);
+
   const [state, dispatch] = useReducer(
     reducer,
     paneId,
