@@ -420,6 +420,7 @@ export function PiAgentPane({ workspace, view, pane }: PaneComponentProps): JSX.
         <DialogHost
           key={state.dialogs[0]?.id ?? "none"}
           dialog={state.dialogs[0]}
+          paneId={paneId}
           cwd={cwd}
           onAnswer={agent.answerDialog}
         />

@@ -13,6 +13,8 @@ import type { PiDialog } from "./eventReducer";
 
 interface DialogHostProps {
   dialog: PiDialog | undefined;
+  /** Stable pane identifier used to retain questionnaire drafts across tab switches. */
+  paneId: string;
   /** Workspace directory, used to resolve images attached to `ask_user_questions`. */
   cwd: string;
   onAnswer: (
@@ -25,7 +27,7 @@ interface DialogHostProps {
  * Callers must pass `key={dialog?.id}` so each dialog gets a fresh draft rather than
  * inheriting the previous one's text.
  */
-export function DialogHost({ dialog, cwd, onAnswer }: DialogHostProps): JSX.Element | null {
+export function DialogHost({ dialog, paneId, cwd, onAnswer }: DialogHostProps): JSX.Element | null {
   const [draft, setDraft] = useState(dialog?.method === "editor" ? (dialog.prefill ?? "") : "");
   const [selected, setSelected] = useState(0);
 
@@ -40,6 +42,7 @@ export function DialogHost({ dialog, cwd, onAnswer }: DialogHostProps): JSX.Elem
     return (
       <AskQuestionsDialog
         questions={askQuestions}
+        cacheKey={`${paneId}:${dialog.id}`}
         cwd={cwd}
         onSubmit={(value) => onAnswer(dialog.id, { value })}
         onCancel={cancel}

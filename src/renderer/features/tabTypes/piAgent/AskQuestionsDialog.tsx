@@ -16,27 +16,40 @@ import { serializeAskAnswers, type AskAnswer, type AskQuestion } from "./askQues
 
 interface AskQuestionsDialogProps {
   questions: AskQuestion[];
+  /** Stable pane/dialog identifier used to retain drafts while its tab is unmounted. */
+  cacheKey: string;
   /** Workspace directory used to resolve relative image paths. */
   cwd: string;
   onSubmit: (value: string) => void;
   onCancel: () => void;
 }
 
+interface AskQuestionsDraft {
+  index: number;
+  answers: (AskAnswer | undefined)[];
+  customDrafts: Record<number, string>;
+}
+
 const CUSTOM_OPTION = "Custom response…";
+const draftCache = new Map<string, AskQuestionsDraft>();
 
 export function AskQuestionsDialog({
   questions,
+  cacheKey,
   cwd,
   onSubmit,
   onCancel,
 }: AskQuestionsDialogProps): JSX.Element {
   // `index === questions.length` is the review page.
   const reviewIndex = questions.length;
-  const [index, setIndex] = useState(0);
-  const [answers, setAnswers] = useState<(AskAnswer | undefined)[]>(() =>
-    Array.from({ length: questions.length }, () => undefined),
+  const cached = draftCache.get(cacheKey);
+  const [index, setIndex] = useState(cached?.index ?? 0);
+  const [answers, setAnswers] = useState<(AskAnswer | undefined)[]>(
+    () => cached?.answers ?? Array.from({ length: questions.length }, () => undefined),
   );
-  const [customDrafts, setCustomDrafts] = useState<Record<number, string>>({});
+  const [customDrafts, setCustomDrafts] = useState<Record<number, string>>(
+    cached?.customDrafts ?? {},
+  );
   const [images, setImages] = useState<Record<string, AskImage>>({});
   const [zoomed, setZoomed] = useState<string | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -79,6 +92,10 @@ export function AskQuestionsDialog({
     containerRef.current?.focus();
   }, []);
 
+  useEffect(() => {
+    draftCache.set(cacheKey, { index, answers, customDrafts });
+  }, [answers, cacheKey, customDrafts, index]);
+
   const answered = answers.filter(Boolean).length;
 
   // Returning zero answers tells the agent nothing; Cancel is the way to decline.
@@ -86,13 +103,19 @@ export function AskQuestionsDialog({
 
   const submit = useCallback(() => {
     if (answered === 0) return;
+    draftCache.delete(cacheKey);
     onSubmit(
       serializeAskAnswers({
         answers: answers.filter((answer): answer is AskAnswer => answer !== undefined),
         cancelled: false,
       }),
     );
-  }, [answered, answers, onSubmit]);
+  }, [answered, answers, cacheKey, onSubmit]);
+
+  const cancel = useCallback(() => {
+    draftCache.delete(cacheKey);
+    onCancel();
+  }, [cacheKey, onCancel]);
 
   const setAnswer = useCallback((at: number, answer: AskAnswer | undefined) => {
     setAnswers((current) => {
@@ -136,7 +159,7 @@ export function AskQuestionsDialog({
       if (event.key === "Escape") {
         event.preventDefault();
         if (zoomed) setZoomed(null);
-        else onCancel();
+        else cancel();
         return;
       }
       // Arrow keys belong to the caret while a custom answer is being typed.
@@ -154,7 +177,7 @@ export function AskQuestionsDialog({
         submit();
       }
     },
-    [index, onCancel, reviewIndex, submit, zoomed],
+    [cancel, index, reviewIndex, submit, zoomed],
   );
 
   const current = questions[index];
@@ -165,7 +188,7 @@ export function AskQuestionsDialog({
         ref={containerRef}
         tabIndex={-1}
         onKeyDown={onKeyDown}
-        className="flex h-full max-h-[92%] w-full max-w-5xl flex-col rounded border border-[var(--pi-purple)] bg-[var(--pi-page)] font-mono outline-none"
+        className="flex h-[92%] min-h-0 w-full max-w-5xl flex-col overflow-hidden rounded border border-[var(--pi-purple)] bg-[var(--pi-page)] font-mono outline-none"
       >
         <QuestionNav
           count={questions.length}
@@ -202,7 +225,7 @@ export function AskQuestionsDialog({
           onBack={() => setIndex((value) => Math.max(0, value - 1))}
           onNext={() => setIndex((value) => Math.min(reviewIndex, value + 1))}
           onSubmit={submit}
-          onCancel={onCancel}
+          onCancel={cancel}
         />
       </div>
 
@@ -225,39 +248,41 @@ function QuestionNav({
   onSelect: (index: number) => void;
 }): JSX.Element {
   return (
-    <div className="flex flex-wrap items-center gap-1.5 border-b border-[var(--pi-border)] px-4 py-2.5">
-      {Array.from({ length: count }, (_, i) => {
-        const isCurrent = i === index;
-        const isAnswered = Boolean(answers[i]);
-        return (
-          <button
-            key={i}
-            type="button"
-            title={answers[i]?.answer ?? "Unanswered"}
-            onClick={() => onSelect(i)}
-            className={`h-6 min-w-6 rounded border px-1.5 text-[11px] ${
-              isCurrent
-                ? "border-[var(--pi-purple)] bg-[#172235] text-[var(--pi-text)]"
-                : isAnswered
-                  ? "border-swath-good/60 text-swath-good"
-                  : "border-[var(--pi-border)] text-swath-muted"
-            }`}
-          >
-            {isAnswered && !isCurrent ? "✓" : i + 1}
-          </button>
-        );
-      })}
-      <button
-        type="button"
-        onClick={() => onSelect(reviewIndex)}
-        className={`ml-1 h-6 rounded border px-2 text-[11px] ${
-          index === reviewIndex
-            ? "border-[var(--pi-purple)] bg-[#172235] text-[var(--pi-text)]"
-            : "border-[var(--pi-border)] text-swath-muted"
-        }`}
-      >
-        Review
-      </button>
+    <div className="max-h-24 shrink-0 overflow-auto border-b border-[var(--pi-border)] px-4 py-2.5">
+      <div className="flex flex-wrap items-center gap-1.5">
+        {Array.from({ length: count }, (_, i) => {
+          const isCurrent = i === index;
+          const isAnswered = Boolean(answers[i]);
+          return (
+            <button
+              key={i}
+              type="button"
+              title={answers[i]?.answer ?? "Unanswered"}
+              onClick={() => onSelect(i)}
+              className={`h-6 min-w-6 rounded border px-1.5 text-[11px] ${
+                isCurrent
+                  ? "border-[var(--pi-purple)] bg-[#172235] text-[var(--pi-text)]"
+                  : isAnswered
+                    ? "border-swath-good/60 text-swath-good"
+                    : "border-[var(--pi-border)] text-swath-muted"
+              }`}
+            >
+              {isAnswered && !isCurrent ? "✓" : i + 1}
+            </button>
+          );
+        })}
+        <button
+          type="button"
+          onClick={() => onSelect(reviewIndex)}
+          className={`ml-1 h-6 rounded border px-2 text-[11px] ${
+            index === reviewIndex
+              ? "border-[var(--pi-purple)] bg-[#172235] text-[var(--pi-text)]"
+              : "border-[var(--pi-border)] text-swath-muted"
+          }`}
+        >
+          Review
+        </button>
+      </div>
     </div>
   );
 }
@@ -283,8 +308,30 @@ function QuestionPage({
   onCommitCustom: () => void;
   onZoom: (src: string) => void;
 }): JSX.Element {
-  const [customOpen, setCustomOpen] = useState(answer?.type === "custom");
+  const [customOpen, setCustomOpen] = useState(
+    answer?.type === "custom" || customDraft !== undefined,
+  );
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const attached = question.images ?? [];
+
+  useEffect(() => {
+    const onMenuPaste = (): void => {
+      const textarea = textareaRef.current;
+      if (!textarea || document.activeElement !== textarea) return;
+      void window.swath.clipboard.readForTerminal().then((payload) => {
+        if (!payload.text) return;
+        const value = customDraft ?? (answer?.type === "custom" ? answer.answer : "");
+        const start = textarea.selectionStart;
+        const end = textarea.selectionEnd;
+        onCustomDraft(value.slice(0, start) + payload.text + value.slice(end));
+        requestAnimationFrame(() => {
+          textarea.selectionStart = textarea.selectionEnd = start + payload.text.length;
+        });
+      });
+    };
+    window.addEventListener("swath:terminal-paste", onMenuPaste);
+    return () => window.removeEventListener("swath:terminal-paste", onMenuPaste);
+  }, [answer, customDraft, onCustomDraft]);
 
   return (
     <div className="flex flex-col gap-4">
@@ -341,6 +388,7 @@ function QuestionPage({
       {customOpen ? (
         <div className="flex flex-col gap-2">
           <textarea
+            ref={textareaRef}
             autoFocus
             value={customDraft ?? (answer?.type === "custom" ? answer.answer : "")}
             placeholder="Type your answer, then Ctrl+Enter"
@@ -467,7 +515,7 @@ function Footer({
   onCancel: () => void;
 }): JSX.Element {
   return (
-    <div className="flex items-center justify-between gap-3 border-t border-[var(--pi-border)] px-4 py-2.5">
+    <div className="shrink-0 flex items-center justify-between gap-3 border-t border-[var(--pi-border)] px-4 py-2.5">
       <div className="text-[11px] text-swath-muted">
         {answered}/{total} answered · ←→ to move between questions
       </div>
