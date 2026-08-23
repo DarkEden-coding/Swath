@@ -1,9 +1,22 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import appIcon from "../../../assets/app-icon-64.png";
 import { isTauriRuntime } from "../../../platform/runtime";
 
 type WindowAction = "close" | "minimize" | "toggleMaximize";
+type ResizeDirection =
+  "East" | "North" | "NorthEast" | "NorthWest" | "South" | "SouthEast" | "SouthWest" | "West";
+
+const resizeHandles: ReadonlyArray<{ direction: ResizeDirection; className: string }> = [
+  { direction: "North", className: "inset-x-2 top-0 h-1.5 cursor-ns-resize" },
+  { direction: "South", className: "inset-x-2 bottom-0 h-1.5 cursor-ns-resize" },
+  { direction: "East", className: "inset-y-2 right-0 w-1.5 cursor-ew-resize" },
+  { direction: "West", className: "inset-y-2 left-0 w-1.5 cursor-ew-resize" },
+  { direction: "NorthEast", className: "right-0 top-0 size-2 cursor-nesw-resize" },
+  { direction: "NorthWest", className: "left-0 top-0 size-2 cursor-nwse-resize" },
+  { direction: "SouthEast", className: "bottom-0 right-0 size-2 cursor-nwse-resize" },
+  { direction: "SouthWest", className: "bottom-0 left-0 size-2 cursor-nesw-resize" },
+];
 
 async function runWindowAction(action: WindowAction): Promise<void> {
   if (!isTauriRuntime()) return;
@@ -53,6 +66,19 @@ const controlClass =
 export function WindowTitleBar(): JSX.Element {
   const [maximized, setMaximized] = useState(false);
 
+  const startResize =
+    (direction: ResizeDirection) =>
+    (event: ReactPointerEvent<HTMLDivElement>): void => {
+      if (event.button !== 0 || maximized || !isTauriRuntime()) return;
+
+      event.preventDefault();
+      void getCurrentWindow()
+        .startResizeDragging(direction)
+        .catch((error) => {
+          console.error("Unable to start resizing the application window", error);
+        });
+    };
+
   useEffect(() => {
     if (!isTauriRuntime()) return;
 
@@ -89,52 +115,62 @@ export function WindowTitleBar(): JSX.Element {
   };
 
   return (
-    <header
-      className="flex h-10 shrink-0 select-none items-stretch border-b border-swath-border bg-swath-panel [-webkit-app-region:drag] [app-region:drag]"
-      data-tauri-drag-region
-      onDoubleClick={(event) => {
-        if ((event.target as HTMLElement).closest("button")) return;
-        toggleMaximize();
-      }}
-    >
-      <div
-        className="pointer-events-none flex min-w-0 flex-1 items-center gap-2.5 px-3"
+    <>
+      <header
+        className="flex h-10 shrink-0 select-none items-stretch border-b border-swath-border bg-swath-panel [-webkit-app-region:drag] [app-region:drag]"
         data-tauri-drag-region
+        onDoubleClick={(event) => {
+          if ((event.target as HTMLElement).closest("button")) return;
+          toggleMaximize();
+        }}
       >
-        <img src={appIcon} alt="" className="size-5 object-contain" draggable={false} />
-        <span className="truncate text-xs font-semibold tracking-[0.025em] text-swath-muted">
-          Swath
-        </span>
-      </div>
-      <div className="flex shrink-0 items-stretch [-webkit-app-region:no-drag] [app-region:no-drag]">
-        <button
-          type="button"
-          className={controlClass}
-          aria-label="Minimize window"
-          title="Minimize"
-          onClick={() => void runWindowAction("minimize")}
+        <div
+          className="pointer-events-none flex min-w-0 flex-1 items-center gap-2.5 px-3"
+          data-tauri-drag-region
         >
-          <MinimizeIcon />
-        </button>
-        <button
-          type="button"
-          className={controlClass}
-          aria-label={maximized ? "Restore window" : "Maximize window"}
-          title={maximized ? "Restore" : "Maximize"}
-          onClick={toggleMaximize}
-        >
-          <MaximizeIcon maximized={maximized} />
-        </button>
-        <button
-          type="button"
-          className={`${controlClass} hover:bg-swath-danger hover:text-white`}
-          aria-label="Close window"
-          title="Close"
-          onClick={() => void runWindowAction("close")}
-        >
-          <CloseIcon />
-        </button>
-      </div>
-    </header>
+          <img src={appIcon} alt="" className="size-5 object-contain" draggable={false} />
+          <span className="truncate text-xs font-semibold tracking-[0.025em] text-swath-muted">
+            Swath
+          </span>
+        </div>
+        <div className="flex shrink-0 items-stretch [-webkit-app-region:no-drag] [app-region:no-drag]">
+          <button
+            type="button"
+            className={controlClass}
+            aria-label="Minimize window"
+            title="Minimize"
+            onClick={() => void runWindowAction("minimize")}
+          >
+            <MinimizeIcon />
+          </button>
+          <button
+            type="button"
+            className={controlClass}
+            aria-label={maximized ? "Restore window" : "Maximize window"}
+            title={maximized ? "Restore" : "Maximize"}
+            onClick={toggleMaximize}
+          >
+            <MaximizeIcon maximized={maximized} />
+          </button>
+          <button
+            type="button"
+            className={`${controlClass} hover:bg-swath-danger hover:text-white`}
+            aria-label="Close window"
+            title="Close"
+            onClick={() => void runWindowAction("close")}
+          >
+            <CloseIcon />
+          </button>
+        </div>
+      </header>
+      {resizeHandles.map(({ direction, className }) => (
+        <div
+          key={direction}
+          aria-hidden
+          className={`fixed z-[100] ${className} [-webkit-app-region:no-drag] [app-region:no-drag]`}
+          onPointerDown={startResize(direction)}
+        />
+      ))}
+    </>
   );
 }
