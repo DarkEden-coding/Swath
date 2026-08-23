@@ -8,16 +8,12 @@ import type { FilesRpcRequest } from "../../shared/ipc/filesRpc";
 import type { GitRpcRequest } from "../../shared/ipc/gitRpc";
 import type { AskImagesRequest } from "../../shared/ipc/askImages";
 import type { PiHostEvent, PiRpcRequest } from "../../shared/ipc/piRpc";
+import { detectHostPlatform } from "./runtime";
 
 /** Creates the renderer API backed by Tauri commands and events. */
 export function createTauriSwath(): SwathApi {
   return {
-    platform:
-      typeof navigator !== "undefined"
-        ? navigator.platform.includes("Win")
-          ? "win32"
-          : "darwin"
-        : "darwin",
+    platform: detectHostPlatform(),
     config: {
       load: () => invoke(TauriCommands.configLoad),
       save: (config: AppConfig) => invoke(TauriCommands.configSave, { config }),

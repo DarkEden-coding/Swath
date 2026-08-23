@@ -3,7 +3,7 @@ mod commands;
 mod config;
 mod files;
 mod git;
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "macos")]
 mod menu;
 mod pi_agent;
 mod platform;
@@ -28,12 +28,11 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_window_state::Builder::default().build())
         .setup(|app| {
             let terminal = Arc::new(TerminalManager::new(app.handle().clone()));
             let pi = Arc::new(PiManager::new());
             app.manage(AppState { terminal, pi });
-            #[cfg(not(target_os = "windows"))]
+            #[cfg(target_os = "macos")]
             menu::install_menu(app.handle())?;
             Ok(())
         })

@@ -4,6 +4,7 @@ import type { AskImagesRequest } from "../../shared/ipc/askImages";
 import type { FilesRpcRequest } from "../../shared/ipc/filesRpc";
 import type { PiRpcRequest } from "../../shared/ipc/piRpc";
 import type { AppConfig } from "../../shared/types";
+import { detectHostPlatform } from "./runtime";
 
 /** Demo configuration used only by Vite's browser development mode. */
 export const browserDevConfig: AppConfig = {
@@ -82,12 +83,7 @@ export function createBrowserStubSwath(): SwathApi {
   let saved: AppConfig = structuredClone(browserDevConfig);
 
   return {
-    platform:
-      typeof navigator !== "undefined"
-        ? navigator.platform.includes("Win")
-          ? "win32"
-          : "darwin"
-        : "darwin",
+    platform: detectHostPlatform(),
     config: {
       load: async () => structuredClone(saved),
       save: async (config: AppConfig) => {

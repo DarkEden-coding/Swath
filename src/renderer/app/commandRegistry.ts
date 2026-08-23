@@ -29,6 +29,24 @@ export interface CommandContext {
   openSettings: () => void;
 }
 
+/** Maps a shortcut to an app command. macOS keeps native menu accelerators. */
+export function commandFromKeyboardEvent(
+  event: KeyboardEvent,
+  platform: string,
+): AppCommand | null {
+  const modifier = event.metaKey || event.ctrlKey;
+  if (!modifier || event.altKey) return null;
+  if (event.key === ",") return "settings:open";
+  if (platform === "darwin") return null;
+
+  const key = event.key.toLowerCase();
+  if (key === "o" && event.shiftKey) return "workspace:add";
+  if (key === "t" && !event.shiftKey) return "view:new";
+  if (key === "w") return event.shiftKey ? "pane:close" : "view:close";
+  if (event.code === "Backslash") return event.shiftKey ? "pane:split-down" : "pane:split-right";
+  return null;
+}
+
 export function runAppCommand(command: string, context: CommandContext): void {
   const workspace = context.activeWorkspace;
   const view = context.activeView;
