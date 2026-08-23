@@ -9,9 +9,10 @@ mod pi_agent;
 mod platform;
 mod terminal;
 mod types;
+mod window_state;
 
 use std::sync::Arc;
-use tauri::{Manager, RunEvent};
+use tauri::{Manager, RunEvent, WindowEvent};
 
 use pi_agent::PiManager;
 use terminal::TerminalManager;
@@ -32,6 +33,10 @@ pub fn run() {
             let terminal = Arc::new(TerminalManager::new(app.handle().clone()));
             let pi = Arc::new(PiManager::new());
             app.manage(AppState { terminal, pi });
+            if let Some(window) = app.get_webview_window("main") {
+                window_state::restore(app.handle(), &window)
+                    .map_err(|err| format!("failed to restore window placement: {err}"))?;
+            }
             #[cfg(target_os = "macos")]
             menu::install_menu(app.handle())?;
             Ok(())
@@ -63,6 +68,20 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building Swath")
         .run(|app, event| {
+            if let RunEvent::WindowEvent {
+                label,
+                event: WindowEvent::Moved(_) | WindowEvent::Resized(_),
+                ..
+            } = &event
+            {
+                if label == "main" {
+                    if let Some(window) = app.get_webview_window(label) {
+                        if let Err(err) = window_state::save(app, &window) {
+                            eprintln!("failed to save window placement: {err}");
+                        }
+                    }
+                }
+            }
             if let RunEvent::ExitRequested { .. } = event {
                 if let Some(state) = app.try_state::<AppState>() {
                     state.terminal.kill_all();
