@@ -19,6 +19,7 @@
     "dist": "npm run tauri:build",
     "install:mac": "bash scripts/install-mac.sh",
     "install:win": "powershell -ExecutionPolicy Bypass -File scripts/install-windows.ps1",
+    "install:fedora": "bash scripts/install-fedora.sh",
     "lint": "eslint .",
     "format:check": "prettier --check .",
     "format": "prettier --write ."

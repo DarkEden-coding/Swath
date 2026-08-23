@@ -87,6 +87,7 @@ This runs Tauri with a Vite-powered renderer and a Rust backend.
 | `npm run dist`           | Builds distributable Tauri packages.                    |
 | `npm run install:mac`    | Builds and installs Swath to `/Applications` on macOS.  |
 | `npm run install:win`    | Builds Swath and creates a Windows Start Menu shortcut. |
+| `npm run install:fedora` | Builds Swath and installs a Fedora desktop launcher.    |
 
 ## Keyboard Shortcuts
 
