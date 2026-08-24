@@ -11,7 +11,13 @@ mod terminal;
 mod types;
 mod window_state;
 
-use std::sync::Arc;
+use std::{
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+    time::Duration,
+};
 use tauri::{Manager, RunEvent, WindowEvent};
 
 use pi_agent::PiManager;
@@ -21,6 +27,7 @@ use terminal::TerminalManager;
 pub struct AppState {
     terminal: Arc<TerminalManager>,
     pi: Arc<PiManager>,
+    placement_persistence_ready: Arc<AtomicBool>,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -32,11 +39,22 @@ pub fn run() {
         .setup(|app| {
             let terminal = Arc::new(TerminalManager::new(app.handle().clone()));
             let pi = Arc::new(PiManager::new());
-            app.manage(AppState { terminal, pi });
+            let placement_persistence_ready = Arc::new(AtomicBool::new(false));
+            app.manage(AppState {
+                terminal,
+                pi,
+                placement_persistence_ready: placement_persistence_ready.clone(),
+            });
             if let Some(window) = app.get_webview_window("main") {
                 window_state::restore(app.handle(), &window)
                     .map_err(|err| format!("failed to restore window placement: {err}"))?;
             }
+            // Restoring a Tauri window generates move/resize events while the compositor applies the
+            // requested geometry. Do not overwrite the saved placement with those transient sizes.
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_secs(1));
+                placement_persistence_ready.store(true, Ordering::Release);
+            });
             #[cfg(target_os = "macos")]
             menu::install_menu(app.handle())?;
             Ok(())
@@ -74,7 +92,11 @@ pub fn run() {
                 ..
             } = &event
             {
-                if label == "main" {
+                if label == "main"
+                    && app
+                        .try_state::<AppState>()
+                        .is_some_and(|state| state.placement_persistence_ready.load(Ordering::Acquire))
+                {
                     if let Some(window) = app.get_webview_window(label) {
                         if let Err(err) = window_state::save(app, &window) {
                             eprintln!("failed to save window placement: {err}");
