@@ -85,7 +85,8 @@ fn git_command(cwd: &str, args: &[&str]) -> Command {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .env("GIT_TERMINAL_PROMPT", "0")
-        .env("GIT_PROGRESS_DELAY", "0");
+        .env("GIT_PROGRESS_DELAY", "0")
+        .env("GIT_DISCOVERY_ACROSS_FILESYSTEM", "1");
     #[cfg(windows)]
     command.creation_flags(CREATE_NO_WINDOW);
     command
