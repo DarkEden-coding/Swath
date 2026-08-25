@@ -46,7 +46,7 @@ pub fn restore(app: &AppHandle, window: &WebviewWindow) -> Result<()> {
     Ok(())
 }
 
-/// Persists the outer position and inner size after each native window move or resize event.
+/// Persists the outer position and inner size before the window closes.
 pub fn save(app: &AppHandle, window: &WebviewWindow) -> Result<()> {
     if window.is_minimized()? {
         return Ok(());
@@ -76,6 +76,9 @@ fn placement_is_visible(app: &AppHandle, state: &WindowState) -> Result<bool> {
         let area = monitor.work_area();
         let area_right = area.position.x.saturating_add_unsigned(area.size.width);
         let area_bottom = area.position.y.saturating_add_unsigned(area.size.height);
-        state.x < area_right && right > area.position.x && state.y < area_bottom && bottom > area.position.y
+        state.x < area_right
+            && right > area.position.x
+            && state.y < area_bottom
+            && bottom > area.position.y
     }))
 }
