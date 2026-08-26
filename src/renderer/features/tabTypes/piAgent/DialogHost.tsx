@@ -34,6 +34,11 @@ export function DialogHost({ dialog, paneId, cwd, onAnswer }: DialogHostProps): 
   if (!dialog) return null;
 
   const cancel = (): void => onAnswer(dialog.id, { cancelled: true });
+  const sudoPassword =
+    dialog.method === "input" && dialog.title?.startsWith("SWATH_SUDO_PASSWORD_V1:") === true;
+  const title = sudoPassword
+    ? (dialog.title ?? "").slice("SWATH_SUDO_PASSWORD_V1:".length)
+    : dialog.title;
 
   // `ask_user_questions` tunnels its whole question set through a select title, because pi's
   // RPC protocol has no richer dialog method. See `askQuestions.ts`.
@@ -73,8 +78,8 @@ export function DialogHost({ dialog, paneId, cwd, onAnswer }: DialogHostProps): 
           }
         }}
       >
-        {dialog.title ? (
-          <div className="mb-3 text-sm font-semibold text-[var(--pi-blue)]">{dialog.title}</div>
+        {title ? (
+          <div className="mb-3 text-sm font-semibold text-[var(--pi-blue)]">{title}</div>
         ) : null}
 
         {dialog.method === "confirm" ? (
@@ -123,20 +128,38 @@ export function DialogHost({ dialog, paneId, cwd, onAnswer }: DialogHostProps): 
 
         {dialog.method === "input" || dialog.method === "editor" ? (
           <>
-            <textarea
-              autoFocus
-              className="mb-3 h-32 w-full resize-none rounded border border-[var(--pi-border)] bg-[var(--pi-surface)] p-2 text-[12px] text-[var(--pi-text)] outline-none focus:border-[var(--pi-purple)]"
-              placeholder={dialog.method === "input" ? (dialog.placeholder ?? "") : ""}
-              value={draft}
-              onChange={(event) => setDraft(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
-                  event.preventDefault();
-                  onAnswer(dialog.id, { value: draft });
-                }
-                if (event.key === "Escape") cancel();
-              }}
-            />
+            {sudoPassword ? (
+              <input
+                autoFocus
+                type="password"
+                autoComplete="current-password"
+                className="mb-3 w-full rounded border border-[var(--pi-border)] bg-[var(--pi-surface)] p-2 text-[12px] text-[var(--pi-text)] outline-none focus:border-[var(--pi-purple)]"
+                placeholder={dialog.placeholder ?? ""}
+                value={draft}
+                onChange={(event) => setDraft(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    onAnswer(dialog.id, { value: draft });
+                  } else if (event.key === "Escape") cancel();
+                }}
+              />
+            ) : (
+              <textarea
+                autoFocus
+                className="mb-3 h-32 w-full resize-none rounded border border-[var(--pi-border)] bg-[var(--pi-surface)] p-2 text-[12px] text-[var(--pi-text)] outline-none focus:border-[var(--pi-purple)]"
+                placeholder={dialog.method === "input" ? (dialog.placeholder ?? "") : ""}
+                value={draft}
+                onChange={(event) => setDraft(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+                    event.preventDefault();
+                    onAnswer(dialog.id, { value: draft });
+                  }
+                  if (event.key === "Escape") cancel();
+                }}
+              />
+            )}
             <div className="flex justify-end gap-2">
               <button
                 type="button"

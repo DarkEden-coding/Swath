@@ -21,6 +21,9 @@ const PI_EVENT: &str = "pi:event";
 /// Upper bound on retained stderr text per pane, for crash diagnostics.
 const STDERR_MAX_BYTES: usize = 64 * 1024;
 
+/// Swath-owned Pi extension that authenticates sudo through the RPC dialog protocol.
+const PI_SUDO_EXTENSION: &str = include_str!("pi_sudo.ts");
+
 type PiResult = Result<Value, String>;
 
 struct PiProcess {
@@ -55,10 +58,16 @@ impl PiManager {
     fn spawn(&self, app: &AppHandle, pane_id: &str, cwd: &str, extra_args: &[String]) -> PiResult {
         self.kill(pane_id)?;
 
+        let sudo_extension = std::env::temp_dir().join("swath-pi-sudo.ts");
+        fs::write(&sudo_extension, PI_SUDO_EXTENSION)
+            .map_err(|err| format!("Unable to prepare Pi sudo integration: {err}"))?;
+
         let mut command = pi_command();
         command
             .arg("--mode")
             .arg("rpc")
+            .arg("--extension")
+            .arg(sudo_extension)
             .args(extra_args)
             .current_dir(cwd)
             .stdin(Stdio::piped())
