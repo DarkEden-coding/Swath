@@ -80,6 +80,7 @@ export function Sidebar({ onToggleCollapse }: SidebarProps): JSX.Element {
                 }}
                 workspace={workspace}
                 active={config.activeWorkspaceId === workspace.id}
+                missing={workspace.isMissing === true}
                 originalIndex={originalIndex}
                 draggedIndex={
                   draggedId === null
@@ -130,6 +131,7 @@ interface WorkspaceItemProps {
   itemRef: (element: HTMLDivElement | null) => void;
   workspace: Workspace;
   active: boolean;
+  missing: boolean;
   originalIndex: number;
   draggedIndex: number | null;
   onDragStart: (event: DragEvent) => void;
@@ -145,6 +147,7 @@ function WorkspaceItem({
   itemRef,
   workspace,
   active,
+  missing,
   originalIndex,
   draggedIndex,
   onDragStart,
@@ -200,7 +203,7 @@ function WorkspaceItem({
       ref={itemRef}
       draggable={false}
       role="listitem"
-      className={`relative my-0.5 flex min-w-0 items-stretch gap-0.5 rounded-md border border-transparent bg-transparent [-webkit-app-region:no-drag] [app-region:no-drag] ${draggedIndex === originalIndex ? "opacity-[0.55]" : ""} ${activeClasses}`}
+      className={`relative my-0.5 flex min-w-0 items-stretch gap-0.5 rounded-md border border-transparent bg-transparent [-webkit-app-region:no-drag] [app-region:no-drag] ${draggedIndex === originalIndex ? "opacity-[0.55]" : ""} ${missing ? "grayscale opacity-45" : ""} ${activeClasses}`}
       onDragStart={(event) => {
         event.dataTransfer.effectAllowed = "move";
         event.dataTransfer.setData("text/plain", workspace.id);
@@ -233,9 +236,12 @@ function WorkspaceItem({
       </span>
       <button
         type="button"
-        className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 border-0 bg-transparent py-2 pl-1 pr-1.5 text-left [-webkit-app-region:no-drag] [app-region:no-drag]"
-        onClick={onSelect}
-        title={workspace.path}
+        className={`flex min-w-0 flex-1 items-center gap-2 border-0 bg-transparent py-2 pl-1 pr-1.5 text-left [-webkit-app-region:no-drag] [app-region:no-drag] ${missing ? "cursor-not-allowed" : "cursor-pointer"}`}
+        aria-disabled={missing}
+        onClick={() => {
+          if (!missing) onSelect();
+        }}
+        title={missing ? `${workspace.path} (folder unavailable)` : workspace.path}
       >
         <span className="shrink-0 text-sm opacity-85" aria-hidden>
           <IconFolder width={16} height={16} className="block" />

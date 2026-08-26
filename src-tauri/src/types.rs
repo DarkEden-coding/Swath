@@ -20,6 +20,9 @@ pub struct Workspace {
     pub id: String,
     pub name: String,
     pub path: String,
+    /// Computed while loading; it is not persisted so a restored folder becomes available again.
+    #[serde(skip_serializing, default)]
+    pub is_missing: bool,
     #[serde(default)]
     pub views: Vec<WorkspaceView>,
     pub active_view_id: String,

@@ -19,6 +19,8 @@ export interface Workspace {
   id: string;
   name: string;
   path: string;
+  /** True when the stored folder path is currently unavailable. */
+  isMissing?: boolean;
   views: WorkspaceView[];
   activeViewId: string;
   createdAt: number;

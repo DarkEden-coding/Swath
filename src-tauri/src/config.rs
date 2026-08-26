@@ -112,24 +112,23 @@ pub fn save(app: &AppHandle, config: &AppConfig) -> Result<()> {
     Ok(())
 }
 
-/// Repairs defaults and removes workspaces whose paths no longer exist.
+/// Repairs defaults and marks workspaces whose paths are temporarily unavailable.
 fn normalize_config(config: &mut AppConfig) {
     config.version = 2;
-    let mut changed_active = false;
-    config.workspaces.retain(|workspace| {
-        let exists = std::path::Path::new(&workspace.path).exists();
-        if !exists && config.active_workspace_id.as_deref() == Some(&workspace.id) {
-            changed_active = true;
-        }
-        exists
-    });
-    if changed_active
-        || config
-            .active_workspace_id
-            .as_ref()
-            .is_some_and(|id| !config.workspaces.iter().any(|w| &w.id == id))
-    {
-        config.active_workspace_id = config.workspaces.first().map(|w| w.id.clone());
+    for workspace in &mut config.workspaces {
+        workspace.is_missing = !std::path::Path::new(&workspace.path).exists();
+    }
+    if config.active_workspace_id.as_ref().is_none_or(|id| {
+        !config
+            .workspaces
+            .iter()
+            .any(|workspace| &workspace.id == id && !workspace.is_missing)
+    }) {
+        config.active_workspace_id = config
+            .workspaces
+            .iter()
+            .find(|workspace| !workspace.is_missing)
+            .map(|workspace| workspace.id.clone());
     }
     let defaults = default_settings();
     if config.settings.shell_profiles.is_empty() {
@@ -229,4 +228,35 @@ pub fn default_shell_profiles() -> Vec<ShellProfile> {
             env: None,
         },
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn retains_missing_workspaces_without_persisting_the_missing_flag() {
+        let mut config = default_config();
+        config.workspaces.push(
+            serde_json::from_value(serde_json::json!({
+                "id": "missing",
+                "name": "Missing",
+                "path": std::env::temp_dir().join("swath-config-test-missing").to_string_lossy(),
+                "views": [],
+                "activeViewId": "",
+                "createdAt": 0,
+                "updatedAt": 0,
+            }))
+            .unwrap(),
+        );
+        config.active_workspace_id = Some("missing".into());
+
+        normalize_config(&mut config);
+
+        assert!(config.workspaces[0].is_missing);
+        assert_eq!(config.active_workspace_id, None);
+        assert!(serde_json::to_value(config).unwrap()["workspaces"][0]
+            .get("isMissing")
+            .is_none());
+    }
 }
