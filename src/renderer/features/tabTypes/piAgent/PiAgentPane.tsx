@@ -323,6 +323,7 @@ export function PiAgentPane({ workspace, view, pane }: PaneComponentProps): JSX.
                     working={state.isStreaming}
                     operationStatus={state.operationStatus}
                     cwd={cwd}
+                    scrollRootRef={scrollRef}
                   />
                 )}
               </div>

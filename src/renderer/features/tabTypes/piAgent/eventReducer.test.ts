@@ -606,6 +606,41 @@ describe("failed turns", () => {
     expect(entry.text).toBe("");
   });
 
+  it("reuses every entry object when rehydrating an unchanged transcript", () => {
+    const messages = [
+      { role: "user" as const, content: "hello" },
+      {
+        role: "assistant" as const,
+        content: [
+          { type: "text" as const, text: "hi" },
+          { type: "toolCall" as const, id: "t1", name: "bash", arguments: { command: "ls" } },
+        ],
+      },
+      { role: "toolResult" as const, toolCallId: "t1", toolName: "bash", content: [] },
+    ];
+    const first = hydrateFromMessages(initialPiPaneState(), messages);
+    const second = hydrateFromMessages(first, messages);
+
+    // Identical state, so nothing downstream re-renders.
+    expect(second).toBe(first);
+    expect(second.entries).toBe(first.entries);
+  });
+
+  it("replaces only the entries that actually changed", () => {
+    const before = hydrateFromMessages(initialPiPaneState(), [
+      { role: "user", content: "hello" },
+      { role: "assistant", content: [{ type: "text", text: "hi" }] },
+    ]);
+    const after = hydrateFromMessages(before, [
+      { role: "user", content: "hello" },
+      { role: "assistant", content: [{ type: "text", text: "hi there" }] },
+    ]);
+
+    expect(after.entries[0]).toBe(before.entries[0]);
+    expect(after.entries[1]).not.toBe(before.entries[1]);
+    expect((after.entries[1] as PiMessageEntry).text).toBe("hi there");
+  });
+
   it("keeps the error when history is rehydrated on a tab switch", () => {
     const state = hydrateFromMessages(initialPiPaneState(), [
       { role: "assistant", content: [], stopReason: "error", errorMessage: "boom" },

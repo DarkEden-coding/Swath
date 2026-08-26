@@ -207,9 +207,31 @@ Node-side tooling.)
 
 Only the active view is mounted, so a tab switch unmounts the pane. The pi child is therefore
 killed only from `piAgentTabType.closePane`, never on unmount; `piPaneCache.ts` keeps the last
-rendered state, draft and attachments, and a remount reattaches (`spawnedPanes`) and resyncs with
-the `get_state`/`get_messages`/`get_session_stats` handshake to pick up anything streamed while
-hidden.
+rendered state, draft and attachments, and a remount reattaches (`spawnedPanes`).
+
+The cache keeps *reducing events* while the pane is unmounted, so the restored transcript is
+already current: a reattach only refreshes `get_state`/`get_session_stats`. `get_messages` is
+reserved for a fresh spawn, or for a pane whose cache was dropped — on a long conversation it would
+otherwise hand React a rebuilt copy of history on every tab switch. Should it run anyway,
+`hydrateFromMessages` derives entry ids from message position and reconciles against the current
+entries, so unchanged rows keep their existing objects and re-render nothing.
+
+### 3.1c The transcript is windowed
+
+Rendering the whole conversation made a tab switch cost one full render per entry — markdown
+parsed, code highlighted, diffs rebuilt — and made every streamed token re-render every card.
+Three things keep that bounded:
+
+- Row components (`Message`, `ToolCard`, `ParallelToolGroup`) are memoised. The reducer already
+  leaves untouched entries object-identical, which is what makes a shallow comparison sufficient.
+- Only rows within `OVERSCAN_PX` of the viewport are mounted; the rest become spacers of the height
+  they last measured. Scroll height is unchanged, so the follow-to-bottom writer and every scroll
+  offset behave exactly as before, while the DOM, fibers and parsed markdown of off-screen history
+  are released. The last `TAIL_ROWS` stay mounted because `IntersectionObserver` reports too late
+  for streaming content. Disclosure state (expanded output, open thinking) lives in a map owned by
+  the transcript, since an unmounted row cannot hold its own.
+- Collapsed tool output is sliced with `collapseOutput` rather than split into a full line array,
+  which matters for the tools that return megabytes.
 
 Keyboard paste in the composer arrives as the `swath:terminal-paste` window event, not as a DOM
 paste event: `src-tauri/src/menu.rs` binds Cmd/Ctrl+V to a custom menu item, so the webview never

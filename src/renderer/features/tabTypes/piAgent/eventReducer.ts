@@ -651,14 +651,17 @@ export function reducePiEvent(state: PiPaneState, event: PiIncoming): PiPaneStat
  *
  * History needs a different path from the live stream: `tool_execution_*` events are not replayed,
  * so tool cards are reconstructed from assistant `toolCall` blocks and the matching `toolResult`
- * messages. Replaces any existing entries — this runs once, right after spawn.
+ * messages.
+ *
+ * Entry ids are derived from the message's position rather than a running counter, and the result
+ * is reconciled against the current entries: re-hydrating a transcript that has not changed reuses
+ * every existing object, so React sees no new props and re-renders nothing.
  */
 export function hydrateFromMessages(state: PiPaneState, messages: PiMessage[]): PiPaneState {
   const entries: PiEntry[] = [];
   const toolsByCallId = new Map<string, PiToolEntry>();
-  let seq = state.seq;
 
-  for (const message of messages) {
+  for (const [index, message] of messages.entries()) {
     if (!message) continue;
     if (message.role === "user" || message.role === "assistant") {
       const { text, thinking } = readMessage(message);
@@ -666,7 +669,7 @@ export function hydrateFromMessages(state: PiPaneState, messages: PiMessage[]): 
       if (text || thinking || error) {
         entries.push({
           kind: "message",
-          id: `msg-${seq++}`,
+          id: `hist-${index}`,
           role: message.role,
           text,
           thinking,
@@ -729,7 +732,72 @@ export function hydrateFromMessages(state: PiPaneState, messages: PiMessage[]): 
     }
   }
 
-  return { ...state, entries, seq };
+  const reconciled = reconcileEntries(state.entries, entries);
+  return reconciled === state.entries ? state : { ...state, entries: reconciled };
+}
+
+/**
+ * Returns `next` with every entry that matches the one already rendered replaced by the existing
+ * object, or `previous` itself when nothing changed at all.
+ *
+ * Hydration rebuilds the whole transcript from scratch, so without this a reattached pane hands
+ * React a brand-new object for every message and tool card and re-renders — re-parsing markdown,
+ * re-highlighting code, re-diffing — the entire conversation.
+ */
+function reconcileEntries(previous: PiEntry[], next: PiEntry[]): PiEntry[] {
+  const byId = new Map(previous.map((entry) => [entry.id, entry]));
+  let changed = previous.length !== next.length;
+  const merged = next.map((entry, index) => {
+    const existing = byId.get(entry.id);
+    if (existing && sameEntry(existing, entry)) {
+      if (previous[index] !== existing) changed = true;
+      return existing;
+    }
+    changed = true;
+    return entry;
+  });
+  return changed ? merged : previous;
+}
+
+/** Structural equality over the fields the transcript actually renders. */
+function sameEntry(a: PiEntry, b: PiEntry): boolean {
+  if (a === b) return true;
+  if (a.kind !== b.kind || a.id !== b.id) return false;
+  if (a.kind === "message") {
+    const other = b as PiMessageEntry;
+    return (
+      a.role === other.role &&
+      a.text === other.text &&
+      a.thinking === other.thinking &&
+      a.streaming === other.streaming &&
+      a.error === other.error
+    );
+  }
+  const other = b as PiToolEntry;
+  return (
+    a.toolName === other.toolName &&
+    a.output === other.output &&
+    a.phase === other.phase &&
+    a.isError === other.isError &&
+    a.startedAt === other.startedAt &&
+    a.endedAt === other.endedAt &&
+    a.reviewStatus === other.reviewStatus &&
+    a.partialArgs === other.partialArgs &&
+    a.parallelGroup?.id === other.parallelGroup?.id &&
+    a.parallelGroup?.index === other.parallelGroup?.index &&
+    sameJson(a.args, other.args)
+  );
+}
+
+/** Tool arguments are re-parsed on every hydrate, so identity says nothing about equality. */
+function sameJson(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (a === undefined || b === undefined) return false;
+  try {
+    return JSON.stringify(a) === JSON.stringify(b);
+  } catch {
+    return false;
+  }
 }
 
 /** Removes a resolved dialog once its response has been sent. */

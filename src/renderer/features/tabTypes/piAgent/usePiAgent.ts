@@ -103,7 +103,7 @@ export function usePiAgent(paneId: string, cwd: string | undefined): PiAgentCont
     [paneId],
   );
 
-  /** The startup handshake, also used to resync a pane that was hidden while pi kept working. */
+  /** The startup handshake for a freshly spawned child. */
   const requestFullState = useCallback(() => {
     send({ id: "init-state", type: "get_state" });
     send({ id: "init-commands", type: "get_commands" });
@@ -113,11 +113,35 @@ export function usePiAgent(paneId: string, cwd: string | undefined): PiAgentCont
     send({ id: "init-stats", type: "get_session_stats" });
   }, [send]);
 
+  // Kept in a ref so reattaching can consult the restored transcript without re-running `spawn`
+  // (and re-subscribing everything) on every reducer update.
+  const hasTranscriptRef = useRef(state.entries.length > 0);
+  useEffect(() => {
+    hasTranscriptRef.current = state.entries.length > 0;
+  }, [state.entries.length]);
+
+  /**
+   * Resync for a pane whose child is still running — a tab switch, not a spawn.
+   *
+   * `piPaneCache` keeps reducing events while the pane is unmounted, so the restored transcript is
+   * already current and `get_messages` would only replace it with an identical copy. Skipping it
+   * keeps a long conversation off the tab-switch path entirely; only the cheap footer state is
+   * refreshed. A pane whose cache was dropped still needs the full handshake.
+   */
+  const requestResync = useCallback(() => {
+    if (!hasTranscriptRef.current) {
+      requestFullState();
+      return;
+    }
+    send({ id: "resync-state", type: "get_state" });
+    send({ id: "resync-stats", type: "get_session_stats" });
+  }, [requestFullState, send]);
+
   const spawn = useCallback(() => {
     if (!cwd) return;
     // The process outlives an unmount: reattach and pull anything missed while hidden.
     if (spawnedPanes.has(paneId)) {
-      requestFullState();
+      requestResync();
       return;
     }
     spawnedPanes.add(paneId);
@@ -149,7 +173,7 @@ export function usePiAgent(paneId: string, cwd: string | undefined): PiAgentCont
         spawnedPanes.delete(paneId);
         dispatch({ type: "error", message: String(error) });
       });
-  }, [paneId, cwd, requestFullState]);
+  }, [paneId, cwd, requestFullState, requestResync]);
 
   /** Explicit user restart: tear the child down first, then spawn a fresh one. */
   const restart = useCallback(() => {
