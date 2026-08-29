@@ -9,6 +9,9 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { PiCommand, PiImageContent, PiThinkingLevel } from "../../../../shared/ipc/piRpc";
 import type { TerminalClipboardPayload } from "../../../../shared/types";
 import type { AttachedImage } from "./piPaneCache";
+import { mentionsForPane, rememberMention } from "./piPaneCache";
+import { expandMentions, mentionLabels, mentionSpanAfter, mentionSpanBefore } from "./mentions";
+import { usePiRoots } from "./PiRootsContext";
 
 /** Maximum attachments accepted per message. */
 const MAX_IMAGES = 8;
@@ -172,16 +175,24 @@ export function Composer({
   // The file list is only needed once the user types `@`, so it loads lazily.
   const token = activeToken(value, caret);
   const needsFiles = token?.kind === "@";
+  // `@` offers the whole project: this folder, and every other folder of its group.
+  const roots = usePiRoots(cwd);
   useEffect(() => {
     if (!needsFiles || files.length > 0) return;
     void window.swath.pi
-      .rpc({ op: "files", paneId, cwd })
+      .rpc({ op: "files", paneId, cwd, paths: roots })
       .then((result) => {
         const list = (result as { files?: string[] } | null)?.files;
         if (Array.isArray(list)) setFiles(list);
       })
       .catch(() => setFiles([]));
-  }, [needsFiles, files.length, paneId, cwd]);
+  }, [needsFiles, files.length, paneId, cwd, roots]);
+
+  // Candidates read as a path from their own project's root; pi is given the resolvable path on
+  // send. Mentions inserted earlier stay known even after the file list is dropped on a remount.
+  const labelToPath = useMemo(() => mentionLabels(roots, files), [roots, files]);
+  // Rebuilt each render on purpose: the per-pane registry is mutable, and both maps are small.
+  const knownMentions = new Map([...mentionsForPane(paneId), ...labelToPath]);
 
   const suggestions = useMemo(() => {
     if (!token) return [];
@@ -192,11 +203,11 @@ export function Composer({
         .slice(0, 10)
         .map((command) => ({ label: command.name, hint: command.description }));
     }
-    return files
-      .filter((file) => file.toLowerCase().includes(query))
+    return [...labelToPath.keys()]
+      .filter((label) => label.toLowerCase().includes(query))
       .slice(0, 10)
-      .map((file) => ({ label: file, hint: "" }));
-  }, [token, commands, files]);
+      .map((label) => ({ label, hint: "" }));
+  }, [token, commands, labelToPath]);
 
   // Reset the selection whenever the query changes, adjusted during render rather than in an
   // effect. Also clamped, so a shrinking list can never leave the highlight out of range.
@@ -209,6 +220,8 @@ export function Composer({
 
   const accept = (label: string): void => {
     if (!token) return;
+    const path = labelToPath.get(label);
+    if (token.kind === "@" && path !== undefined) rememberMention(paneId, label, path);
     const next = `${value.slice(0, token.start)}${token.kind}${label} ${value.slice(caret)}`;
     onChange(next);
     inputRef.current?.focus();
@@ -280,7 +293,7 @@ export function Composer({
   const attachedInPrompt = imagesForText(value, images);
 
   const submit = (): void => {
-    const message = value.trim();
+    const message = expandMentions(value.trim(), knownMentions);
     const attached = imagesForText(message, images);
     if (!message && attached.length === 0) return;
     onSubmit(message, attached);
@@ -382,6 +395,27 @@ export function Composer({
               event.preventDefault();
               onChange(next.text);
               onImagesChange(next.images);
+              return;
+            }
+          }
+          // A mention was inserted as one object, so it deletes as one: a single Backspace or
+          // Delete takes the whole path rather than one character of it.
+          if (
+            (event.key === "Backspace" || event.key === "Delete") &&
+            event.currentTarget.selectionStart === event.currentTarget.selectionEnd
+          ) {
+            const caret = event.currentTarget.selectionStart ?? 0;
+            const span =
+              event.key === "Backspace"
+                ? mentionSpanBefore(value, caret, knownMentions.keys())
+                : mentionSpanAfter(value, caret, knownMentions.keys());
+            if (span) {
+              event.preventDefault();
+              onChange(value.slice(0, span.start) + value.slice(span.end));
+              setCaret(span.start);
+              window.requestAnimationFrame(() =>
+                inputRef.current?.setSelectionRange(span.start, span.start),
+              );
               return;
             }
           }

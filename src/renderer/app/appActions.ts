@@ -9,6 +9,7 @@ import { collectPanes, findPane } from "../domain/layout/layoutTree";
 import * as paneActions from "../domain/panes/paneActions";
 import * as settingsActions from "../domain/settings/settingsActions";
 import * as viewActions from "../domain/views/viewActions";
+import * as groupActions from "../domain/workspaces/groupActions";
 import * as workspaceActions from "../domain/workspaces/workspaceActions";
 import { configClient } from "../services/configClient";
 import { dialogClient } from "../services/dialogClient";
@@ -114,6 +115,19 @@ export async function addWorkspaceFromFolder(): Promise<void> {
   });
 }
 
+/**
+ * Commits a workspace mutation, tearing down the panes of every workspace it removed.
+ *
+ * Dissolving a group deletes its root, and the root owns real running panes (pi children), so the
+ * teardown cannot be attached to the explicit remove path alone.
+ */
+function commitDroppingWorkspaces(config: AppConfig, next: AppConfig): void {
+  const survivors = new Set(next.workspaces.map((workspace) => workspace.id));
+  const dropped = config.workspaces.filter((workspace) => !survivors.has(workspace.id));
+  dropped.forEach((workspace) => closeRegisteredPanes(panesForWorkspace(config, workspace.id)));
+  commit(next, workspaceActions.getActivePaneIdForConfig(next));
+}
+
 /** Confirms and removes a workspace and its panes. */
 export async function removeWorkspace(workspaceId: string): Promise<void> {
   const config = useConfigStore.getState().config;
@@ -123,16 +137,67 @@ export async function removeWorkspace(workspaceId: string): Promise<void> {
   const panes = panesForWorkspace(config, workspaceId);
   if (panes.length > 0) {
     const confirmed = await dialogClient.confirm({
-      message: "Remove this project?",
-      detail: `This removes “${workspace.name}” from Swath and closes its panes. Files on disk are not deleted.`,
+      message: groupActions.isGroupRoot(workspace) ? "Remove this group?" : "Remove this project?",
+      detail: groupActions.isGroupRoot(workspace)
+        ? `This removes the group “${workspace.name}” and closes its shared agents. Its projects stay in Swath.`
+        : `This removes “${workspace.name}” from Swath and closes its panes. Files on disk are not deleted.`,
       confirmLabel: "Remove",
       cancelLabel: "Cancel",
     });
     if (!confirmed) return;
   }
-  closeRegisteredPanes(panes);
-  const next = workspaceActions.removeWorkspace(config, workspaceId);
-  commit(next, workspaceActions.getActivePaneIdForConfig(next));
+  commitDroppingWorkspaces(config, workspaceActions.removeWorkspace(config, workspaceId));
+}
+
+/** Confirms a group mutation that would close shared agents, then applies it. */
+async function applyGroupChange(mutate: (config: AppConfig) => AppConfig): Promise<void> {
+  const config = useConfigStore.getState().config;
+  if (!config) return;
+  const next = mutate(config);
+  if (next === config) return;
+
+  const survivors = new Set(next.workspaces.map((workspace) => workspace.id));
+  const losing = config.workspaces.filter(
+    (workspace) =>
+      !survivors.has(workspace.id) && panesForWorkspace(config, workspace.id).length > 0,
+  );
+  if (losing.length > 0) {
+    const confirmed = await dialogClient.confirm({
+      message: "Break up this group?",
+      detail: `A group needs at least two projects, so “${losing[0]!.name}” and its shared agents close. The projects themselves stay in Swath.`,
+      confirmLabel: "Break up",
+      cancelLabel: "Cancel",
+    });
+    if (!confirmed) return;
+  }
+  commitDroppingWorkspaces(config, next);
+}
+
+/** Groups two projects into a new group, and opens its shared agents surface. */
+export function createGroupWith(workspaceId: string, otherWorkspaceId: string): void {
+  withConfig((config) => {
+    const result = groupActions.createGroup(config, [workspaceId, otherWorkspaceId]);
+    if (!result.rootId) return config;
+    const next = { ...result.config, activeWorkspaceId: result.rootId };
+    return { config: next, activePaneId: workspaceActions.getActivePaneIdForConfig(next) };
+  });
+}
+
+/** Moves a project into an existing group. */
+export function addWorkspaceToGroup(workspaceId: string, rootId: string): void {
+  withConfig((config) => groupActions.addToGroup(config, workspaceId, rootId));
+}
+
+/** Takes a project back out of its group. */
+export function ungroupWorkspace(workspaceId: string): void {
+  void applyGroupChange((config) => groupActions.detachFromGroup(config, workspaceId)).catch(
+    (error: unknown) => reportError("Ungrouping project", error),
+  );
+}
+
+/** Shows or hides a group's members in the sidebar. */
+export function setGroupCollapsed(rootId: string, collapsed: boolean): void {
+  withConfig((config) => groupActions.setGroupCollapsed(config, rootId, collapsed));
 }
 
 /** Renames a workspace. */

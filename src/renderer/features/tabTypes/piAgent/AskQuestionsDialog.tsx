@@ -12,6 +12,7 @@ import {
   parseAskImagesResponse,
   type AskImage,
 } from "../../../../shared/ipc/askImages";
+import { usePiRoots } from "./PiRootsContext";
 import { serializeAskAnswers, type AskAnswer, type AskQuestion } from "./askQuestions";
 
 interface AskQuestionsDialogProps {
@@ -54,6 +55,9 @@ export function AskQuestionsDialog({
   const [zoomed, setZoomed] = useState<string | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
+  // A question may attach a screenshot living in another folder of the project group.
+  const roots = usePiRoots(cwd);
+
   const allImagePaths = useMemo(
     () => [...new Set(questions.flatMap((question) => question.images ?? []))],
     [questions],
@@ -66,7 +70,7 @@ export function AskQuestionsDialog({
     let cancelled = false;
 
     void window.swath.askImages
-      .load({ paths: allImagePaths, cwd })
+      .load({ paths: allImagePaths, cwd, roots })
       .then((raw) => {
         if (cancelled) return;
         const loaded = parseAskImagesResponse(raw);
@@ -86,7 +90,7 @@ export function AskQuestionsDialog({
     return () => {
       cancelled = true;
     };
-  }, [allImagePaths, cwd]);
+  }, [allImagePaths, cwd, roots]);
 
   useEffect(() => {
     containerRef.current?.focus();

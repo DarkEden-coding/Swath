@@ -10,8 +10,14 @@ import type { Workspace } from "../../../../shared/types";
 import * as appActions from "../../../app/appActions";
 import { useConfigStore } from "../../../state/configStore";
 import appIcon from "../../../assets/app-icon-64.png";
-import { IconChevronsRight, IconFolder, IconPlus } from "../icons";
+import { IconChevronDown, IconChevronsRight, IconFolder, IconPlus, IconSparkle } from "../icons";
 import { useReorderDrag } from "../../../hooks/useReorderDrag";
+import {
+  groupableTargets,
+  isGroupRoot,
+  membersOf,
+  pairableProjects,
+} from "../../../domain/workspaces/groupActions";
 
 interface SidebarProps {
   onToggleCollapse: () => void;
@@ -26,18 +32,42 @@ function WorkspaceDropIndicator(): JSX.Element {
 export function Sidebar({ onToggleCollapse }: SidebarProps): JSX.Element {
   const config = useConfigStore((state) => state.config)!;
   const itemRefs = useRef<Array<HTMLDivElement | null>>([]);
-  const list = useMemo(() => config.workspaces, [config.workspaces]);
+
+  // Collapsed groups hide their members, so the sidebar renders a subset of `config.workspaces`.
+  // Reordering runs on the visible rows and maps back to configuration indices on drop.
+  const rows = useMemo(() => {
+    const collapsed = new Set(
+      config.workspaces
+        .filter((workspace) => isGroupRoot(workspace) && workspace.groupCollapsed === true)
+        .map((workspace) => workspace.id),
+    );
+    return config.workspaces
+      .map((workspace, index) => ({ workspace, index }))
+      .filter(
+        ({ workspace }) => workspace.groupId === undefined || !collapsed.has(workspace.groupId),
+      );
+  }, [config.workspaces]);
+
   const reorder = useReorderDrag({
     axis: "vertical",
-    itemCount: list.length,
+    itemCount: rows.length,
     getElements: () => itemRefs.current.filter((item): item is HTMLDivElement => item !== null),
-    findIndexById: (id) => config.workspaces.findIndex((workspace) => workspace.id === id),
-    onMove: (fromIndex, toIndex) => appActions.moveWorkspace(fromIndex, toIndex),
+    findIndexById: (id) => rows.findIndex(({ workspace }) => workspace.id === id),
+    onMove: (fromIndex, toIndex) => {
+      const from = rows[fromIndex]?.index;
+      const to = rows[toIndex]?.index;
+      if (from !== undefined && to !== undefined) appActions.moveWorkspace(from, to);
+    },
   });
   const { draggedId, dropIndex, finishDrag } = reorder;
+  const draggedIndex =
+    draggedId === null ? null : rows.findIndex(({ workspace }) => workspace.id === draggedId);
 
-  const indexOf = (workspace: Workspace): number =>
-    config.workspaces.findIndex((item) => item.id === workspace.id);
+  const activeGroupId = useMemo(() => {
+    const active = config.workspaces.find((workspace) => workspace.id === config.activeWorkspaceId);
+    if (!active) return null;
+    return isGroupRoot(active) ? active.id : (active.groupId ?? null);
+  }, [config.workspaces, config.activeWorkspaceId]);
 
   return (
     <aside className="z-[2] flex h-full min-h-0 min-w-0 flex-col border-r border-swath-border bg-swath-panel">
@@ -69,36 +99,57 @@ export function Sidebar({ onToggleCollapse }: SidebarProps): JSX.Element {
         }}
         onDrop={reorder.handleNativeDrop}
       >
-        {list.map((workspace, index) => {
-          const originalIndex = indexOf(workspace);
+        {rows.map(({ workspace }, rowIndex) => {
+          const group = isGroupRoot(workspace);
+          const members = group ? membersOf(config, workspace.id) : [];
+          const inActiveGroup =
+            activeGroupId !== null &&
+            (workspace.groupId === activeGroupId || workspace.id === activeGroupId);
+          const shared = {
+            itemRef: (element: HTMLDivElement | null) => {
+              itemRefs.current[rowIndex] = element;
+            },
+            workspace,
+            active: config.activeWorkspaceId === workspace.id,
+            missing: workspace.isMissing === true,
+            rowIndex,
+            draggedIndex,
+            onDragStart: (event: DragEvent) =>
+              reorder.startNativeDrag(event, workspace.id, rowIndex),
+            onDragEnd: finishDrag,
+            onMouseDragStart: (event: ReactMouseEvent) =>
+              reorder.startPointerDrag(event, workspace.id),
+            onDrop: reorder.handleNativeDrop,
+            onSelect: () => appActions.selectWorkspace(workspace.id),
+            onRemove: () => void appActions.removeWorkspace(workspace.id),
+            onRename: (name: string) => appActions.renameWorkspace(workspace.id, name),
+          };
           return (
             <div key={workspace.id} className="contents">
-              {dropIndex === index ? <WorkspaceDropIndicator /> : null}
-              <WorkspaceItem
-                itemRef={(element) => {
-                  itemRefs.current[index] = element;
-                }}
-                workspace={workspace}
-                active={config.activeWorkspaceId === workspace.id}
-                missing={workspace.isMissing === true}
-                originalIndex={originalIndex}
-                draggedIndex={
-                  draggedId === null
-                    ? null
-                    : config.workspaces.findIndex((item) => item.id === draggedId)
-                }
-                onDragStart={(event) => reorder.startNativeDrag(event, workspace.id, originalIndex)}
-                onDragEnd={finishDrag}
-                onMouseDragStart={(event) => reorder.startPointerDrag(event, workspace.id)}
-                onDrop={reorder.handleNativeDrop}
-                onSelect={() => appActions.selectWorkspace(workspace.id)}
-                onRemove={() => void appActions.removeWorkspace(workspace.id)}
-                onRename={(name) => appActions.renameWorkspace(workspace.id, name)}
-              />
+              {dropIndex === rowIndex ? <WorkspaceDropIndicator /> : null}
+              {group ? (
+                <GroupHeaderItem
+                  {...shared}
+                  memberCount={members.length}
+                  collapsed={workspace.groupCollapsed === true}
+                  onToggleCollapsed={() =>
+                    appActions.setGroupCollapsed(workspace.id, workspace.groupCollapsed !== true)
+                  }
+                />
+              ) : (
+                <GroupRail grouped={workspace.groupId !== undefined} lit={inActiveGroup}>
+                  <WorkspaceItem
+                    {...shared}
+                    grouped={workspace.groupId !== undefined}
+                    groupTargets={groupableTargets(config, workspace.id)}
+                    pairTargets={pairableProjects(config, workspace.id)}
+                  />
+                </GroupRail>
+              )}
             </div>
           );
         })}
-        {dropIndex === list.length ? <WorkspaceDropIndicator /> : null}
+        {dropIndex === rows.length ? <WorkspaceDropIndicator /> : null}
       </div>
 
       <footer className="border-t border-swath-border px-3 pb-3 pt-2.5">
@@ -132,7 +183,7 @@ interface WorkspaceItemProps {
   workspace: Workspace;
   active: boolean;
   missing: boolean;
-  originalIndex: number;
+  rowIndex: number;
   draggedIndex: number | null;
   onDragStart: (event: DragEvent) => void;
   onDragEnd: () => void;
@@ -143,12 +194,21 @@ interface WorkspaceItemProps {
   onRename: (name: string) => void;
 }
 
+interface ProjectItemProps extends WorkspaceItemProps {
+  /** True when the project already belongs to a group. */
+  grouped: boolean;
+  /** Existing groups this project could join. */
+  groupTargets: Workspace[];
+  /** Loose projects this one could pair up with into a new group. */
+  pairTargets: Workspace[];
+}
+
 function WorkspaceItem({
   itemRef,
   workspace,
   active,
   missing,
-  originalIndex,
+  rowIndex,
   draggedIndex,
   onDragStart,
   onDragEnd,
@@ -157,8 +217,12 @@ function WorkspaceItem({
   onSelect,
   onRemove,
   onRename,
-}: WorkspaceItemProps): JSX.Element {
+  grouped,
+  groupTargets,
+  pairTargets,
+}: ProjectItemProps): JSX.Element {
   const [menuPosition, setMenuPosition] = useState<{ x: number; y: number } | null>(null);
+  const [submenuOpen, setSubmenuOpen] = useState(false);
   const [editing, setEditing] = useState(false);
   const [draftName, setDraftName] = useState(workspace.name);
 
@@ -169,6 +233,7 @@ function WorkspaceItem({
     };
     const onClick = (): void => {
       setMenuPosition(null);
+      setSubmenuOpen(false);
     };
     window.addEventListener("keydown", onKeyDown);
     window.addEventListener("mousedown", onClick);
@@ -203,7 +268,7 @@ function WorkspaceItem({
       ref={itemRef}
       draggable={false}
       role="listitem"
-      className={`relative my-0.5 flex min-w-0 items-stretch gap-0.5 rounded-md border border-transparent bg-transparent [-webkit-app-region:no-drag] [app-region:no-drag] ${draggedIndex === originalIndex ? "opacity-[0.55]" : ""} ${missing ? "grayscale opacity-45" : ""} ${activeClasses}`}
+      className={`relative my-0.5 flex min-w-0 items-stretch gap-0.5 rounded-md border border-transparent bg-transparent [-webkit-app-region:no-drag] [app-region:no-drag] ${draggedIndex === rowIndex ? "opacity-[0.55]" : ""} ${missing ? "grayscale opacity-45" : ""} ${activeClasses}`}
       onDragStart={(event) => {
         event.dataTransfer.effectAllowed = "move";
         event.dataTransfer.setData("text/plain", workspace.id);
@@ -301,6 +366,72 @@ function WorkspaceItem({
           >
             CWD
           </button>
+          <div className="my-1 h-px bg-swath-border" />
+          {grouped ? (
+            <button
+              type="button"
+              className="block w-full cursor-pointer rounded-lg border-0 bg-transparent px-2.5 py-2 text-left text-swath-text [-webkit-app-region:no-drag] [app-region:no-drag] hover:bg-[#202735]"
+              onClick={() => {
+                setMenuPosition(null);
+                appActions.ungroupWorkspace(workspace.id);
+              }}
+            >
+              Remove from group
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="block w-full cursor-pointer rounded-lg border-0 bg-transparent px-2.5 py-2 text-left text-swath-text [-webkit-app-region:no-drag] [app-region:no-drag] hover:bg-[#202735] flex items-center justify-between gap-3"
+              disabled={groupTargets.length === 0 && pairTargets.length === 0}
+              onClick={(event) => {
+                event.stopPropagation();
+                setSubmenuOpen((open) => !open);
+              }}
+            >
+              <span
+                className={
+                  groupTargets.length === 0 && pairTargets.length === 0 ? "text-swath-muted-2" : ""
+                }
+              >
+                Group with
+              </span>
+              <span aria-hidden className="text-swath-muted-2">
+                ›
+              </span>
+            </button>
+          )}
+          {submenuOpen ? (
+            <div className="mt-0.5 max-h-64 overflow-y-auto rounded-lg border border-swath-border bg-[#111720] p-1">
+              {groupTargets.map((target) => (
+                <button
+                  key={target.id}
+                  type="button"
+                  className="block w-full cursor-pointer rounded-lg border-0 bg-transparent px-2.5 py-2 text-left text-swath-text [-webkit-app-region:no-drag] [app-region:no-drag] hover:bg-[#202735] truncate text-[12px]"
+                  onClick={() => {
+                    setMenuPosition(null);
+                    appActions.addWorkspaceToGroup(workspace.id, target.id);
+                  }}
+                >
+                  {target.name}
+                </button>
+              ))}
+              {pairTargets.map((target) => (
+                <button
+                  key={target.id}
+                  type="button"
+                  className="block w-full cursor-pointer rounded-lg border-0 bg-transparent px-2.5 py-2 text-left text-swath-text [-webkit-app-region:no-drag] [app-region:no-drag] hover:bg-[#202735] truncate text-[12px]"
+                  onClick={() => {
+                    setMenuPosition(null);
+                    appActions.createGroupWith(workspace.id, target.id);
+                  }}
+                >
+                  {target.name}
+                  <span className="ml-1 text-swath-muted-2">— new group</span>
+                </button>
+              ))}
+            </div>
+          ) : null}
+          <div className="my-1 h-px bg-swath-border" />
           <button
             type="button"
             className="block w-full cursor-pointer rounded-lg border-0 bg-transparent px-2.5 py-2 text-left text-swath-danger [-webkit-app-region:no-drag] [app-region:no-drag] hover:bg-[#202735]"
@@ -310,6 +441,205 @@ function WorkspaceItem({
             }}
           >
             Remove
+          </button>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/** Ties a group's members together with a rail that lights up while the group is in use. */
+function GroupRail({
+  grouped,
+  lit,
+  children,
+}: {
+  grouped: boolean;
+  lit: boolean;
+  children: React.ReactNode;
+}): JSX.Element {
+  if (!grouped) return <>{children}</>;
+  return (
+    <div className="flex min-w-0 items-stretch">
+      <span
+        aria-hidden
+        className={`my-0.5 ml-2.5 w-px shrink-0 rounded-full ${lit ? "bg-swath-accent/70" : "bg-swath-border"}`}
+      />
+      <div className="min-w-0 flex-1 pl-1.5">{children}</div>
+    </div>
+  );
+}
+
+interface GroupHeaderItemProps extends WorkspaceItemProps {
+  memberCount: number;
+  collapsed: boolean;
+  onToggleCollapsed: () => void;
+}
+
+/**
+ * A group's row: it selects the group's shared agents surface, which is a workspace of its own.
+ */
+function GroupHeaderItem({
+  itemRef,
+  workspace,
+  active,
+  missing,
+  rowIndex,
+  draggedIndex,
+  onDragStart,
+  onDragEnd,
+  onMouseDragStart,
+  onDrop,
+  onSelect,
+  onRemove,
+  onRename,
+  memberCount,
+  collapsed,
+  onToggleCollapsed,
+}: GroupHeaderItemProps): JSX.Element {
+  const [menuPosition, setMenuPosition] = useState<{ x: number; y: number } | null>(null);
+  const [editing, setEditing] = useState(false);
+  const [draftName, setDraftName] = useState(workspace.name);
+
+  useEffect(() => {
+    if (!menuPosition) return;
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key === "Escape") setMenuPosition(null);
+    };
+    const onClick = (): void => {
+      setMenuPosition(null);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("mousedown", onClick);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("mousedown", onClick);
+    };
+  }, [menuPosition]);
+
+  const activeClasses = active
+    ? "border-[rgba(56,139,253,0.35)] bg-[rgba(56,139,253,0.12)] before:absolute before:bottom-1.5 before:left-0 before:top-1.5 before:w-[3px] before:rounded-full before:bg-swath-accent before:content-['']"
+    : "";
+
+  return (
+    <div
+      ref={itemRef}
+      draggable={false}
+      role="listitem"
+      className={`relative my-0.5 flex min-w-0 items-stretch gap-0.5 rounded-md border border-transparent bg-transparent [-webkit-app-region:no-drag] [app-region:no-drag] ${draggedIndex === rowIndex ? "opacity-[0.55]" : ""} ${missing ? "grayscale opacity-45" : ""} ${activeClasses}`}
+      onDragStart={(event) => {
+        event.dataTransfer.effectAllowed = "move";
+        event.dataTransfer.setData("text/plain", workspace.id);
+        onDragStart(event);
+      }}
+      onDragEnd={onDragEnd}
+      onDragOver={(event) => {
+        if (draggedIndex === null) return;
+        event.preventDefault();
+        event.dataTransfer.dropEffect = "move";
+      }}
+      onDrop={(event) => onDrop(event)}
+      onContextMenu={(event) => {
+        event.preventDefault();
+        setMenuPosition({ x: event.clientX, y: event.clientY });
+      }}
+      onMouseDown={onMouseDragStart}
+    >
+      <button
+        type="button"
+        className="grid w-[22px] shrink-0 cursor-pointer place-items-center border-0 bg-transparent p-0 text-swath-muted-2 [-webkit-app-region:no-drag] [app-region:no-drag] hover:text-swath-text"
+        title={collapsed ? "Show projects" : "Hide projects"}
+        aria-expanded={!collapsed}
+        onMouseDown={(event) => event.stopPropagation()}
+        onClick={(event) => {
+          event.stopPropagation();
+          onToggleCollapsed();
+        }}
+      >
+        <IconChevronDown
+          width={14}
+          height={14}
+          className={`block transition-transform ${collapsed ? "-rotate-90" : ""}`}
+        />
+      </button>
+      <button
+        type="button"
+        className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 border-0 bg-transparent py-2 pl-0.5 pr-1.5 text-left [-webkit-app-region:no-drag] [app-region:no-drag]"
+        onClick={onSelect}
+        title={`${workspace.name} — shared agents across ${memberCount} folders`}
+      >
+        <span className="shrink-0 text-swath-accent" aria-hidden>
+          <IconSparkle width={15} height={15} className="block" />
+        </span>
+        {editing ? (
+          <input
+            className="h-[26px] w-[170px] rounded-lg border border-swath-border bg-swath-bg px-[7px] py-0.5 text-swath-text outline-none [-webkit-app-region:no-drag] [app-region:no-drag] focus:border-swath-accent focus:shadow-[0_0_0_2px_rgba(56,139,253,0.15)]"
+            value={draftName}
+            autoFocus
+            onClick={(event) => event.stopPropagation()}
+            onMouseDown={(event) => event.stopPropagation()}
+            onChange={(event) => setDraftName(event.target.value)}
+            onBlur={() => {
+              setEditing(false);
+              onRename(draftName);
+            }}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") event.currentTarget.blur();
+              if (event.key === "Escape") {
+                setDraftName(workspace.name);
+                setEditing(false);
+              }
+            }}
+          />
+        ) : (
+          <span className="min-w-0 flex-1 truncate text-[11px] font-bold uppercase tracking-[0.08em] text-[#eef2f6]">
+            {workspace.name}
+          </span>
+        )}
+        <span className="shrink-0 rounded-full border border-swath-border px-1.5 text-[10px] font-semibold text-swath-muted-2">
+          {memberCount}
+        </span>
+      </button>
+      {menuPosition ? (
+        <div
+          className="fixed z-20 min-w-32 rounded-xl border border-swath-border bg-[#151a22] p-1.5 shadow-swath [-webkit-app-region:no-drag] [app-region:no-drag]"
+          style={{
+            left: Math.max(4, Math.min(menuPosition.x, window.innerWidth - 140)),
+            top: Math.max(4, Math.min(menuPosition.y, window.innerHeight - 132)),
+          }}
+          onMouseDown={(event) => event.stopPropagation()}
+          onClick={(event) => event.stopPropagation()}
+        >
+          <button
+            type="button"
+            className="block w-full cursor-pointer rounded-lg border-0 bg-transparent px-2.5 py-2 text-left text-swath-text [-webkit-app-region:no-drag] [app-region:no-drag] hover:bg-[#202735]"
+            onClick={() => {
+              setMenuPosition(null);
+              setEditing(true);
+            }}
+          >
+            Rename group
+          </button>
+          <button
+            type="button"
+            className="block w-full cursor-pointer rounded-lg border-0 bg-transparent px-2.5 py-2 text-left text-swath-text [-webkit-app-region:no-drag] [app-region:no-drag] hover:bg-[#202735]"
+            onClick={() => {
+              setMenuPosition(null);
+              onToggleCollapsed();
+            }}
+          >
+            {collapsed ? "Show projects" : "Hide projects"}
+          </button>
+          <div className="my-1 h-px bg-swath-border" />
+          <button
+            type="button"
+            className="block w-full cursor-pointer rounded-lg border-0 bg-transparent px-2.5 py-2 text-left text-swath-danger [-webkit-app-region:no-drag] [app-region:no-drag] hover:bg-[#202735]"
+            onClick={() => {
+              setMenuPosition(null);
+              onRemove();
+            }}
+          >
+            Break up group
           </button>
         </div>
       ) : null}

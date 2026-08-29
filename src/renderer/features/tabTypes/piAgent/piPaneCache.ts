@@ -61,9 +61,28 @@ function cacheHiddenPaneEvent(paneId: string, line?: string, exited?: boolean): 
  */
 export const resumedSessions = new Map<string, string>();
 
+/**
+ * `@file` mentions the composer inserted, mapped to the path pi resolves them by.
+ *
+ * Kept per pane rather than in component state so a tab switch does not turn a mention back into
+ * ordinary text the editing keys no longer treat as one object.
+ */
+const paneMentions = new Map<string, Map<string, string>>();
+
+export function rememberMention(paneId: string, label: string, path: string): void {
+  const mentions = paneMentions.get(paneId) ?? new Map<string, string>();
+  mentions.set(label, path);
+  paneMentions.set(paneId, mentions);
+}
+
+export function mentionsForPane(paneId: string): ReadonlyMap<string, string> {
+  return paneMentions.get(paneId) ?? new Map<string, string>();
+}
+
 export function disposePiPane(paneId: string): void {
   piPaneCache.delete(paneId);
   spawnedPanes.delete(paneId);
   resumedSessions.delete(paneId);
+  paneMentions.delete(paneId);
   void window.swath.pi.rpc({ op: "kill", paneId });
 }

@@ -11,6 +11,9 @@ import * as appActions from "../../../app/appActions";
 import { findPane } from "../../../domain/layout/layoutTree";
 import { AnsiText } from "../../../lib/ansi";
 import { useUiStore } from "../../../state/uiStore";
+import { useConfigStore } from "../../../state/configStore";
+import { groupPathsFor } from "../../../domain/workspaces/groupActions";
+import { PiRootsProvider } from "./PiRootsContext";
 import { PaneFrame } from "../../panes/components/PaneFrame";
 import type { PaneComponentProps } from "../../panes/paneTypes";
 import { Chrome, isEmptyCounterChip } from "./Chrome";
@@ -18,6 +21,13 @@ import { Composer } from "./Composer";
 import { DialogHost } from "./DialogHost";
 import { SessionList, sessionDirOf } from "./SessionList";
 import { SessionTree } from "./SessionTree";
+import {
+  loadScopedModelKeys,
+  modelKey,
+  saveScopedModelKeys,
+  scopedModelsChangeEvent,
+  ScopedModelSelector,
+} from "./ScopedModelSelector";
 import { piPaneCache, type AttachedImage } from "./piPaneCache";
 import { Transcript } from "./Transcript";
 import { usePiAgent } from "./usePiAgent";
@@ -70,7 +80,15 @@ export function PiAgentPane({ workspace, view, pane }: PaneComponentProps): JSX.
   const cwd = (paneMeta?.cwd ?? paneMeta?.metadata?.cwd ?? workspace.path).trim() || workspace.path;
   const isActive = activePaneId === paneId || view.activePaneId === paneId;
 
-  const agent = usePiAgent(paneId, cwd);
+  // On a group's shared surface the agent gets every folder in the group; a project pane stays
+  // scoped to its own folder.
+  const workspaces = useConfigStore((state) => state.config?.workspaces);
+  const groupPaths = useMemo(
+    () => (workspaces ? groupPathsFor({ workspaces }, workspace.id) : []),
+    [workspaces, workspace.id],
+  );
+
+  const agent = usePiAgent(paneId, cwd, groupPaths);
   const { state } = agent;
   // Draft and attachments are cached alongside the transcript so a tab switch does not lose them.
   const [draft, setDraft] = useState(() => piPaneCache.get(paneId)?.draft ?? "");
@@ -84,6 +102,8 @@ export function PiAgentPane({ workspace, view, pane }: PaneComponentProps): JSX.
   const [appliedEditorText, setAppliedEditorText] = useState<string | undefined>(undefined);
   const [treeOpen, setTreeOpen] = useState(false);
   const [resumeOpen, setResumeOpen] = useState(false);
+  const [scopedModelsOpen, setScopedModelsOpen] = useState(false);
+  const [scopedModelKeys, setScopedModelKeys] = useState<string[] | null>(loadScopedModelKeys);
   const [isFollowing, setIsFollowing] = useState(true);
   const scrollRef = useRef<HTMLDivElement>(null);
   const scrollContentRef = useRef<HTMLDivElement>(null);
@@ -137,6 +157,30 @@ export function PiAgentPane({ workspace, view, pane }: PaneComponentProps): JSX.
     scheduleScrollToBottom();
   }, [clearUserScrollIntent, scheduleScrollToBottom, updateFollowing]);
 
+  const scopedModels = useMemo(
+    () =>
+      scopedModelKeys === null
+        ? state.models
+        : state.models.filter((model) => scopedModelKeys.includes(modelKey(model))),
+    [scopedModelKeys, state.models],
+  );
+
+  useEffect(() => {
+    const updateScope = (event: Event): void => {
+      setScopedModelKeys((event as CustomEvent<string[]>).detail);
+    };
+    window.addEventListener(scopedModelsChangeEvent, updateScope);
+    return () => window.removeEventListener(scopedModelsChangeEvent, updateScope);
+  }, []);
+
+  /** Cycles through Swath's selected models without changing pi's own configured scope. */
+  const cycleScopedModel = useCallback((): void => {
+    if (scopedModels.length < 2) return;
+    const current = state.state?.model ? modelKey(state.state.model) : "";
+    const index = scopedModels.findIndex((model) => modelKey(model) === current);
+    agent.setModel(modelKey(scopedModels[(index + 1) % scopedModels.length]));
+  }, [agent, scopedModels, state.state]);
+
   const commands = useMemo<PiCommand[]>(
     () => [
       { name: "new", description: "Start a new chat", source: "builtin" },
@@ -147,11 +191,24 @@ export function PiAgentPane({ workspace, view, pane }: PaneComponentProps): JSX.
       { name: "thinking", description: "Cycle reasoning level", source: "builtin" },
       { name: "tree", description: "Toggle the session tree", source: "builtin" },
       { name: "resume", description: "Resume a previous chat", source: "builtin" },
+      {
+        name: "scoped-models",
+        description: "Choose models shown and cycled by Swath",
+        source: "builtin",
+      },
       ...state.commands.filter(
         (command) =>
-          !["new", "rename", "compact", "reload", "model", "thinking", "tree", "resume"].includes(
-            command.name,
-          ),
+          ![
+            "new",
+            "rename",
+            "compact",
+            "reload",
+            "model",
+            "thinking",
+            "tree",
+            "resume",
+            "scoped-models",
+          ].includes(command.name),
       ),
     ],
     [state.commands],
@@ -164,13 +221,15 @@ export function PiAgentPane({ workspace, view, pane }: PaneComponentProps): JSX.
     else if (command === "/compact") agent.compact();
     // Pi's built-in `/reload` is TUI-only; restarting its RPC child reloads the same resources.
     else if (command === "/reload") agent.restart();
-    else if (command === "/model") agent.cycleModel();
+    else if (command === "/model") cycleScopedModel();
     else if (command === "/thinking") agent.cycleThinking();
     else if (command === "/tree") {
       if (!treeOpen) agent.refreshTree();
       setTreeOpen(!treeOpen);
     } else if (command === "/resume") {
       setResumeOpen(true);
+    } else if (command === "/scoped-models") {
+      setScopedModelsOpen(true);
     } else if (command === "/rename") {
       const name = args.join(" ") || prompt("Session name", state.state?.sessionName ?? "");
       if (name) agent.setSessionName(name);
@@ -244,188 +303,206 @@ export function PiAgentPane({ workspace, view, pane }: PaneComponentProps): JSX.
       ));
 
   return (
-    <PaneFrame
-      active={isActive}
-      title={state.title ?? state.state?.sessionName ?? "pi"}
-      statusClass={state.exited ? "exited" : state.isStreaming ? "running" : "dormant"}
-      onActivate={() => appActions.setActivePane(workspace.id, view.id, paneId)}
-      onSplitRight={(kind) => appActions.splitPane(workspace.id, view.id, paneId, "vertical", kind)}
-      onSplitDown={(kind) =>
-        appActions.splitPane(workspace.id, view.id, paneId, "horizontal", kind)
-      }
-      onClose={() => appActions.closePane(workspace.id, view.id, paneId)}
-    >
-      <div className="pi-agent relative flex h-full min-h-0 overflow-hidden">
-        <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-          {state.notices.length > 0 ? (
-            <div className="shrink-0 border-b border-[var(--pi-border-muted)]">
-              {state.notices.slice(-3).map((notice) => (
-                <NoticeRow key={notice.id} notice={notice} onDismiss={agent.dismissNotice} />
-              ))}
-            </div>
-          ) : null}
-
-          <div className="relative min-h-0 flex-1">
-            <div
-              ref={scrollRef}
-              className="h-full overflow-auto [overflow-anchor:none]"
-              tabIndex={0}
-              aria-label="Conversation transcript"
-              onWheel={markUserScrollIntent}
-              onTouchStart={markUserScrollIntent}
-              onTouchMove={markUserScrollIntent}
-              onPointerDown={(event) => {
-                const node = event.currentTarget;
-                const bounds = node.getBoundingClientRect();
-                const scrollbarWidth = node.offsetWidth - node.clientWidth;
-                if (
-                  event.target === node ||
-                  (scrollbarWidth > 0 && event.clientX >= bounds.right - scrollbarWidth)
-                ) {
-                  clearUserScrollIntent();
-                  pointerScrollIntentRef.current = true;
-                }
-              }}
-              onKeyDown={(event) => {
-                if (event.target !== event.currentTarget) return;
-                if (
-                  ["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "].includes(
-                    event.key,
-                  )
-                ) {
-                  markUserScrollIntent();
-                }
-              }}
-              onScroll={(event) => {
-                const node = event.currentTarget;
-                const next = followStateAfterScroll(
-                  followingRef.current,
-                  userScrollIntentRef.current || pointerScrollIntentRef.current,
-                  node.scrollHeight - node.scrollTop - node.clientHeight,
-                );
-                if (next !== followingRef.current) updateFollowing(next);
-              }}
-            >
-              <div ref={scrollContentRef} className="min-h-full">
-                {state.entries.length === 0 ? (
-                  <div className="grid h-full place-items-center px-6 text-center text-sm text-[var(--pi-dim)]">
-                    {state.exited
-                      ? "pi exited."
-                      : state.error
-                        ? state.error
-                        : state.state
-                          ? "Start a new chat with pi."
-                          : `Starting pi in ${cwd}…`}
-                  </div>
-                ) : (
-                  <Transcript
-                    entries={state.entries}
-                    working={state.isStreaming}
-                    operationStatus={state.operationStatus}
-                    cwd={cwd}
-                    scrollRootRef={scrollRef}
-                  />
-                )}
+    <PiRootsProvider cwd={cwd} groupPaths={groupPaths}>
+      <PaneFrame
+        active={isActive}
+        title={state.title ?? state.state?.sessionName ?? "pi"}
+        statusClass={state.exited ? "exited" : state.isStreaming ? "running" : "dormant"}
+        onActivate={() => appActions.setActivePane(workspace.id, view.id, paneId)}
+        onSplitRight={(kind) =>
+          appActions.splitPane(workspace.id, view.id, paneId, "vertical", kind)
+        }
+        onSplitDown={(kind) =>
+          appActions.splitPane(workspace.id, view.id, paneId, "horizontal", kind)
+        }
+        onClose={() => appActions.closePane(workspace.id, view.id, paneId)}
+      >
+        <div className="pi-agent relative flex h-full min-h-0 overflow-hidden">
+          <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+            {state.notices.length > 0 ? (
+              <div className="shrink-0 border-b border-[var(--pi-border-muted)]">
+                {state.notices.slice(-3).map((notice) => (
+                  <NoticeRow key={notice.id} notice={notice} onDismiss={agent.dismissNotice} />
+                ))}
               </div>
+            ) : null}
+
+            <div className="relative min-h-0 flex-1">
+              <div
+                ref={scrollRef}
+                className="h-full overflow-auto [overflow-anchor:none]"
+                tabIndex={0}
+                aria-label="Conversation transcript"
+                onWheel={markUserScrollIntent}
+                onTouchStart={markUserScrollIntent}
+                onTouchMove={markUserScrollIntent}
+                onPointerDown={(event) => {
+                  const node = event.currentTarget;
+                  const bounds = node.getBoundingClientRect();
+                  const scrollbarWidth = node.offsetWidth - node.clientWidth;
+                  if (
+                    event.target === node ||
+                    (scrollbarWidth > 0 && event.clientX >= bounds.right - scrollbarWidth)
+                  ) {
+                    clearUserScrollIntent();
+                    pointerScrollIntentRef.current = true;
+                  }
+                }}
+                onKeyDown={(event) => {
+                  if (event.target !== event.currentTarget) return;
+                  if (
+                    ["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "].includes(
+                      event.key,
+                    )
+                  ) {
+                    markUserScrollIntent();
+                  }
+                }}
+                onScroll={(event) => {
+                  const node = event.currentTarget;
+                  const next = followStateAfterScroll(
+                    followingRef.current,
+                    userScrollIntentRef.current || pointerScrollIntentRef.current,
+                    node.scrollHeight - node.scrollTop - node.clientHeight,
+                  );
+                  if (next !== followingRef.current) updateFollowing(next);
+                }}
+              >
+                <div ref={scrollContentRef} className="min-h-full">
+                  {state.entries.length === 0 ? (
+                    <div className="grid h-full place-items-center px-6 text-center text-sm text-[var(--pi-dim)]">
+                      {state.exited
+                        ? "pi exited."
+                        : state.error
+                          ? state.error
+                          : state.state
+                            ? "Start a new chat with pi."
+                            : `Starting pi in ${cwd}…`}
+                    </div>
+                  ) : (
+                    <Transcript
+                      entries={state.entries}
+                      working={state.isStreaming}
+                      operationStatus={state.operationStatus}
+                      cwd={cwd}
+                      scrollRootRef={scrollRef}
+                    />
+                  )}
+                </div>
+              </div>
+              <button
+                type="button"
+                className={`absolute bottom-3 left-1/2 z-10 grid h-8 w-8 -translate-x-1/2 place-items-center rounded-full border border-[#30363d] bg-[#161b22]/95 text-[#8b949e] shadow-[0_4px_14px_rgba(0,0,0,0.4)] backdrop-blur-sm transition-[opacity,transform,background-color,border-color,color] duration-200 ease-out hover:border-[#484f58] hover:bg-[#21262d] hover:text-[#f0f6fc] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#2f81f7] ${!isFollowing && isActive ? "translate-y-0 opacity-100" : "pointer-events-none translate-y-2 opacity-0"}`}
+                aria-label="Scroll to bottom"
+                aria-hidden={isFollowing || !isActive}
+                tabIndex={!isFollowing && isActive ? 0 : -1}
+                title="Scroll to bottom"
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={pinToBottom}
+              >
+                <svg aria-hidden="true" viewBox="0 0 16 16" className="h-4 w-4" fill="none">
+                  <path
+                    d="M3.5 6 8 10.5 12.5 6"
+                    stroke="currentColor"
+                    strokeWidth="1.6"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                </svg>
+              </button>
             </div>
-            <button
-              type="button"
-              className={`absolute bottom-3 left-1/2 z-10 grid h-8 w-8 -translate-x-1/2 place-items-center rounded-full border border-[#30363d] bg-[#161b22]/95 text-[#8b949e] shadow-[0_4px_14px_rgba(0,0,0,0.4)] backdrop-blur-sm transition-[opacity,transform,background-color,border-color,color] duration-200 ease-out hover:border-[#484f58] hover:bg-[#21262d] hover:text-[#f0f6fc] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#2f81f7] ${!isFollowing && isActive ? "translate-y-0 opacity-100" : "pointer-events-none translate-y-2 opacity-0"}`}
-              aria-label="Scroll to bottom"
-              aria-hidden={isFollowing || !isActive}
-              tabIndex={!isFollowing && isActive ? 0 : -1}
-              title="Scroll to bottom"
-              onMouseDown={(event) => event.preventDefault()}
-              onClick={pinToBottom}
-            >
-              <svg aria-hidden="true" viewBox="0 0 16 16" className="h-4 w-4" fill="none">
-                <path
-                  d="M3.5 6 8 10.5 12.5 6"
-                  stroke="currentColor"
-                  strokeWidth="1.6"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                />
-              </svg>
-            </button>
+
+            {renderWidgets(widgetsAbove)}
+
+            <Composer
+              paneId={paneId}
+              cwd={cwd}
+              commands={commands}
+              streaming={state.isStreaming}
+              thinkingLevel={state.state?.thinkingLevel}
+              value={draft}
+              images={images}
+              onChange={setDraft}
+              onImagesChange={setImages}
+              onSubmit={(message, images) => {
+                pinToBottom();
+                if (!images.length && runUiCommand(message)) {
+                  setDraft("");
+                  return;
+                }
+                agent.prompt(message, images);
+                setDraft("");
+              }}
+              onCycleModel={cycleScopedModel}
+              onCycleThinking={agent.cycleThinking}
+            />
+
+            {renderWidgets(widgetsBelow)}
+
+            <Chrome
+              cwd={cwd}
+              groupPaths={groupPaths}
+              status={state.status}
+              stats={state.stats}
+              model={state.state?.model}
+              models={scopedModels}
+              thinkingLevel={state.state?.thinkingLevel}
+              thinkingLevels={state.thinkingLevels}
+              streaming={state.isStreaming}
+              compacting={state.isCompacting}
+              pendingCount={state.pendingCount}
+              exited={state.exited}
+              onSetModel={agent.setModel}
+              onSetThinking={agent.setThinking}
+              onAbort={agent.abort}
+              onRestart={agent.restart}
+            />
           </div>
 
-          {renderWidgets(widgetsAbove)}
+          {scopedModelsOpen ? (
+            <ScopedModelSelector
+              models={state.models}
+              selectedKeys={scopedModelKeys ?? state.models.map(modelKey)}
+              onSave={(keys) => {
+                saveScopedModelKeys(keys);
+                setScopedModelKeys(keys);
+                setScopedModelsOpen(false);
+              }}
+              onClose={() => setScopedModelsOpen(false)}
+            />
+          ) : null}
 
-          <Composer
+          {resumeOpen ? (
+            <SessionList
+              paneId={paneId}
+              sessionDir={sessionDirOf(state.state?.sessionFile ?? state.stats?.sessionFile)}
+              currentFile={state.state?.sessionFile ?? state.stats?.sessionFile}
+              onPick={(sessionPath) => {
+                agent.switchSession(sessionPath);
+                setResumeOpen(false);
+              }}
+              onClose={() => setResumeOpen(false)}
+            />
+          ) : null}
+
+          {treeOpen ? (
+            <SessionTree
+              tree={state.tree}
+              leafId={state.treeLeafId}
+              onFork={agent.fork}
+              onClose={() => setTreeOpen(false)}
+            />
+          ) : null}
+
+          <DialogHost
+            key={state.dialogs[0]?.id ?? "none"}
+            dialog={state.dialogs[0]}
             paneId={paneId}
             cwd={cwd}
-            commands={commands}
-            streaming={state.isStreaming}
-            thinkingLevel={state.state?.thinkingLevel}
-            value={draft}
-            images={images}
-            onChange={setDraft}
-            onImagesChange={setImages}
-            onSubmit={(message, images) => {
-              pinToBottom();
-              if (!images.length && runUiCommand(message)) {
-                setDraft("");
-                return;
-              }
-              agent.prompt(message, images);
-              setDraft("");
-            }}
-            onCycleModel={agent.cycleModel}
-            onCycleThinking={agent.cycleThinking}
-          />
-
-          {renderWidgets(widgetsBelow)}
-
-          <Chrome
-            cwd={cwd}
-            status={state.status}
-            stats={state.stats}
-            model={state.state?.model}
-            models={state.models}
-            thinkingLevel={state.state?.thinkingLevel}
-            thinkingLevels={state.thinkingLevels}
-            streaming={state.isStreaming}
-            compacting={state.isCompacting}
-            pendingCount={state.pendingCount}
-            exited={state.exited}
-            onSetModel={agent.setModel}
-            onSetThinking={agent.setThinking}
-            onAbort={agent.abort}
-            onRestart={agent.restart}
+            onAnswer={agent.answerDialog}
           />
         </div>
-
-        {resumeOpen ? (
-          <SessionList
-            paneId={paneId}
-            sessionDir={sessionDirOf(state.state?.sessionFile ?? state.stats?.sessionFile)}
-            currentFile={state.state?.sessionFile ?? state.stats?.sessionFile}
-            onPick={(sessionPath) => {
-              agent.switchSession(sessionPath);
-              setResumeOpen(false);
-            }}
-            onClose={() => setResumeOpen(false)}
-          />
-        ) : null}
-
-        {treeOpen ? (
-          <SessionTree
-            tree={state.tree}
-            leafId={state.treeLeafId}
-            onFork={agent.fork}
-            onClose={() => setTreeOpen(false)}
-          />
-        ) : null}
-
-        <DialogHost
-          key={state.dialogs[0]?.id ?? "none"}
-          dialog={state.dialogs[0]}
-          paneId={paneId}
-          cwd={cwd}
-          onAnswer={agent.answerDialog}
-        />
-      </div>
-    </PaneFrame>
+      </PaneFrame>
+    </PiRootsProvider>
   );
 }

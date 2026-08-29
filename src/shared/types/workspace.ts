@@ -21,6 +21,17 @@ export interface Workspace {
   path: string;
   /** True when the stored folder path is currently unavailable. */
   isMissing?: boolean;
+  /**
+   * Id of the group root workspace this project belongs to.
+   *
+   * A group is not a separate entity: its root *is* a workspace, so every view, pane and tab
+   * operation keyed by workspace id works on the group's shared surface unchanged.
+   */
+  groupId?: string;
+  /** True when this workspace is a group's shared surface rather than a project folder. */
+  isGroupRoot?: boolean;
+  /** Group root only: hides the member rows in the sidebar. */
+  groupCollapsed?: boolean;
   views: WorkspaceView[];
   activeViewId: string;
   createdAt: number;

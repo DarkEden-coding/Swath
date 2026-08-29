@@ -77,8 +77,40 @@ export interface PiAgentController {
   dismissNotice: (id: string) => void;
 }
 
-export function usePiAgent(paneId: string, cwd: string | undefined): PiAgentController {
+/**
+ * Builds the flag that tells pi about the other folders in a project group.
+ *
+ * pi has no multi-root option: it takes one working directory. Its tools are not confined to it,
+ * so naming the sibling folders in the system prompt is what makes them usable.
+ */
+function groupPathArgs(cwd: string | undefined, paths: readonly string[]): string[] {
+  const others = paths.filter((path) => path && path !== cwd);
+  if (others.length === 0) return [];
+  return [
+    "--append-system-prompt",
+    [
+      "This project spans several directories. The working directory is one of them; the full set is:",
+      ...[cwd, ...others]
+        .filter((path): path is string => Boolean(path))
+        .map((path) => `- ${path}`),
+      "Treat them as one codebase: read, search and edit across all of them using absolute paths.",
+    ].join("\n"),
+  ];
+}
+
+export function usePiAgent(
+  paneId: string,
+  cwd: string | undefined,
+  /** Every folder of the project group this pane belongs to; empty for a single-folder project. */
+  groupPaths: readonly string[] = [],
+): PiAgentController {
   useEffect(() => mountPiPaneEventCache(paneId), [paneId]);
+
+  // Read at spawn time only: a group gaining a folder must not restart a running conversation.
+  const groupPathsRef = useRef(groupPaths);
+  useEffect(() => {
+    groupPathsRef.current = groupPaths;
+  }, [groupPaths]);
 
   const [state, dispatch] = useReducer(
     reducer,
@@ -151,12 +183,13 @@ export function usePiAgent(paneId: string, cwd: string | undefined): PiAgentCont
     // `--session-id` creates the session when it does not exist yet. A pane that adopted another
     // session through `/resume` opens that file instead — the two flags are mutually exclusive.
     const resumed = resumedSessions.get(paneId);
+    const sessionArgs = resumed ? ["--session", resumed] : ["--session-id", paneId];
     void window.swath.pi
       .rpc({
         op: "spawn",
         paneId,
         cwd,
-        args: resumed ? ["--session", resumed] : ["--session-id", paneId],
+        args: [...sessionArgs, ...groupPathArgs(cwd, groupPathsRef.current)],
       })
       .then((result) => {
         // The host rejects on failure, but a transport that resolves with `{ ok: false }`

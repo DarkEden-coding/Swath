@@ -23,6 +23,14 @@ pub struct Workspace {
     /// Computed while loading; it is not persisted so a restored folder becomes available again.
     #[serde(skip_serializing, default)]
     pub is_missing: bool,
+    /// Id of the group root workspace this project belongs to, when it is grouped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_id: Option<String>,
+    /// True for the shared surface of a group; it owns views, not a project folder.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub is_group_root: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub group_collapsed: bool,
     #[serde(default)]
     pub views: Vec<WorkspaceView>,
     pub active_view_id: String,

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { PiToolEntry } from "./eventReducer";
 import { parsePartialJson } from "./partialJson";
 import { inferToolName, resolveToolView } from "./toolViews";
+import { pathHits, routeOrthogonal } from "./todoWebRoute";
 
 function entry(toolName: string): PiToolEntry {
   return {
@@ -37,7 +38,14 @@ describe("resolveToolView", () => {
   });
 
   it("gives known tools a dedicated preview", () => {
-    for (const name of ["edit", "write", "apply_patch", "parallel_agents", "ask_user_questions"]) {
+    for (const name of [
+      "edit",
+      "write",
+      "apply_patch",
+      "parallel_agents",
+      "ask_user_questions",
+      "todo_web",
+    ]) {
       expect(resolveToolView(name).Preview).toBeDefined();
     }
   });
@@ -108,4 +116,52 @@ describe("tool labels from streaming arguments", () => {
     expect(label).toHaveLength(122); // "$ " + 120
     expect(label?.endsWith("…")).toBe(true);
   });
+
+  it("labels todo_web with action, counts and title", () => {
+    expect(labelFor("todo_web", '{"action":"set"')).toBe("☑ Todo set");
+    expect(
+      labelFor(
+        "todo_web",
+        '{"action":"set","web":{"title":"Live cards","tasks":[{"id":"a","status":"completed"},{"id":"b"}]}}',
+      ),
+    ).toBe("☑ Todo set · 1/2 · Live cards");
+  });
 });
+
+describe("todo-web orthogonal routing", () => {
+  it("takes a straight line when nothing is in the way", () => {
+    const path = routeOrthogonal({ x: 10, y: 40 }, { x: 90, y: 40 }, [], { w: 120, h: 80 });
+    expect(pathHits(path, [])).toBe(false);
+    expect(length(path)).toBe(80);
+  });
+
+  it("goes around a blocking card on the shortest detour", () => {
+    const wall = { id: "mid", x: 40, y: 20, w: 40, h: 40 };
+    const path = routeOrthogonal({ x: 10, y: 40 }, { x: 120, y: 40 }, [wall], { w: 160, h: 100 });
+    expect(pathHits(path, [wall])).toBe(false);
+    const manhattan = 110;
+    const aroundFar = 110 + 2 * 40;
+    expect(length(path)).toBeGreaterThan(manhattan);
+    expect(length(path)).toBeLessThanOrEqual(aroundFar);
+  });
+
+  it("uses a separate lane instead of overlapping an existing route", () => {
+    const first = routeOrthogonal({ x: 10, y: 40 }, { x: 120, y: 40 }, [], { w: 160, h: 100 });
+    const second = routeOrthogonal({ x: 10, y: 40 }, { x: 120, y: 40 }, [], { w: 160, h: 100 }, [
+      first,
+    ]);
+
+    expect(second).not.toEqual(first);
+    expect(second.length).toBeGreaterThan(2);
+  });
+});
+
+function length(points: { x: number; y: number }[]): number {
+  return points
+    .slice(1)
+    .reduce(
+      (sum, point, index) =>
+        sum + Math.abs(point.x - points[index].x) + Math.abs(point.y - points[index].y),
+      0,
+    );
+}

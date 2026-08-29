@@ -1,6 +1,7 @@
 import type { AppConfig, FolderSelectResult, Workspace } from "../../../shared/types";
 import { createId } from "../../utils/ids";
 import { createWorkspaceView } from "../views/viewActions";
+import { dissolveGroup, isGroupRoot, membersOf, reflowGroups } from "./groupActions";
 
 export function getActiveWorkspace(config: AppConfig): Workspace | null {
   return (
@@ -41,15 +42,19 @@ export function addWorkspaceFromFolder(config: AppConfig, result: FolderSelectRe
 }
 
 export function removeWorkspace(config: AppConfig, workspaceId: string): AppConfig {
+  // Removing a group root removes the group, not the folders that were in it.
+  const target = config.workspaces.find((workspace) => workspace.id === workspaceId);
+  if (isGroupRoot(target)) return dissolveGroup(config, workspaceId);
+
   const workspaces = config.workspaces.filter((workspace) => workspace.id !== workspaceId);
-  return {
+  return reflowGroups({
     ...config,
     workspaces,
     activeWorkspaceId:
       config.activeWorkspaceId === workspaceId
         ? (workspaces[0]?.id ?? null)
         : config.activeWorkspaceId,
-  };
+  });
 }
 
 export function renameWorkspace(config: AppConfig, workspaceId: string, name: string): AppConfig {
@@ -71,6 +76,13 @@ export function selectWorkspace(config: AppConfig, workspaceId: string): AppConf
     : config;
 }
 
+/**
+ * Reorders the sidebar.
+ *
+ * Sidebar rows and `config.workspaces` share one order, so indices map straight through. Two group
+ * rules ride along: dragging a group header carries its members with it, and dropping a project
+ * inside a group's block moves it into that group (dropping it outside every block takes it out).
+ */
 export function moveWorkspace(config: AppConfig, fromIndex: number, toIndex: number): AppConfig {
   if (
     fromIndex === toIndex ||
@@ -80,9 +92,33 @@ export function moveWorkspace(config: AppConfig, fromIndex: number, toIndex: num
     toIndex >= config.workspaces.length
   )
     return config;
-  const workspaces = [...config.workspaces];
-  const [workspace] = workspaces.splice(fromIndex, 1);
-  if (!workspace) return config;
-  workspaces.splice(toIndex, 0, workspace);
-  return { ...config, workspaces };
+  const moved = config.workspaces[fromIndex];
+  if (!moved) return config;
+
+  const block = isGroupRoot(moved) ? [moved, ...membersOf(config, moved.id)] : [moved];
+  const blockIds = new Set(block.map((workspace) => workspace.id));
+  const rest = config.workspaces.filter((workspace) => !blockIds.has(workspace.id));
+
+  // `toIndex` addresses the list as it was; translate it to an insertion point in `rest`.
+  const insertAt = Math.min(
+    rest.length,
+    config.workspaces
+      .slice(0, toIndex + (fromIndex < toIndex ? 1 : 0))
+      .filter((workspace) => !blockIds.has(workspace.id)).length,
+  );
+
+  let placed = block;
+  if (!isGroupRoot(moved)) {
+    const previous = rest[insertAt - 1];
+    const adoptedGroupId = isGroupRoot(previous)
+      ? previous.id
+      : previous?.groupId !== undefined
+        ? previous.groupId
+        : undefined;
+    if (adoptedGroupId !== moved.groupId)
+      placed = [{ ...moved, groupId: adoptedGroupId, updatedAt: Date.now() }];
+  }
+
+  const workspaces = [...rest.slice(0, insertAt), ...placed, ...rest.slice(insertAt)];
+  return reflowGroups({ ...config, workspaces });
 }

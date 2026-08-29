@@ -175,8 +175,10 @@ function ToolBody({ entry, cwd }: ToolBodyProps): JSX.Element {
   const label = (args && resolvedView.label?.(args, entry)) || fallbackLabel(entry, args);
 
   // Once a preview or diff is on screen, the tool's textual summary is redundant noise; keep the
-  // output block for tools that actually stream something worth reading.
-  const showOutput = !diff && (!empty || (!preview && !streaming));
+  // output block for tools that actually stream something worth reading. todo_web's formatWeb dump
+  // duplicates the graph card, so hide it whenever the web rendered.
+  const hideTextOutput = Boolean(diff) || (toolName === "todo_web" && Boolean(preview));
+  const showOutput = !hideTextOutput && (!empty || (!preview && !streaming));
   // Nothing parsed out of the buffer yet — show the raw bytes rather than an empty card.
   const showRawArgs = streaming && !preview && !diff;
 

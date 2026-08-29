@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { readTextFile } from "../../../services/filesClient";
 import { DiffHeader, StructuredDiffView, type DiffLine, type StructuredDiff } from "./DiffView";
+import { displayPath, resolveUnderRoots, usePiRoots } from "./PiRootsContext";
 
 interface Replacement {
   path: string;
@@ -90,15 +91,6 @@ function replacements(toolName: string, args: Record<string, unknown>): Replacem
   });
 }
 
-function relativePath(cwd: string, path: string): string | null {
-  const normalizedCwd = cwd.replace(/\\/g, "/").replace(/\/$/, "");
-  const normalizedPath = path.replace(/\\/g, "/");
-  if (!normalizedPath.startsWith("/")) return normalizedPath;
-  return normalizedPath.startsWith(`${normalizedCwd}/`)
-    ? normalizedPath.slice(normalizedCwd.length + 1)
-    : null;
-}
-
 /** Reads each target file once and turns streaming replacements into real contextual diffs. */
 export function LiveFileDiffPreview({
   toolName,
@@ -111,6 +103,9 @@ export function LiveFileDiffPreview({
   cwd: string;
   fallback?: ReactNode;
 }): JSX.Element | null {
+  // An edit in a group's sibling folder arrives as an absolute path outside `cwd`; without the
+  // group's roots it would resolve to nothing and the live diff would silently disappear.
+  const roots = usePiRoots(cwd);
   const changes = useMemo(() => replacements(toolName, args), [toolName, args]);
   const paths = useMemo(() => [...new Set(changes.map((change) => change.path))], [changes]);
   const pathKey = paths.join("\0");
@@ -121,10 +116,10 @@ export function LiveFileDiffPreview({
     const requestedPaths = pathKey ? pathKey.split("\0") : [];
     Promise.all(
       requestedPaths.map(async (path) => {
-        const relative = relativePath(cwd, path);
-        if (!relative) return null;
+        const resolved = resolveUnderRoots(roots, path);
+        if (!resolved) return null;
         try {
-          return [path, await readTextFile(cwd, relative)] as const;
+          return [path, await readTextFile(resolved.root, resolved.relative)] as const;
         } catch {
           return null;
         }
@@ -135,11 +130,14 @@ export function LiveFileDiffPreview({
     return () => {
       active = false;
     };
-  }, [cwd, pathKey]);
+  }, [roots, pathKey]);
 
   const diffs = changes.flatMap((change) => {
     const source = sources[change.path];
-    const diff = source && buildContextualDiff(source, change.oldText, change.newText, change.path);
+    // Label an edit by the folder that owns it, so two same-named files in one group never read
+    // as the same file.
+    const label = displayPath(roots, change.path) ?? change.path;
+    const diff = source && buildContextualDiff(source, change.oldText, change.newText, label);
     return diff ? [diff] : [];
   });
   if (!diffs.length) return fallback ? <>{fallback}</> : null;

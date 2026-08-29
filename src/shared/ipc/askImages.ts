@@ -9,6 +9,8 @@
 export interface AskImagesRequest {
   paths: string[];
   cwd: string;
+  /** The other folders of the project group, which are as loadable as `cwd` itself. */
+  roots?: readonly string[];
 }
 
 /** A successfully decoded image, ready to drop into an `<img src>`. */

@@ -118,6 +118,18 @@ fn normalize_config(config: &mut AppConfig) {
     for workspace in &mut config.workspaces {
         workspace.is_missing = !std::path::Path::new(&workspace.path).exists();
     }
+    // A group root has no folder of its own: it is unavailable only once every member is.
+    let live_groups: std::collections::HashSet<String> = config
+        .workspaces
+        .iter()
+        .filter(|workspace| !workspace.is_missing && !workspace.is_group_root)
+        .filter_map(|workspace| workspace.group_id.clone())
+        .collect();
+    for workspace in &mut config.workspaces {
+        if workspace.is_group_root {
+            workspace.is_missing = !live_groups.contains(&workspace.id);
+        }
+    }
     if config.active_workspace_id.as_ref().is_none_or(|id| {
         !config
             .workspaces

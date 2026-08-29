@@ -19,6 +19,7 @@
 
 import { PatchView, WholeFileView } from "./DiffView";
 import type { PiToolEntry } from "./eventReducer";
+import { TodoWebPreview, todoWebLabel } from "./TodoWebPreview";
 
 export interface ToolViewProps {
   args: Record<string, unknown>;
@@ -392,24 +393,6 @@ function QuestionsPreview({ args, streaming }: ToolViewProps): JSX.Element | nul
   );
 }
 
-/** `todo_web` — `{ action, web?, taskId?, completions? }`. */
-function TodoPreview({ args, streaming }: ToolViewProps): JSX.Element | null {
-  const web = isRecord(args.web) ? args.web : undefined;
-  const tasks = web ? list(web, "tasks").filter(isRecord) : [];
-  if (!tasks.length) return <FieldList args={args} streaming={streaming} />;
-
-  return (
-    <div className="pi-fields">
-      {tasks.map((task, index) => (
-        <FieldRow key={index} name={str(task, "id") ?? String(index + 1)}>
-          <span className="break-words">{str(task, "title", "name") ?? "…"}</span>
-          {str(task, "status") ? <span className="pi-dim"> · {str(task, "status")}</span> : null}
-        </FieldRow>
-      ))}
-    </div>
-  );
-}
-
 /** `background_terminal` — `{ command?, commands?, cwd?, maxRuntimeSeconds? }`. */
 function BackgroundTerminalPreview({ args, streaming }: ToolViewProps): JSX.Element | null {
   const commands = list(args, "commands").filter(
@@ -535,8 +518,8 @@ const TOOL_VIEWS: Record<string, ToolView> = {
   },
 
   todo_web: {
-    label: (args) => `☑ Todo ${str(args, "action") ?? ""}`.trimEnd(),
-    Preview: TodoPreview,
+    label: (args, entry) => todoWebLabel(args, entry),
+    Preview: TodoWebPreview,
   },
 
   background_terminal: {

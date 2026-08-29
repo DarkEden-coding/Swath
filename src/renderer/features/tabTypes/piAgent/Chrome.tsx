@@ -83,6 +83,8 @@ function Picker<T extends string>({ label, options, onPick }: PickerProps<T>): J
 
 interface ChromeProps {
   cwd: string;
+  /** Sibling folders this agent was told about, on a project group's shared surface. */
+  groupPaths?: readonly string[];
   status: Record<string, string>;
   stats: PiSessionStats | null;
   model: PiModel | null | undefined;
@@ -101,6 +103,7 @@ interface ChromeProps {
 
 export function Chrome({
   cwd,
+  groupPaths = [],
   status,
   stats,
   model,
@@ -124,9 +127,17 @@ export function Chrome({
   return (
     <div className="pi-agent-footer shrink-0">
       <div className="pi-footer-row">
-        <span className="truncate" title={cwd}>
+        <span
+          className="truncate"
+          title={[cwd, ...groupPaths.filter((path) => path !== cwd)].join("\n")}
+        >
           {cwd}
         </span>
+        {groupPaths.filter((path) => path !== cwd).length > 0 ? (
+          <span className="shrink-0 opacity-80">
+            +{groupPaths.filter((path) => path !== cwd).length} folders
+          </span>
+        ) : null}
         {compacting ? <span className="shrink-0">compacting…</span> : null}
         {pendingCount > 0 ? <span className="shrink-0">queued:{pendingCount}</span> : null}
         {stats ? (

@@ -325,16 +325,38 @@ fn list_sessions(dir: &Path) -> Vec<Value> {
     sessions
 }
 
+/// Walks every root of a project group, collecting the candidates `@` completion offers.
+///
+/// The pane's own working directory yields repository-relative paths, as a single-folder project
+/// always has. The other folders of a group yield absolute paths: pi resolves an `@` mention
+/// against its working directory, so only an absolute path reaches a sibling folder. The budget is
+/// split evenly so one huge repository cannot crowd its siblings out of the list.
+fn walk_group_files(cwd: &Path, extra_roots: &[&Path]) -> Vec<String> {
+    let roots = 1 + extra_roots.len();
+    let budget = (FILE_LIST_LIMIT / roots).max(1);
+    let mut found = walk_files(cwd, budget);
+    for root in extra_roots {
+        let prefix = root.to_string_lossy().replace('\\', "/");
+        let prefix = prefix.trim_end_matches('/');
+        found.extend(
+            walk_files(root, budget)
+                .into_iter()
+                .map(|relative| format!("{prefix}/{relative}")),
+        );
+    }
+    found
+}
+
 /// Walks `root` breadth-first, collecting relative file paths.
 ///
 /// Bounded rather than exhaustive: `@` completion only needs enough candidates to filter,
 /// and an unbounded walk on a large repo would block the UI.
-fn walk_files(root: &Path) -> Vec<String> {
+fn walk_files(root: &Path, limit: usize) -> Vec<String> {
     let mut found = Vec::new();
     let mut queue = std::collections::VecDeque::from([root.to_path_buf()]);
 
     while let Some(dir) = queue.pop_front() {
-        if found.len() >= FILE_LIST_LIMIT {
+        if found.len() >= limit {
             break;
         }
         let Ok(entries) = fs::read_dir(&dir) else {
@@ -356,7 +378,7 @@ fn walk_files(root: &Path) -> Vec<String> {
             } else if file_type.is_file() {
                 if let Ok(relative) = path.strip_prefix(root) {
                     found.push(relative.to_string_lossy().replace('\\', "/"));
-                    if found.len() >= FILE_LIST_LIMIT {
+                    if found.len() >= limit {
                         break;
                     }
                 }
@@ -421,7 +443,21 @@ pub fn rpc(app: &AppHandle, manager: &PiManager, request: Value) -> PiResult {
             if cwd.is_empty() {
                 return Err("pi files requires cwd".into());
             }
-            Ok(json!({ "files": walk_files(Path::new(cwd)) }))
+            // The other folders of a project group, so `@` reaches across the whole project.
+            let extra: Vec<&str> = request
+                .get("paths")
+                .and_then(Value::as_array)
+                .map(|paths| {
+                    paths
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(str::trim)
+                        .filter(|path| !path.is_empty() && *path != cwd)
+                        .collect()
+                })
+                .unwrap_or_default();
+            let extra_roots: Vec<&Path> = extra.iter().map(Path::new).collect();
+            Ok(json!({ "files": walk_group_files(Path::new(cwd), &extra_roots) }))
         }
         "sessions" => {
             let dir = request
@@ -477,6 +513,28 @@ mod tests {
         fs::write(dir.join("b.jsonl"), "not json\n").unwrap();
         assert_eq!(list_sessions(&dir).len(), 1);
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// `@` completion on a group's shared agent has to reach the group's other folders, and a
+    /// mention only resolves there when it is absolute.
+    #[test]
+    fn group_file_walk_lists_siblings_by_absolute_path() {
+        let root = std::env::temp_dir().join("swath-pi-group-files-test");
+        let _ = fs::remove_dir_all(&root);
+        let (api, web) = (root.join("api"), root.join("web"));
+        fs::create_dir_all(api.join("src")).unwrap();
+        fs::create_dir_all(&web).unwrap();
+        fs::write(api.join("src").join("main.rs"), "").unwrap();
+        fs::write(web.join("index.ts"), "").unwrap();
+
+        let files = walk_group_files(&api, &[web.as_path()]);
+        assert!(files.contains(&"src/main.rs".to_string()), "got {files:?}");
+        let sibling = format!("{}/index.ts", web.to_string_lossy().replace('\\', "/"));
+        assert!(files.contains(&sibling), "got {files:?}");
+
+        // The pane's own folder is the working directory; listing it twice would duplicate it.
+        assert_eq!(walk_group_files(&api, &[]), vec!["src/main.rs".to_string()]);
+        let _ = fs::remove_dir_all(&root);
     }
 
     /// Windows must target npm's `.cmd` shim explicitly; CreateProcess does not use PATHEXT.

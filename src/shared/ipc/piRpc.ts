@@ -13,8 +13,11 @@ export type PiRpcRequest =
   | { op: "send"; paneId: string; line: string }
   | { op: "kill"; paneId: string }
   | { op: "stderr"; paneId: string }
-  /** Bounded file walk under `cwd`, for `@file` completion. */
-  | { op: "files"; paneId: string; cwd: string }
+  /**
+   * Bounded file walk for `@file` completion: `cwd` yields relative paths, and the other folders
+   * of a project group yield absolute ones, which is what a mention needs to reach outside `cwd`.
+   */
+  | { op: "files"; paneId: string; cwd: string; paths?: readonly string[] }
   /** Lists the pi session files in `dir`, for `/resume`. */
   | { op: "sessions"; paneId: string; dir: string };
 

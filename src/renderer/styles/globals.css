@@ -353,6 +353,184 @@ body.is-reordering * {
   margin: 0 12px 6px;
 }
 
+/* todo_web — orthogonal layered graph. */
+.pi-todo {
+  min-width: 0;
+  padding: 4px 10px 10px;
+  font-size: 12px;
+}
+
+.pi-todo-head {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px 12px;
+  padding: 2px 2px 6px;
+}
+
+.pi-todo-title {
+  color: var(--pi-text);
+  font-weight: 650;
+  overflow-wrap: anywhere;
+}
+
+.pi-todo-meter {
+  height: 2px;
+  margin: 0 2px 8px;
+  background: var(--pi-border-muted);
+}
+
+.pi-todo-meter > span {
+  display: block;
+  height: 100%;
+  background: var(--pi-green);
+}
+
+.pi-todo-flash {
+  margin: 0 2px 8px;
+  padding: 3px 8px;
+  border-left: 2px solid var(--pi-green);
+  color: var(--pi-muted);
+  font-size: 11px;
+}
+
+.pi-todo-dag {
+  position: relative;
+  min-width: 0;
+  margin: 0 2px 2px;
+  padding: 14px 6px 16px;
+}
+
+.pi-todo-edges {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.pi-todo-cols {
+  display: grid;
+  gap: 28px;
+  position: relative;
+  z-index: 1;
+}
+
+.pi-todo-col {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.pi-todo-col-label {
+  color: var(--pi-dim);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.pi-todo-node {
+  position: relative;
+  padding: 7px 8px 8px;
+  border: 1px solid var(--pi-border-muted);
+  border-radius: 4px;
+  background: var(--pi-surface);
+}
+
+.pi-todo-node.is-ready {
+  border-color: var(--pi-yellow);
+}
+
+.pi-todo-node.is-run {
+  border-color: var(--pi-cyan);
+}
+
+.pi-todo-node.is-just {
+  border-color: var(--pi-green);
+}
+
+.pi-todo-node.is-blocked {
+  border-style: dashed;
+}
+
+.pi-todo-node.is-done {
+  color: var(--pi-dim);
+}
+
+.pi-todo-id {
+  color: var(--pi-purple);
+  font-size: 11px;
+}
+
+.pi-todo-node.is-done .pi-todo-id {
+  color: var(--pi-dim);
+}
+
+.pi-todo-node-title {
+  display: block;
+  margin-top: 2px;
+}
+
+.pi-todo-node-deps {
+  margin-top: 4px;
+  color: var(--pi-dim);
+  font-size: 10px;
+}
+
+.pi-todo-mark {
+  font-weight: 650;
+}
+
+.pi-todo-mark.is-done {
+  color: var(--pi-green);
+}
+
+.pi-todo-mark.is-run {
+  color: var(--pi-cyan);
+}
+
+.pi-todo-mark.is-ready {
+  color: var(--pi-yellow);
+}
+
+.pi-todo-mark.is-blocked {
+  color: var(--pi-dim);
+}
+
+.pi-todo-port {
+  position: absolute;
+  top: 50%;
+  width: 6px;
+  height: 6px;
+  border: 1px solid var(--pi-border);
+  border-radius: 1px;
+  background: var(--pi-page);
+  transform: translateY(-50%);
+}
+
+.pi-todo-port.in {
+  left: -4px;
+}
+
+.pi-todo-port.out {
+  right: -4px;
+}
+
+.pi-todo-node.is-run .pi-todo-port {
+  border-color: var(--pi-cyan);
+}
+
+.pi-todo-node.is-ready .pi-todo-port {
+  border-color: var(--pi-yellow);
+}
+
+.pi-todo-node.is-just .pi-todo-port {
+  border-color: var(--pi-green);
+}
+
 .pi-tool-expand {
   display: block;
   width: 100%;

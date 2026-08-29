@@ -4,6 +4,7 @@
 - [Terminal pane](./terminal.md)
 - [Git manager pane](./git-manager.md)
 - [Pi agent pane](./pi-agent-pane.md) — plan
+- [Project groups](./project-groups.md)
 
 Related:
 

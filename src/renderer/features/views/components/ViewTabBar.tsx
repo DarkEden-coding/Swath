@@ -11,6 +11,7 @@ import {
   IconTerminal,
 } from "../../shell/icons";
 import { getTabTypes } from "../../tabTypes/registry";
+import { GROUP_VIEW_KINDS, isGroupRoot } from "../../../domain/workspaces/groupActions";
 import { useReorderDrag } from "../../../hooks/useReorderDrag";
 
 interface ViewTabBarProps {
@@ -41,6 +42,13 @@ export function ViewTabBar({
   sidebarCollapsed,
   onToggleSidebar,
 }: ViewTabBarProps): JSX.Element {
+  // A group's surface is for agents that span its folders; per-folder work stays in the projects,
+  // so the group tab bar offers only the kinds that make sense across several paths.
+  const group = isGroupRoot(workspace);
+  const tabTypes = getTabTypes().filter(
+    (tabType) => !group || (GROUP_VIEW_KINDS as readonly string[]).includes(tabType.kind),
+  );
+  const defaultKind = tabTypes[0]?.kind ?? "terminal";
   const [showTypeSelector, setShowTypeSelector] = useState(false);
   const selectorRef = useRef<HTMLDivElement>(null);
   const tabStripRef = useRef<HTMLDivElement>(null);
@@ -116,7 +124,7 @@ export function ViewTabBar({
               setShowTypeSelector((open) => !open);
               return;
             }
-            appActions.createView(workspace.id);
+            appActions.createView(workspace.id, group ? defaultKind : undefined);
           }}
           title="New tab (Shift+click to pick type; right-click for menu)"
           onContextMenu={(e) => {
@@ -128,7 +136,7 @@ export function ViewTabBar({
         </button>
         {showTypeSelector && (
           <div className="absolute right-0 top-full z-[100] mt-1 flex min-w-[140px] flex-col gap-0.5 rounded-md border border-swath-border bg-[#1a1a1a] p-1 shadow-swath-float">
-            {getTabTypes().map((tabType) => (
+            {tabTypes.map((tabType) => (
               <button
                 key={tabType.kind}
                 type="button"

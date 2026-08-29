@@ -30,6 +30,20 @@ pub fn load(request: Value) -> AskImagesResult {
         return Err("Image cwd is required".into());
     }
 
+    // The other folders of a project group are equally part of the project, so an image the agent
+    // points at inside one of them is as legitimate as one under `cwd`.
+    let mut roots = vec![cwd.clone()];
+    roots.extend(
+        request
+            .get("roots")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(|root| root.trim().to_string())
+            .filter(|root| !root.is_empty() && *root != cwd),
+    );
+
     let paths = request
         .get("paths")
         .and_then(Value::as_array)
@@ -44,7 +58,7 @@ pub fn load(request: Value) -> AskImagesResult {
         .iter()
         .map(|entry| {
             let requested = entry.as_str().unwrap_or("").trim();
-            match load_one(&cwd, requested) {
+            match load_one(&cwd, &roots, requested) {
                 Ok(image) => image,
                 Err(message) => json!({ "path": requested, "error": message }),
             }
@@ -55,12 +69,12 @@ pub fn load(request: Value) -> AskImagesResult {
 }
 
 /// Loads a single raster image and encodes it as a `data:` URL.
-fn load_one(cwd: &str, path: &str) -> Result<Value, String> {
+fn load_one(cwd: &str, roots: &[String], path: &str) -> Result<Value, String> {
     if path.is_empty() {
         return Err("Image path is empty".into());
     }
 
-    let resolved = resolve_path(cwd, path)?;
+    let resolved = resolve_path(cwd, roots, path)?;
     let meta = fs::symlink_metadata(&resolved)
         .map_err(|err| format!("Unable to read image metadata: {err}"))?;
     if meta.file_type().is_symlink() {
@@ -110,11 +124,11 @@ fn load_one(cwd: &str, path: &str) -> Result<Value, String> {
     }))
 }
 
-/// Resolves `path` and confirms it sits under the workspace cwd or the system temp dir.
+/// Resolves `path` and confirms it sits under one of the project's folders or the system temp dir.
 ///
 /// Temp is allowed because agents routinely attach freshly captured screenshots that were
 /// never written into the project tree.
-fn resolve_path(cwd: &str, path: &str) -> Result<PathBuf, String> {
+fn resolve_path(cwd: &str, roots: &[String], path: &str) -> Result<PathBuf, String> {
     let cwd_path = Path::new(cwd);
     if !cwd_path.is_dir() {
         return Err("Image cwd is not a directory".into());
@@ -142,6 +156,13 @@ fn resolve_path(cwd: &str, path: &str) -> Result<PathBuf, String> {
         .map_err(|err| format!("Unable to resolve image path: {err}"))?;
     if canonical.starts_with(&canonical_cwd) {
         return Ok(canonical);
+    }
+    for root in roots {
+        if let Ok(canonical_root) = Path::new(root).canonicalize() {
+            if canonical.starts_with(&canonical_root) {
+                return Ok(canonical);
+            }
+        }
     }
     if let Ok(temp) = std::env::temp_dir().canonicalize() {
         if canonical.starts_with(&temp) {
