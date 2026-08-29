@@ -88,8 +88,15 @@ export function PiAgentPane({ workspace, view, pane }: PaneComponentProps): JSX.
     [workspaces, workspace.id],
   );
 
-  const agent = usePiAgent(paneId, cwd, groupPaths);
+  const agent = usePiAgent(paneId, cwd, groupPaths, paneMeta?.metadata?.piSessionFile);
   const { state } = agent;
+  const sessionFile = state.state?.sessionFile;
+  useEffect(() => {
+    if (sessionFile && sessionFile !== paneMeta?.metadata?.piSessionFile) {
+      appActions.setPanePiSessionFile(workspace.id, view.id, paneId, sessionFile);
+    }
+  }, [paneId, paneMeta?.metadata?.piSessionFile, sessionFile, view.id, workspace.id]);
+
   // Draft and attachments are cached alongside the transcript so a tab switch does not lose them.
   const [draft, setDraft] = useState(() => piPaneCache.get(paneId)?.draft ?? "");
   const [images, setImages] = useState<AttachedImage[]>(

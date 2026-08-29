@@ -114,6 +114,24 @@ export function setPaneInitialCwd(
   });
 }
 
+/** Records the Pi session file that a pane should reopen. */
+export function setPanePiSessionFile(
+  config: AppConfig,
+  workspaceId: string,
+  viewId: string,
+  paneId: string,
+  sessionFile: string,
+): AppConfig {
+  if (!sessionFile.trim()) return config;
+  return updateView(config, workspaceId, viewId, (view) => {
+    const layout = structuredClone(view.layout);
+    const pane = findPane(layout, paneId);
+    if (!pane) return view;
+    pane.metadata = { ...(pane.metadata ?? {}), piSessionFile: sessionFile };
+    return { ...view, layout };
+  });
+}
+
 function updateView(
   config: AppConfig,
   workspaceId: string,

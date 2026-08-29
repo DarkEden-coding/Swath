@@ -52,13 +52,7 @@ function cacheHiddenPaneEvent(paneId: string, line?: string, exited?: boolean): 
       : entry.state;
   piPaneCache.set(paneId, { ...entry, state });
 }
-/**
- * Session files adopted through `/resume`, so a restarted pane reopens the resumed conversation
- * rather than its own `--session-id`.
- *
- * ponytail: in-memory, so a resumed pane reverts to its own session when the app restarts.
- * Persist it in pane metadata if that becomes annoying.
- */
+/** Session files adopted while a pane is running, before its persisted metadata updates. */
 export const resumedSessions = new Map<string, string>();
 
 /**

@@ -103,6 +103,7 @@ export function usePiAgent(
   cwd: string | undefined,
   /** Every folder of the project group this pane belongs to; empty for a single-folder project. */
   groupPaths: readonly string[] = [],
+  initialSessionFile?: string,
 ): PiAgentController {
   useEffect(() => mountPiPaneEventCache(paneId), [paneId]);
 
@@ -182,8 +183,8 @@ export function usePiAgent(
     // layout, so a remounted or restored pane reattaches to its own conversation.
     // `--session-id` creates the session when it does not exist yet. A pane that adopted another
     // session through `/resume` opens that file instead — the two flags are mutually exclusive.
-    const resumed = resumedSessions.get(paneId);
-    const sessionArgs = resumed ? ["--session", resumed] : ["--session-id", paneId];
+    const sessionFile = resumedSessions.get(paneId) ?? initialSessionFile;
+    const sessionArgs = sessionFile ? ["--session", sessionFile] : ["--session-id", paneId];
     void window.swath.pi
       .rpc({
         op: "spawn",
@@ -206,7 +207,7 @@ export function usePiAgent(
         spawnedPanes.delete(paneId);
         dispatch({ type: "error", message: String(error) });
       });
-  }, [paneId, cwd, requestFullState, requestResync]);
+  }, [paneId, cwd, initialSessionFile, requestFullState, requestResync]);
 
   /** Explicit user restart: tear the child down first, then spawn a fresh one. */
   const restart = useCallback(() => {

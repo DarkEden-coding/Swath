@@ -23,6 +23,8 @@ export interface PaneMetadata {
   shellProfile?: ShellProfile | null;
   env?: Record<string, string> | PaneEnvVar[];
   sessionId?: string;
+  /** Pi session file currently owned by this pane. */
+  piSessionFile?: string;
 }
 
 export interface PaneLeaf {

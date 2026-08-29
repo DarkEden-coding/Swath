@@ -346,6 +346,18 @@ export function setPaneInitialCwd(
   withConfig((config) => paneActions.setPaneInitialCwd(config, workspaceId, viewId, paneId, cwd));
 }
 
+/** Records the Pi session file that a pane should reopen. */
+export function setPanePiSessionFile(
+  workspaceId: string,
+  viewId: string,
+  paneId: string,
+  sessionFile: string,
+): void {
+  withConfig((config) =>
+    paneActions.setPanePiSessionFile(config, workspaceId, viewId, paneId, sessionFile),
+  );
+}
+
 /** Determines whether pane closure requires confirmation. */
 export function shouldConfirmClosePane(workspaceId: string, viewId: string): boolean {
   const config = useConfigStore.getState().config;
