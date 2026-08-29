@@ -179,12 +179,10 @@ export function usePiAgent(
     }
     spawnedPanes.add(paneId);
     dispatch({ type: "reset" });
-    // The pane id doubles as the pi session id: it is stable and already persisted in the
-    // layout, so a remounted or restored pane reattaches to its own conversation.
-    // `--session-id` creates the session when it does not exist yet. A pane that adopted another
-    // session through `/resume` opens that file instead — the two flags are mutually exclusive.
+    // Reopen the session this pane last reported. Legacy panes have no stored file, so continue
+    // the newest session for their project once and persist the exact file from pi's state.
     const sessionFile = resumedSessions.get(paneId) ?? initialSessionFile;
-    const sessionArgs = sessionFile ? ["--session", sessionFile] : ["--session-id", paneId];
+    const sessionArgs = sessionFile ? ["--session", sessionFile] : ["--continue"];
     void window.swath.pi
       .rpc({
         op: "spawn",

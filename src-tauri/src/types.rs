@@ -126,6 +126,8 @@ pub struct PaneMetadata {
     #[serde(default)]
     pub session_id: Option<String>,
     #[serde(default)]
+    pub pi_session_file: Option<String>,
+    #[serde(default)]
     pub image_path: Option<String>,
     #[serde(default)]
     pub image_title: Option<String>,
@@ -277,4 +279,23 @@ pub struct TerminalClipboardPayload {
 #[serde(rename_all = "camelCase")]
 pub struct TerminalPastePermissionStatus {
     pub accessibility: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PaneMetadata;
+
+    #[test]
+    fn pane_metadata_retains_pi_session_file() {
+        let metadata: PaneMetadata =
+            serde_json::from_str(r#"{"piSessionFile":"/tmp/session.jsonl"}"#).unwrap();
+        assert_eq!(
+            metadata.pi_session_file.as_deref(),
+            Some("/tmp/session.jsonl")
+        );
+        assert_eq!(
+            serde_json::to_value(metadata).unwrap()["piSessionFile"],
+            "/tmp/session.jsonl"
+        );
+    }
 }
