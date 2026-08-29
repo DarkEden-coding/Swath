@@ -25,6 +25,12 @@ export interface PaneMetadata {
   sessionId?: string;
   /** Pi session file currently owned by this pane. */
   piSessionFile?: string;
+  /** Task sent once when Swath starts this fresh agent pane. */
+  piInitialPrompt?: string;
+  /** Optional Pi model override in `provider/model` form. */
+  piModel?: string;
+  /** Optional Pi reasoning-level override. */
+  piThinkingLevel?: string;
 }
 
 export interface PaneLeaf {

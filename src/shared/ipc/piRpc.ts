@@ -48,6 +48,55 @@ export interface PiModel {
   input?: string[];
 }
 
+/** Payload emitted by Swath's Pi extension to request an independent agent tab. */
+export interface PiAgentTabRequest {
+  task: string;
+  title?: string;
+  model?: string;
+  reasoningLevel?: PiThinkingLevel;
+}
+
+const AGENT_TAB_STATUS_KEY = "swath:create-agent-tab";
+
+/** Parses the private extension-UI signal used for Swath agent-tab creation. */
+export function agentTabRequestFrom(event: PiIncoming): PiAgentTabRequest | null {
+  if (
+    event.type !== "extension_ui_request" ||
+    event.method !== "setStatus" ||
+    event.statusKey !== AGENT_TAB_STATUS_KEY ||
+    !event.statusText
+  ) {
+    return null;
+  }
+  try {
+    const value: unknown = JSON.parse(event.statusText);
+    if (
+      typeof value !== "object" ||
+      value === null ||
+      typeof (value as { task?: unknown }).task !== "string" ||
+      !(value as { task: string }).task.trim()
+    ) {
+      return null;
+    }
+    const request = value as Record<string, unknown>;
+    return {
+      task: request.task as string,
+      ...(typeof request.title === "string" && request.title.trim()
+        ? { title: request.title }
+        : {}),
+      ...(typeof request.model === "string" && request.model.trim()
+        ? { model: request.model }
+        : {}),
+      ...(typeof request.reasoningLevel === "string" &&
+      ["off", "minimal", "low", "medium", "high", "xhigh", "max"].includes(request.reasoningLevel)
+        ? { reasoningLevel: request.reasoningLevel as PiThinkingLevel }
+        : {}),
+    };
+  } catch {
+    return null;
+  }
+}
+
 export interface PiState {
   model: PiModel | null;
   thinkingLevel: PiThinkingLevel;

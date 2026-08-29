@@ -16,6 +16,11 @@ import { dialogClient } from "../services/dialogClient";
 import { useConfigStore } from "../state/configStore";
 import { useUiStore } from "../state/uiStore";
 import { getTabType } from "../features/tabTypes/registry";
+import {
+  createPiAgentView,
+  type PiAgentStartOptions,
+} from "../features/tabTypes/piAgent/piAgentTabType";
+import { prewarmPiAgent } from "../features/tabTypes/piAgent/usePiAgent";
 import { reportError } from "../lib/errorLog";
 
 /** Commits configuration state and schedules persistence. */
@@ -221,6 +226,39 @@ export function moveWorkspace(fromIndex: number, toIndex: number): void {
 /** Creates a view in a workspace. */
 export function createView(workspaceId?: string, kind: PaneKind = "terminal"): void {
   withConfig((config) => viewActions.addView(config, workspaceId, kind));
+}
+
+/** Adds an independent Pi agent tab without taking focus from its caller. */
+export function createPiAgentTab(
+  workspaceId: string,
+  title: string,
+  start: PiAgentStartOptions,
+): void {
+  let launch: { paneId: string; cwd: string; groupPaths: string[] } | undefined;
+  withConfig((config) => ({
+    ...config,
+    workspaces: config.workspaces.map((workspace) => {
+      if (workspace.id !== workspaceId) return workspace;
+      const view = createPiAgentView(title, workspace.path, config.settings, start);
+      launch = {
+        paneId: view.activePaneId,
+        cwd: workspace.path,
+        groupPaths: groupActions.groupPathsFor(config, workspaceId),
+      };
+      return {
+        ...workspace,
+        views: [...workspace.views, view],
+        updatedAt: Date.now(),
+      };
+    }),
+  }));
+  if (!launch) return;
+  prewarmPiAgent(launch.paneId, launch.cwd, launch.groupPaths, {
+    task: start.prompt,
+    title: start.title,
+    model: start.model,
+    reasoningLevel: start.thinkingLevel,
+  });
 }
 
 /** Closes a view after any required confirmation. */

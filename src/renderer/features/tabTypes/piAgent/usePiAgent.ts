@@ -9,6 +9,8 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef } from "react";
 import {
   parsePiLine,
+  agentTabRequestFrom,
+  type PiAgentTabRequest,
   type PiCommandMessage,
   type PiImageContent,
   type PiThinkingLevel,
@@ -83,7 +85,7 @@ export interface PiAgentController {
  * pi has no multi-root option: it takes one working directory. Its tools are not confined to it,
  * so naming the sibling folders in the system prompt is what makes them usable.
  */
-function groupPathArgs(cwd: string | undefined, paths: readonly string[]): string[] {
+export function groupPathArgs(cwd: string | undefined, paths: readonly string[]): string[] {
   const others = paths.filter((path) => path && path !== cwd);
   if (others.length === 0) return [];
   return [
@@ -98,12 +100,41 @@ function groupPathArgs(cwd: string | undefined, paths: readonly string[]): strin
   ];
 }
 
+/** Starts a fresh independent Pi agent before its tab is first rendered. */
+export function prewarmPiAgent(
+  paneId: string,
+  cwd: string,
+  groupPaths: readonly string[],
+  start: PiAgentTabRequest,
+): void {
+  if (spawnedPanes.has(paneId)) return;
+  spawnedPanes.add(paneId);
+  const args = [
+    ...(start.title ? ["--name", start.title] : []),
+    ...(start.model ? ["--model", start.model] : []),
+    ...(start.reasoningLevel ? ["--thinking", start.reasoningLevel] : []),
+    ...groupPathArgs(cwd, groupPaths),
+  ];
+  void window.swath.pi
+    .rpc({ op: "spawn", paneId, cwd, args })
+    .then(() =>
+      window.swath.pi.rpc({
+        op: "send",
+        paneId,
+        line: JSON.stringify({ type: "prompt", message: start.task }),
+      }),
+    )
+    .catch(() => spawnedPanes.delete(paneId));
+}
+
 export function usePiAgent(
   paneId: string,
   cwd: string | undefined,
   /** Every folder of the project group this pane belongs to; empty for a single-folder project. */
   groupPaths: readonly string[] = [],
   initialSessionFile?: string,
+  initialStart?: PiAgentTabRequest,
+  onAgentTabRequest?: (request: PiAgentTabRequest) => void,
 ): PiAgentController {
   useEffect(() => mountPiPaneEventCache(paneId), [paneId]);
 
@@ -118,6 +149,7 @@ export function usePiAgent(
     paneId,
     (id) => piPaneCache.get(id)?.state ?? initialPiPaneState(),
   );
+  const needsInitialPromptRef = useRef(Boolean(initialStart));
 
   // Republish every render so a remount (tab switch) restores the transcript synchronously.
   useEffect(() => {
@@ -182,13 +214,25 @@ export function usePiAgent(
     // Reopen the session this pane last reported. Legacy panes have no stored file, so continue
     // the newest session for their project once and persist the exact file from pi's state.
     const sessionFile = resumedSessions.get(paneId) ?? initialSessionFile;
-    const sessionArgs = sessionFile ? ["--session", sessionFile] : ["--continue"];
+    const isFreshStart = !sessionFile && Boolean(initialStart) && needsInitialPromptRef.current;
+    const sessionArgs = sessionFile
+      ? ["--session", sessionFile]
+      : isFreshStart
+        ? []
+        : ["--continue"];
+    const startupArgs = initialStart
+      ? [
+          ...(initialStart.title ? ["--name", initialStart.title] : []),
+          ...(initialStart.model ? ["--model", initialStart.model] : []),
+          ...(initialStart.reasoningLevel ? ["--thinking", initialStart.reasoningLevel] : []),
+        ]
+      : [];
     void window.swath.pi
       .rpc({
         op: "spawn",
         paneId,
         cwd,
-        args: [...sessionArgs, ...groupPathArgs(cwd, groupPathsRef.current)],
+        args: [...sessionArgs, ...startupArgs, ...groupPathArgs(cwd, groupPathsRef.current)],
       })
       .then((result) => {
         // The host rejects on failure, but a transport that resolves with `{ ok: false }`
@@ -200,12 +244,16 @@ export function usePiAgent(
           return;
         }
         requestFullState();
+        if (isFreshStart && initialStart) {
+          needsInitialPromptRef.current = false;
+          send({ type: "prompt", message: initialStart.task });
+        }
       })
       .catch((error: unknown) => {
         spawnedPanes.delete(paneId);
         dispatch({ type: "error", message: String(error) });
       });
-  }, [paneId, cwd, initialSessionFile, requestFullState, requestResync]);
+  }, [paneId, cwd, initialSessionFile, initialStart, requestFullState, requestResync, send]);
 
   /** Explicit user restart: tear the child down first, then spawn a fresh one. */
   const restart = useCallback(() => {
@@ -215,8 +263,10 @@ export function usePiAgent(
 
   // Kept in a ref so the subscription is created once per pane rather than on every render.
   const sendRef = useRef(send);
+  const agentTabRequestRef = useRef(onAgentTabRequest);
   useEffect(() => {
     sendRef.current = send;
+    agentTabRequestRef.current = onAgentTabRequest;
   });
 
   useEffect(() => {
@@ -243,6 +293,8 @@ export function usePiAgent(
 
       const event = parsePiLine(line);
       if (!event) return;
+      const agentTabRequest = agentTabRequestFrom(event);
+      if (agentTabRequest) agentTabRequestRef.current?.(agentTabRequest);
 
       // Session replacement rebinds extensions before the response arrives. Do not reset here:
       // that would erase the replacement session's freshly emitted widgets and model list.

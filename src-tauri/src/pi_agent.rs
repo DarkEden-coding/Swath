@@ -73,6 +73,7 @@ impl PiManager {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        command.env("SWATH_PI_AGENT", "1");
         if let Some(path) = LOGIN_PATH.as_ref() {
             command.env("PATH", path);
         }

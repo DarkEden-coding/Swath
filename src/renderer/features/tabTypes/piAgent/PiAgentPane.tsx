@@ -6,7 +6,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { PiCommand } from "../../../../shared/ipc/piRpc";
+import type { PiAgentTabRequest, PiCommand } from "../../../../shared/ipc/piRpc";
 import * as appActions from "../../../app/appActions";
 import { findPane } from "../../../domain/layout/layoutTree";
 import { AnsiText } from "../../../lib/ansi";
@@ -35,6 +35,11 @@ import type { PiNotice } from "./eventReducer";
 
 const BOTTOM_TOLERANCE_PX = 2;
 const USER_SCROLL_INTENT_MS = 250;
+
+/** Uses the first task line as a readable tab name when no explicit title was provided. */
+function agentTabTitle(request: PiAgentTabRequest): string {
+  return request.title?.trim() || request.task.trim().split(/\r?\n/, 1)[0]!.slice(0, 60) || "Agent";
+}
 
 /** Resolves follow mode without mistaking a programmatic scroll event for user intent. */
 export function followStateAfterScroll(
@@ -88,7 +93,34 @@ export function PiAgentPane({ workspace, view, pane }: PaneComponentProps): JSX.
     [workspaces, workspace.id],
   );
 
-  const agent = usePiAgent(paneId, cwd, groupPaths, paneMeta?.metadata?.piSessionFile);
+  const initialStart = useMemo<PiAgentTabRequest | undefined>(() => {
+    const metadata = paneMeta?.metadata;
+    if (!metadata?.piInitialPrompt) return undefined;
+    const reasoningLevel = metadata.piThinkingLevel;
+    return {
+      task: metadata.piInitialPrompt,
+      ...(metadata.title ? { title: metadata.title } : {}),
+      ...(metadata.piModel ? { model: metadata.piModel } : {}),
+      ...(reasoningLevel &&
+      ["off", "minimal", "low", "medium", "high", "xhigh", "max"].includes(reasoningLevel)
+        ? { reasoningLevel: reasoningLevel as PiAgentTabRequest["reasoningLevel"] }
+        : {}),
+    };
+  }, [paneMeta?.metadata]);
+  const agent = usePiAgent(
+    paneId,
+    cwd,
+    groupPaths,
+    paneMeta?.metadata?.piSessionFile,
+    initialStart,
+    (request) =>
+      appActions.createPiAgentTab(workspace.id, agentTabTitle(request), {
+        prompt: request.task,
+        title: agentTabTitle(request),
+        model: request.model,
+        thinkingLevel: request.reasoningLevel,
+      }),
+  );
   const { state } = agent;
   const sessionFile = state.state?.sessionFile;
   useEffect(() => {

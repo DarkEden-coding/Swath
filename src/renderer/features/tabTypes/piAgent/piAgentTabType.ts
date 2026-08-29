@@ -1,5 +1,6 @@
 import { lazy } from "react";
 import type { AppSettings, PaneLeaf, WorkspaceView } from "../../../../shared/types";
+import type { PiThinkingLevel } from "../../../../shared/ipc/piRpc";
 import { createPaneNode } from "../../../domain/layout/layoutTree";
 import { createId } from "../../../utils/ids";
 import type { TabTypeRegistration } from "../types";
@@ -9,17 +10,37 @@ const PiAgentPane = lazy(() =>
   import("./PiAgentPane").then((module) => ({ default: module.PiAgentPane })),
 );
 
+/** Initial configuration for a fresh, independent Pi agent pane. */
+export interface PiAgentStartOptions {
+  prompt: string;
+  title?: string;
+  model?: string;
+  thinkingLevel?: PiThinkingLevel;
+}
+
 /** Default metadata for a new pi agent pane. */
 export function createPiAgentPaneMeta(
   settings: AppSettings,
   cwd?: string,
+  start?: PiAgentStartOptions,
 ): Partial<Omit<PaneLeaf, "type" | "id">> {
   void settings;
   return {
     kind: "piAgent",
     cwd,
     title: "pi",
-    metadata: { cwd, title: "pi" },
+    metadata: {
+      cwd,
+      title: "pi",
+      ...(start
+        ? {
+            piInitialPrompt: start.prompt,
+            ...(start.title ? { title: start.title } : {}),
+            piModel: start.model,
+            piThinkingLevel: start.thinkingLevel,
+          }
+        : {}),
+    },
   };
 }
 
@@ -28,8 +49,9 @@ export function createPiAgentView(
   title: string,
   cwd: string | undefined,
   settings: AppSettings,
+  start?: PiAgentStartOptions,
 ): WorkspaceView {
-  const pane = createPaneNode(undefined, createPiAgentPaneMeta(settings, cwd));
+  const pane = createPaneNode(undefined, createPiAgentPaneMeta(settings, cwd, start));
   return {
     id: createId("view"),
     type: "workspace-view",

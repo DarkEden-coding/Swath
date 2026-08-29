@@ -5,6 +5,7 @@
  * only non-trivial logic in the pane — are directly testable.
  */
 
+import { agentTabRequestFrom } from "../../../../shared/ipc/piRpc";
 import type {
   PiCommand,
   PiContentBlock,
@@ -255,6 +256,7 @@ function applyExtensionUi(state: PiPaneState, event: PiExtensionUiRequest): PiPa
       };
 
     case "setStatus": {
+      if (agentTabRequestFrom(event)) return state;
       const toolCallId = event.statusKey.startsWith("tool-review:")
         ? event.statusKey.slice("tool-review:".length)
         : undefined;
