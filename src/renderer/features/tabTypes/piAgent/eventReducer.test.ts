@@ -564,6 +564,66 @@ describe("reducePiEvent", () => {
     expect(state.operationStatus).toBeUndefined();
   });
 
+  it("records compaction and retry failures inline, not as a sticky status line", () => {
+    let state = run([{ type: "compaction_start" }]);
+    state = run(
+      [
+        {
+          type: "compaction_end",
+          errorMessage: "Context overflow recovery failed",
+        },
+      ],
+      state,
+    );
+    expect(state.isCompacting).toBe(false);
+    expect(state.operationStatus).toBeUndefined();
+    expect(state.entries.at(-1)).toMatchObject({
+      kind: "inlineNotice",
+      level: "error",
+      text: "Compaction failed: Context overflow recovery failed",
+    });
+
+    state = run([{ type: "compaction_start" }, { type: "compaction_end", aborted: true }], state);
+    expect(state.operationStatus).toBeUndefined();
+    expect(state.entries.at(-1)).toMatchObject({ kind: "inlineNotice", level: "warning" });
+
+    state = run(
+        [{ type: "auto_retry_end", success: false, finalError: "quota exhausted" }],
+      state,
+    );
+    expect(state.operationStatus).toBeUndefined();
+    expect(state.entries.at(-1)).toMatchObject({
+      kind: "inlineNotice",
+      level: "error",
+      text: "Retry failed: quota exhausted",
+    });
+  });
+
+  it("drops sticky status, notices and errors when the session is replaced", () => {
+    let state = run([
+      {
+        type: "auto_retry_start",
+        attempt: 1,
+        maxAttempts: 3,
+        delayMs: 1000,
+        errorMessage: "overloaded",
+      },
+      { type: "extension_error", error: "boom" },
+      { type: "response", command: "prompt", success: false, error: "nope" },
+    ]);
+    expect(state.operationStatus).toBeDefined();
+    expect(state.notices).toHaveLength(1);
+    expect(state.error).toBe("nope");
+
+    state = run(
+      [{ type: "response", command: "new_session", success: true, data: {} }],
+      state,
+    );
+    expect(state.operationStatus).toBeUndefined();
+    expect(state.notices).toHaveLength(0);
+    expect(state.error).toBeUndefined();
+  });
+
   it("stores get_state and get_commands responses, and surfaces failures", () => {
     let state = run([
       {

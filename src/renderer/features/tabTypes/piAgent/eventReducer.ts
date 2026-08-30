@@ -54,7 +54,19 @@ export interface PiMessageEntry {
   error?: string;
 }
 
-export type PiEntry = PiMessageEntry | PiToolEntry;
+/**
+ * A lifecycle outcome (compaction failure, cancelled compaction, failed retry) recorded in the
+ * transcript at the point it happened, instead of a status line that sticks to the bottom of the
+ * pane and survives `/new`.
+ */
+export interface PiInlineNoticeEntry {
+  kind: "inlineNotice";
+  id: string;
+  level: "info" | "warning" | "error";
+  text: string;
+}
+
+export type PiEntry = PiMessageEntry | PiToolEntry | PiInlineNoticeEntry;
 
 /** A fire-and-forget widget from `setWidget`. */
 export interface PiWidget {
@@ -138,6 +150,19 @@ function resultText(result: PiToolResult | undefined): string {
     .filter((block) => block.type === "text" && typeof block.text === "string")
     .map((block) => block.text as string)
     .join("");
+}
+
+/** Appends a lifecycle outcome to the transcript where the turn that produced it sits. */
+function appendInlineNotice(
+  state: PiPaneState,
+  level: PiInlineNoticeEntry["level"],
+  text: string,
+): PiPaneState {
+  return {
+    ...state,
+    seq: state.seq + 1,
+    entries: [...state.entries, { kind: "inlineNotice", id: `inline-${state.seq}`, level, text }],
+  };
 }
 
 function updateEntry(
@@ -520,18 +545,25 @@ export function reducePiEvent(state: PiPaneState, event: PiIncoming): PiPaneStat
         operationStatus: `Compacting${event.reason ? ` (${event.reason})` : ""}…`,
       };
 
-    case "compaction_end":
-      return {
-        ...state,
-        isCompacting: false,
-        operationStatus: event.errorMessage
-          ? `Compaction failed: ${event.errorMessage}`
-          : event.aborted
-            ? "Compaction cancelled"
-            : event.willRetry
-              ? "Compacted; retrying prompt…"
-              : undefined,
-      };
+    case "compaction_end": {
+      const base = { ...state, isCompacting: false };
+      if (event.errorMessage) {
+        return {
+          ...appendInlineNotice(base, "error", `Compaction failed: ${event.errorMessage}`),
+          operationStatus: undefined,
+        };
+      }
+      if (event.aborted) {
+        return {
+          ...appendInlineNotice(base, "warning", "Compaction cancelled"),
+          operationStatus: undefined,
+        };
+      }
+      if (event.willRetry) {
+        return { ...base, operationStatus: "Compacted; retrying prompt…" };
+      }
+      return { ...base, operationStatus: undefined };
+    }
 
     case "auto_retry_start":
       return {
@@ -540,11 +572,14 @@ export function reducePiEvent(state: PiPaneState, event: PiIncoming): PiPaneStat
       };
 
     case "auto_retry_end":
+      if (event.success) return { ...state, operationStatus: undefined };
       return {
-        ...state,
-        operationStatus: event.success
-          ? undefined
-          : `Retry failed${event.finalError ? `: ${event.finalError}` : ""}`,
+        ...appendInlineNotice(
+          state,
+          "error",
+          `Retry failed${event.finalError ? `: ${event.finalError}` : ""}`,
+        ),
+        operationStatus: undefined,
       };
 
     case "summarization_retry_scheduled":
@@ -576,6 +611,15 @@ export function reducePiEvent(state: PiPaneState, event: PiIncoming): PiPaneStat
       return applyExtensionUi(state, event);
 
     case "response": {
+      // A replaced session drops everything the old conversation left behind: sticky status lines
+      // and notices belonged to it, and hydration below rebuilds the transcript from the new one.
+      if (
+        event.success &&
+        ["new_session", "fork", "switch_session"].includes(event.command) &&
+        !(event.data as { cancelled?: boolean } | undefined)?.cancelled
+      ) {
+        state = { ...state, operationStatus: undefined, error: undefined, notices: [] };
+      }
       if (!event.success) {
         return { ...state, error: event.error ?? `${event.command} failed` };
       }
@@ -774,6 +818,10 @@ function sameEntry(a: PiEntry, b: PiEntry): boolean {
       a.streaming === other.streaming &&
       a.error === other.error
     );
+  }
+  if (a.kind === "inlineNotice") {
+    const other = b as PiInlineNoticeEntry;
+    return a.level === other.level && a.text === other.text;
   }
   const other = b as PiToolEntry;
   return (

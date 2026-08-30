@@ -357,6 +357,25 @@ export function buildRows(entries: PiEntry[], cwd: string): TranscriptRow[] {
         rows.push({ key: entry.id, node: <Message entry={entry} /> });
       continue;
     }
+    if (entry.kind === "inlineNotice") {
+      rows.push({
+        key: entry.id,
+        node: (
+          <div
+            className={`whitespace-pre-wrap break-words font-mono text-[11px] ${
+              entry.level === "error"
+                ? "text-[var(--pi-red)]"
+                : entry.level === "warning"
+                  ? "text-[var(--pi-yellow)]"
+                  : "text-[var(--pi-muted)]"
+            }`}
+          >
+            {entry.text}
+          </div>
+        ),
+      });
+      continue;
+    }
 
     const groupId = entry.parallelGroup?.id;
     if (!groupId) {
