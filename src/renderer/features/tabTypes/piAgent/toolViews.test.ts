@@ -3,7 +3,7 @@ import type { PiToolEntry } from "./eventReducer";
 import { parsePartialJson } from "./partialJson";
 import { inferToolName, resolveToolView } from "./toolViews";
 import { coveringDependencies } from "./TodoWebPreview";
-import { pathHits, routeOrthogonal } from "./todoWebRoute";
+import { insetEnds, pathHits, routeOrthogonal } from "./todoWebRoute";
 
 function entry(toolName: string): PiToolEntry {
   return {
@@ -152,6 +152,22 @@ describe("todo-web covering dependencies", () => {
       { id: "c", dependencies: ["a", "b"] },
     ]);
     expect(covering.get("c")).toEqual(["a", "b"]);
+  });
+});
+
+describe("todo-web edge insets", () => {
+  it("pulls the first and last points inward along the stroke", () => {
+    const inset = insetEnds(
+      [
+        { x: 0, y: 10 },
+        { x: 40, y: 10 },
+        { x: 40, y: 30 },
+      ],
+      8,
+      4,
+    );
+    expect(inset[0]).toEqual({ x: 8, y: 10 });
+    expect(inset[2]).toEqual({ x: 40, y: 26 });
   });
 });
 

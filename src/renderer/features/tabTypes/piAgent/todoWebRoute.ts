@@ -19,6 +19,8 @@ export interface NodeBox {
 }
 
 export const ROUTE_CLEARANCE = 10;
+/** Visible gap from a node box to the stroke so the 6px ports do not cover it. */
+export const EDGE_PAD = 8;
 const ROUTE_SEPARATION = 5;
 const BEND_COST = 10;
 const OVERLAP_COST = 1000;
@@ -228,6 +230,26 @@ function collapseColinear(points: Point[]): Point[] {
     if (!colinear) out.push(b);
   }
   out.push(points[points.length - 1]);
+  return out;
+}
+
+/** Move the first and last vertices inward along their segments so strokes clear node ports. */
+export function insetEnds(points: Point[], startPad: number, endPad: number): Point[] {
+  if (points.length < 2) return points;
+  const out = points.map((point) => ({ x: point.x, y: point.y }));
+  const pull = (from: number, toward: number, pad: number) => {
+    const a = out[from];
+    const b = out[toward];
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const len = Math.hypot(dx, dy);
+    if (len < 0.01) return;
+    const dist = Math.min(pad, len / 2);
+    a.x += (dx / len) * dist;
+    a.y += (dy / len) * dist;
+  };
+  pull(0, 1, startPad);
+  pull(out.length - 1, out.length - 2, endPad);
   return out;
 }
 

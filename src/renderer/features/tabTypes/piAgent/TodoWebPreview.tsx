@@ -1,6 +1,8 @@
 import { useLayoutEffect, useRef, useState } from "react";
 import type { PiToolEntry } from "./eventReducer";
 import {
+  EDGE_PAD,
+  insetEnds,
   roundedPath,
   ROUTE_CLEARANCE,
   routeOrthogonal,
@@ -253,14 +255,16 @@ function routeGraph(
       const routeEnd: Point = { x: end.x - ROUTE_CLEARANCE, y: end.y };
       const obstacles = [...boxes.values()].filter((box) => box.id !== dep && box.id !== task.id);
       const middle = routeOrthogonal(routeStart, routeEnd, obstacles, bounds, occupied);
-      const points = [start, ...middle, end];
+      const points = insetEnds([start, ...middle, end], EDGE_PAD, EDGE_PAD);
       occupied.push(points);
       const fromKind = kindOf(fromTask, isReady(fromTask, byId));
       const toKind = kindOf(task, isReady(task, byId));
+      const visStart = points[0];
+      const visEnd = points[points.length - 1];
       routed.push({
         d: roundedPath(points),
-        start,
-        end,
+        start: visStart,
+        end: visEnd,
         fromColor: stroke(fromKind),
         toColor: stroke(toKind),
         dashed: toKind === "blocked",
@@ -374,7 +378,7 @@ export function TodoWebPreview({
                 <marker
                   id={`pi-todo-arrow-${entry.id}-${index}`}
                   viewBox="0 0 8 8"
-                  refX="7"
+                  refX="8"
                   refY="4"
                   markerWidth="7"
                   markerHeight="7"
