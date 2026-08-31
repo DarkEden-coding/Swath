@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { PiToolEntry } from "./eventReducer";
 import { parsePartialJson } from "./partialJson";
 import { inferToolName, resolveToolView } from "./toolViews";
+import { coveringDependencies } from "./TodoWebPreview";
 import { pathHits, routeOrthogonal } from "./todoWebRoute";
 
 function entry(toolName: string): PiToolEntry {
@@ -125,6 +126,32 @@ describe("tool labels from streaming arguments", () => {
         '{"action":"set","web":{"title":"Live cards","tasks":[{"id":"a","status":"completed"},{"id":"b"}]}}',
       ),
     ).toBe("☑ Todo set · 1/2 · Live cards");
+  });
+});
+
+describe("todo-web covering dependencies", () => {
+  it("drops edges that are already implied by a longer path", () => {
+    const covering = coveringDependencies([
+      { id: "data-api", dependencies: [] },
+      { id: "imports", dependencies: ["data-api"] },
+      { id: "frontend", dependencies: ["data-api", "imports"] },
+      { id: "gmail", dependencies: ["imports"] },
+      { id: "verify", dependencies: ["data-api", "imports", "frontend", "gmail"] },
+    ]);
+    expect(covering.get("data-api")).toEqual([]);
+    expect(covering.get("imports")).toEqual(["data-api"]);
+    expect(covering.get("frontend")).toEqual(["imports"]);
+    expect(covering.get("gmail")).toEqual(["imports"]);
+    expect(covering.get("verify")).toEqual(["frontend", "gmail"]);
+  });
+
+  it("keeps independent parallel blockers", () => {
+    const covering = coveringDependencies([
+      { id: "a", dependencies: [] },
+      { id: "b", dependencies: [] },
+      { id: "c", dependencies: ["a", "b"] },
+    ]);
+    expect(covering.get("c")).toEqual(["a", "b"]);
   });
 });
 

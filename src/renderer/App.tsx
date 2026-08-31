@@ -7,6 +7,7 @@ import { Sidebar } from "./features/shell/components/Sidebar";
 import { StatusBar } from "./features/shell/components/StatusBar";
 import { WindowTitleBar } from "./features/shell/components/WindowTitleBar";
 import { SettingsModal } from "./features/settings/components/SettingsModal";
+import { piPaneIdsOfWorkspace, setViewedPanes } from "./features/tabTypes/piAgent/piActivity";
 import { useConfigStore } from "./state/configStore";
 import { useUiStore } from "./state/uiStore";
 
@@ -54,6 +55,10 @@ export function App(): JSX.Element {
     activeWorkspace?.views.find((tab) => tab.id === activeWorkspace.activeViewId) ??
     activeWorkspace?.views[0] ??
     null;
+
+  useEffect(() => {
+    setViewedPanes(activeWorkspace ? piPaneIdsOfWorkspace(activeWorkspace) : []);
+  }, [activeWorkspace]);
 
   useEffect(() => {
     document.documentElement.classList.add(`platform-${window.swath.platform}`);

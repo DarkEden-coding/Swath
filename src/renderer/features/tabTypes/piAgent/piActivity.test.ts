@@ -12,7 +12,7 @@ function activityOf(paneId: string): PiPaneActivity {
 
 describe("pi activity store", () => {
   beforeEach(() => {
-    usePiActivityStore.setState({ activity: {} });
+    usePiActivityStore.setState({ activity: {}, viewedPaneIds: [] });
   });
 
   it("moves a pane idle -> running -> done as it streams", () => {
@@ -39,6 +39,27 @@ describe("pi activity store", () => {
   it("disposal removes the pane entirely", () => {
     reportStreaming("p1", true);
     usePiActivityStore.getState().disposePane("p1");
+    expect(activityOf("p1")).toBe("idle");
+  });
+
+  it("returns to idle when a run finishes on the currently selected project", () => {
+    usePiActivityStore.getState().setViewedPanes(["p1"]);
+    reportStreaming("p1", true);
+    reportStreaming("p1", false);
+    expect(activityOf("p1")).toBe("idle");
+  });
+
+  it("still marks done when a run finishes on a project the user is not viewing", () => {
+    usePiActivityStore.getState().setViewedPanes(["other"]);
+    reportStreaming("p1", true);
+    reportStreaming("p1", false);
+    expect(activityOf("p1")).toBe("done");
+  });
+
+  it("clears finished markers when the user is already on that project", () => {
+    reportStreaming("p1", true);
+    reportStreaming("p1", false);
+    usePiActivityStore.getState().setViewedPanes(["p1"]);
     expect(activityOf("p1")).toBe("idle");
   });
 

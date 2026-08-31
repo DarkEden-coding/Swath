@@ -154,6 +154,57 @@ function layersOf(tasks: TodoTask[]): TodoTask[][] {
   return layers;
 }
 
+function successorAdj(tasks: Array<{ id: string; dependencies: string[] }>): Map<string, string[]> {
+  const known = new Set(tasks.map((task) => task.id));
+  const adj = new Map<string, string[]>();
+  for (const task of tasks) {
+    if (!adj.has(task.id)) adj.set(task.id, []);
+    for (const dep of task.dependencies) {
+      if (!known.has(dep)) continue;
+      const next = adj.get(dep);
+      if (next) next.push(task.id);
+      else adj.set(dep, [task.id]);
+    }
+  }
+  return adj;
+}
+
+function reachesViaOtherPath(from: string, to: string, adj: Map<string, string[]>): boolean {
+  const stack: string[] = [];
+  const seen = new Set<string>([from]);
+  for (const next of adj.get(from) ?? []) {
+    if (next === to) continue;
+    seen.add(next);
+    stack.push(next);
+  }
+  while (stack.length) {
+    const current = stack.pop()!;
+    for (const next of adj.get(current) ?? []) {
+      if (next === to) return true;
+      if (seen.has(next)) continue;
+      seen.add(next);
+      stack.push(next);
+    }
+  }
+  return false;
+}
+
+/** Declared deps that are not implied by a longer path (transitive reduction). */
+export function coveringDependencies(
+  tasks: Array<{ id: string; dependencies: string[] }>,
+): Map<string, string[]> {
+  const known = new Set(tasks.map((task) => task.id));
+  const adj = successorAdj(tasks);
+  const covering = new Map<string, string[]>();
+  for (const task of tasks) {
+    covering.set(
+      task.id,
+      task.dependencies.filter((dep) => !known.has(dep) || !reachesViaOtherPath(dep, task.id, adj)),
+    );
+  }
+  return covering;
+}
+
 function stroke(kind: Kind): string {
   if (kind === "done") return "var(--pi-green)";
   if (kind === "run") return "var(--pi-cyan)";
@@ -165,7 +216,12 @@ function taskLabel(task: TodoTask | undefined, id: string): string {
   return task ? `${task.id}: ${task.title}` : id;
 }
 
-function routeGraph(root: HTMLElement, tasks: TodoTask[], byId: Map<string, TodoTask>): Routed[] {
+function routeGraph(
+  root: HTMLElement,
+  tasks: TodoTask[],
+  byId: Map<string, TodoTask>,
+  waitsOn: Map<string, string[]>,
+): Routed[] {
   const size = root.getBoundingClientRect();
   const nodeEls = [...root.querySelectorAll<HTMLElement>("[data-todo-id]")];
   const boxes = new Map<string, NodeBox>();
@@ -186,7 +242,7 @@ function routeGraph(root: HTMLElement, tasks: TodoTask[], byId: Map<string, Todo
   const occupied: Point[][] = [];
   const bounds = { w: size.width, h: size.height };
   for (const task of tasks) {
-    for (const dep of task.dependencies) {
+    for (const dep of waitsOn.get(task.id) ?? []) {
       const from = boxes.get(dep);
       const to = boxes.get(task.id);
       const fromTask = byId.get(dep);
@@ -237,6 +293,7 @@ export function TodoWebPreview({
 
   const byId = new Map(tasks.map((task) => [task.id, task]));
   const layers = layersOf(tasks);
+  const waitsOn = coveringDependencies(tasks);
   const justDone = new Set(completedIds(args, details));
 
   const graphKey = tasks
@@ -253,9 +310,10 @@ export function TodoWebPreview({
       return;
     }
     const ids = new Map(current.map((task) => [task.id, task]));
+    const waitsOn = coveringDependencies(current);
     const draw = () => {
       setSize({ w: root.clientWidth, h: root.clientHeight });
-      setRoutes(routeGraph(root, current, ids));
+      setRoutes(routeGraph(root, current, ids, waitsOn));
     };
     draw();
     const observer = new ResizeObserver(draw);
@@ -350,11 +408,12 @@ export function TodoWebPreview({
               <div className="pi-todo-col-label">Depth {index}</div>
               {layer.map((task) => {
                 const kind = kindOf(task, isReady(task, byId));
+                const deps = waitsOn.get(task.id) ?? [];
                 const unlocks = tasks.filter((candidate) =>
-                  candidate.dependencies.includes(task.id),
+                  (waitsOn.get(candidate.id) ?? []).includes(task.id),
                 );
-                const depText = task.dependencies.length
-                  ? task.dependencies
+                const depText = deps.length
+                  ? deps
                       .map((id) => `${id}${byId.get(id)?.status === "completed" ? " ✓" : ""}`)
                       .join(", ")
                   : "none";
