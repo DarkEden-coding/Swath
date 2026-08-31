@@ -548,6 +548,27 @@ body.is-reordering * {
   font-size: 11px;
 }
 
+.pi-wait-ring {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.pi-wait-ring-track {
+  fill: none;
+  stroke: var(--pi-border-muted);
+  stroke-width: 2;
+}
+
+.pi-wait-ring-fill {
+  fill: none;
+  stroke: var(--pi-card-accent, var(--pi-cyan));
+  stroke-width: 2;
+  stroke-linecap: round;
+  transition: stroke-dashoffset 1s linear;
+}
+
 .pi-agent-widget,
 .pi-agent-footer {
   border-color: var(--pi-border-muted);

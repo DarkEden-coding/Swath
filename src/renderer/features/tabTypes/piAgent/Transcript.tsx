@@ -19,7 +19,7 @@ import { DiffView, hasDiff } from "./DiffView";
 import type { PiEntry, PiMessageEntry, PiToolEntry } from "./eventReducer";
 import { LiveFileDiffPreview } from "./LiveFileDiffPreview";
 import { readableArgs } from "./partialJson";
-import { inferToolName, resolveToolView } from "./toolViews";
+import { LiveElapsed, formatElapsed, inferToolName, resolveToolView } from "./toolViews";
 
 const COLLAPSED_LINES = 8;
 
@@ -59,11 +59,7 @@ function useDisclosure(key: string): [boolean, () => void] {
 /** Formats tool timing in the same compact form as the TUI extension. */
 function formatDuration(entry: PiToolEntry): string | null {
   if (entry.endedAt === undefined) return null;
-  const ms = Math.max(0, entry.endedAt - entry.startedAt);
-  if (ms < 1_000) return `${ms}ms`;
-  if (ms < 10_000) return `${(ms / 1_000).toFixed(1)}s`;
-  if (ms < 60_000) return `${Math.round(ms / 1_000)}s`;
-  return `${Math.floor(ms / 60_000)}m ${Math.round((ms % 60_000) / 1_000)}s`;
+  return formatElapsed(Math.max(0, entry.endedAt - entry.startedAt));
 }
 
 /** Returns the theme color used for the reasoning level that launched a tool. */
@@ -241,7 +237,13 @@ function ToolSection({
       ) : null}
       <ToolBody entry={entry} cwd={cwd} />
       <div className="pi-tool-duration">
-        ◷ {duration ? `Took ${duration}` : entry.endedAt ? "Timing unavailable" : "In progress"}
+        {duration ? (
+          `◷ Took ${duration}`
+        ) : entry.endedAt ? (
+          "◷ Timing unavailable"
+        ) : (
+          <LiveElapsed startedAt={entry.startedAt} />
+        )}
       </div>
     </div>
   );

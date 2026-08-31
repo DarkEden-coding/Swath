@@ -17,6 +17,7 @@
  * swapped for a similar one from another package.
  */
 
+import { useEffect, useState } from "react";
 import { PatchView, WholeFileView } from "./DiffView";
 import type { PiToolEntry } from "./eventReducer";
 import { TodoWebPreview, todoWebLabel } from "./TodoWebPreview";
@@ -208,6 +209,101 @@ function ReplacementView({
 // ---------------------------------------------------------------------------
 // File-mutating tools
 // ---------------------------------------------------------------------------
+
+/**
+ * Re-renders the calling component once per second while `active`, returning the current time.
+ *
+ * Live timers must tick from inside their own component: the transcript rows are memoised, so an
+ * interval in a parent would either re-render every card or never fire again. The clock is read in
+ * effects and state rather than during render, per the React purity rules.
+ */
+export function useTicker(active: boolean): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!active) return;
+    const tick = (): void => setNow(Date.now());
+    tick();
+    const id = window.setInterval(tick, 1_000);
+    return () => window.clearInterval(id);
+  }, [active]);
+  return now;
+}
+
+/** Formats a span of milliseconds in the compact form the TUI extension uses. */
+export function formatElapsed(ms: number): string {
+  if (ms < 1_000) return `${ms}ms`;
+  if (ms < 10_000) return `${(ms / 1_000).toFixed(1)}s`;
+  if (ms < 60_000) return `${Math.round(ms / 1_000)}s`;
+  return `${Math.floor(ms / 60_000)}m ${Math.round((ms % 60_000) / 1_000)}s`;
+}
+
+/** The count-up that replaces "In progress" on a tool card still running. */
+export function LiveElapsed({ startedAt }: { startedAt: number }): JSX.Element {
+  const now = useTicker(true);
+  return <>◷ {formatElapsed(Math.max(0, now - startedAt))}</>;
+}
+
+const RING_RADIUS = 6;
+const RING_CIRCUMFERENCE = 2 * Math.PI * RING_RADIUS;
+
+/**
+ * A ring that drains over a `background_terminal_control` wait's `timeoutSeconds`, with the
+ * seconds remaining beside it. Draws down from `startedAt`, which is when the wait began.
+ */
+function WaitCountdown({
+  entry,
+  timeoutSeconds,
+}: {
+  entry: PiToolEntry;
+  timeoutSeconds: number;
+}): JSX.Element {
+  const now = useTicker(entry.endedAt === undefined);
+  const total = timeoutSeconds * 1_000;
+  const elapsed = Math.max(0, (entry.endedAt ?? now) - entry.startedAt);
+  const remaining = Math.max(0, total - elapsed);
+  const fraction = total > 0 ? remaining / total : 0;
+  return (
+    <span className="pi-wait-ring">
+      <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+        <circle cx="8" cy="8" r={RING_RADIUS} className="pi-wait-ring-track" />
+        <circle
+          cx="8"
+          cy="8"
+          r={RING_RADIUS}
+          className="pi-wait-ring-fill"
+          strokeDasharray={RING_CIRCUMFERENCE}
+          strokeDashoffset={RING_CIRCUMFERENCE * (1 - fraction)}
+          transform="rotate(-90 8 8)"
+        />
+      </svg>
+      {Math.ceil(remaining / 1_000)}s
+    </span>
+  );
+}
+
+/**
+ * `background_terminal_control` — `{ id, action, timeoutSeconds? }`.
+ *
+ * A `wait` is the one control action that blocks visibly, so it gets the countdown ring; the rest
+ * are instant and fall back to the generic field list.
+ */
+function BackgroundTerminalControlPreview({ args, entry, streaming }: ToolViewProps): JSX.Element | null {
+  const action = str(args, "action");
+  const timeout = typeof args.timeoutSeconds === "number" ? args.timeoutSeconds : undefined;
+  if (action !== "wait") return <FieldList args={args} streaming={streaming} />;
+  return (
+    <div className="pi-field pi-field-block">
+      <span className="pi-field-name">wait</span>
+      <span className="pi-field-value">
+        {timeout !== undefined ? (
+          <WaitCountdown entry={entry} timeoutSeconds={timeout} />
+        ) : (
+          <>waiting for terminal…</>
+        )}
+      </span>
+    </div>
+  );
+}
 
 /**
  * `edit` — `{ path, edits: [{ oldText, newText }] }`.
@@ -520,6 +616,18 @@ const TOOL_VIEWS: Record<string, ToolView> = {
   todo_web: {
     label: (args, entry) => todoWebLabel(args, entry),
     Preview: TodoWebPreview,
+  },
+
+  background_terminal_control: {
+    label: (args) => {
+      const action = str(args, "action");
+      if (action === "wait") {
+        const timeout = typeof args.timeoutSeconds === "number" ? ` ${args.timeoutSeconds}s` : "";
+        return `⟳ Terminal wait${timeout}`;
+      }
+      return action ? `⟳ Terminal ${action}` : "⟳ Terminal control";
+    },
+    Preview: BackgroundTerminalControlPreview,
   },
 
   background_terminal: {
