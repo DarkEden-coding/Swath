@@ -18,6 +18,12 @@ import {
   membersOf,
   pairableProjects,
 } from "../../../domain/workspaces/groupActions";
+import {
+  countPiAgents,
+  piPaneIdsOfWorkspace,
+  usePiActivityStore,
+  type PiAgentCounts,
+} from "../../tabTypes/piAgent/piActivity";
 
 interface SidebarProps {
   onToggleCollapse: () => void;
@@ -68,6 +74,9 @@ export function Sidebar({ onToggleCollapse }: SidebarProps): JSX.Element {
     if (!active) return null;
     return isGroupRoot(active) ? active.id : (active.groupId ?? null);
   }, [config.workspaces, config.activeWorkspaceId]);
+
+  const agentActivity = usePiActivityStore((state) => state.activity);
+  const acknowledgePanes = usePiActivityStore((state) => state.acknowledgePanes);
 
   return (
     <aside className="z-[2] flex h-full min-h-0 min-w-0 flex-col border-r border-swath-border bg-swath-panel">
@@ -120,7 +129,12 @@ export function Sidebar({ onToggleCollapse }: SidebarProps): JSX.Element {
             onMouseDragStart: (event: ReactMouseEvent) =>
               reorder.startPointerDrag(event, workspace.id),
             onDrop: reorder.handleNativeDrop,
-            onSelect: () => appActions.selectWorkspace(workspace.id),
+            // Selecting a project clears its finished-but-unseen marker; running agents keep the
+            // spinner until they finish a later run.
+            onSelect: () => {
+              acknowledgePanes(piPaneIdsOfWorkspace(workspace));
+              appActions.selectWorkspace(workspace.id);
+            },
             onRemove: () => void appActions.removeWorkspace(workspace.id),
             onRename: (name: string) => appActions.renameWorkspace(workspace.id, name),
           };
@@ -131,6 +145,7 @@ export function Sidebar({ onToggleCollapse }: SidebarProps): JSX.Element {
                 <GroupHeaderItem
                   {...shared}
                   memberCount={members.length}
+                  agentCounts={countPiAgents(agentActivity, piPaneIdsOfWorkspace(workspace))}
                   collapsed={workspace.groupCollapsed === true}
                   onToggleCollapsed={() =>
                     appActions.setGroupCollapsed(workspace.id, workspace.groupCollapsed !== true)
@@ -141,6 +156,7 @@ export function Sidebar({ onToggleCollapse }: SidebarProps): JSX.Element {
                   <WorkspaceItem
                     {...shared}
                     grouped={workspace.groupId !== undefined}
+                    agentCounts={countPiAgents(agentActivity, piPaneIdsOfWorkspace(workspace))}
                     groupTargets={groupableTargets(config, workspace.id)}
                     pairTargets={pairableProjects(config, workspace.id)}
                   />
@@ -192,6 +208,8 @@ interface WorkspaceItemProps {
   onSelect: () => void;
   onRemove: () => void;
   onRename: (name: string) => void;
+  /** Live agent counts for this row's spinner indicator. */
+  agentCounts: PiAgentCounts;
 }
 
 interface ProjectItemProps extends WorkspaceItemProps {
@@ -217,6 +235,7 @@ function WorkspaceItem({
   onSelect,
   onRemove,
   onRename,
+  agentCounts,
   grouped,
   groupTargets,
   pairTargets,
@@ -332,9 +351,12 @@ function WorkspaceItem({
               }}
             />
           ) : (
-            <span className="truncate text-[13px] font-bold text-[#eef2f6]">{workspace.name}</span>
+            <span className="min-w-0 flex-1 truncate text-[13px] font-bold text-[#eef2f6]">
+              {workspace.name}
+            </span>
           )}
         </span>
+        <AgentActivityIndicator counts={agentCounts} />
       </button>
       {menuPosition ? (
         <div
@@ -470,6 +492,60 @@ function GroupRail({
   );
 }
 
+/** Ring size constants for the sidebar agent spinner (r = 7.25 on an 18px viewBox). */
+const SIDEBAR_RING_RADIUS = 7.25;
+const SIDEBAR_RING_CIRCUMFERENCE = 2 * Math.PI * SIDEBAR_RING_RADIUS;
+
+/**
+ * A project or group row's agent spinner: grey ring with the running count inside, turning green
+ * proportionally as agents finish. Selecting the row acknowledges the finished ones, leaving only
+ * the grey remainder — or nothing at all when every agent is done.
+ */
+function AgentActivityIndicator({ counts }: { counts: PiAgentCounts }): JSX.Element | null {
+  const total = counts.running + counts.done;
+  if (total === 0) return null;
+  const spinning = counts.running > 0;
+  const title = spinning
+    ? `${counts.running} agent${counts.running === 1 ? "" : "s"} running`
+    : `${counts.done} agent${counts.done === 1 ? "" : "s"} finished`;
+  return (
+    <span
+      className={`relative ml-auto grid size-[18px] shrink-0 place-items-center ${spinning ? "animate-spin" : ""}`}
+      title={title}
+      aria-hidden
+    >
+      <svg viewBox="0 0 18 18" className="absolute inset-0 size-[18px]" fill="none">
+        <circle
+          cx="9"
+          cy="9"
+          r={SIDEBAR_RING_RADIUS}
+          className="stroke-swath-border"
+          strokeWidth="2"
+        />
+        {counts.done > 0 ? (
+          <circle
+            cx="9"
+            cy="9"
+            r={SIDEBAR_RING_RADIUS}
+            className="stroke-swath-good"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeDasharray={`${
+              (counts.done / total) * SIDEBAR_RING_CIRCUMFERENCE
+            } ${SIDEBAR_RING_CIRCUMFERENCE}`}
+            transform="rotate(-90 9 9)"
+          />
+        ) : null}
+      </svg>
+      <span
+        className={`relative text-[9px] font-bold leading-none ${spinning ? "text-swath-muted" : "text-swath-good"}`}
+      >
+        {spinning ? counts.running : counts.done}
+      </span>
+    </span>
+  );
+}
+
 interface GroupHeaderItemProps extends WorkspaceItemProps {
   memberCount: number;
   collapsed: boolean;
@@ -493,6 +569,7 @@ function GroupHeaderItem({
   onSelect,
   onRemove,
   onRename,
+  agentCounts,
   memberCount,
   collapsed,
   onToggleCollapsed,
@@ -596,6 +673,7 @@ function GroupHeaderItem({
             {workspace.name}
           </span>
         )}
+        <AgentActivityIndicator counts={agentCounts} />
         <span className="shrink-0 rounded-full border border-swath-border px-1.5 text-[10px] font-semibold text-swath-muted-2">
           {memberCount}
         </span>

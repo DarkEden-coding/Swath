@@ -9,6 +9,7 @@
 
 import { parsePiLine, type PiImageContent } from "../../../../shared/ipc/piRpc";
 import { reducePiEvent, type PiPaneState } from "./eventReducer";
+import { usePiActivityStore } from "./piActivity";
 
 export interface AttachedImage extends PiImageContent {
   /** `[Image N]` marker mirroring the pi clipboard-image-paste extension. */
@@ -51,6 +52,7 @@ function cacheHiddenPaneEvent(paneId: string, line?: string, exited?: boolean): 
         })()
       : entry.state;
   piPaneCache.set(paneId, { ...entry, state });
+  usePiActivityStore.getState().reportStreaming(paneId, state.isStreaming);
 }
 /** Session files adopted while a pane is running, before its persisted metadata updates. */
 export const resumedSessions = new Map<string, string>();
@@ -78,5 +80,6 @@ export function disposePiPane(paneId: string): void {
   spawnedPanes.delete(paneId);
   resumedSessions.delete(paneId);
   paneMentions.delete(paneId);
+  usePiActivityStore.getState().disposePane(paneId);
   void window.swath.pi.rpc({ op: "kill", paneId });
 }

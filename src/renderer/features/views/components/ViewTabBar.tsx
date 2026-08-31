@@ -11,6 +11,7 @@ import {
   IconTerminal,
 } from "../../shell/icons";
 import { getTabTypes } from "../../tabTypes/registry";
+import { piPaneIdsOfView, usePiActivityStore } from "../../tabTypes/piAgent/piActivity";
 import { GROUP_VIEW_KINDS, isGroupRoot } from "../../../domain/workspaces/groupActions";
 import { useReorderDrag } from "../../../hooks/useReorderDrag";
 
@@ -25,6 +26,69 @@ function healthClass(health: ViewHealth | undefined): string {
   if (health === "warning") return `${base} bg-swath-warn shadow-[0_0_8px_rgba(210,153,34,0.45)]`;
   if (health === "idle") return `${base} bg-swath-muted-2`;
   return `${base} bg-swath-good shadow-[0_0_8px_rgba(63,185,80,0.45)]`;
+}
+
+/** Ring size constants for the working spinner (r = 6.5 on a 16px viewBox). */
+const TAB_RING_RADIUS = 6.5;
+const TAB_RING_CIRCUMFERENCE = 2 * Math.PI * TAB_RING_RADIUS;
+
+/**
+ * A pi tab's status glyph: spinner around the green bubble while an agent is working, a pulsing
+ * green checkmark once a run finished unseen, and the plain bubble otherwise.
+ */
+function PiTabIndicator({ paneIds }: { paneIds: string[] }): JSX.Element {
+  const working = usePiActivityStore((state) =>
+    paneIds.some((id) => state.activity[id] === "running"),
+  );
+  const finished = usePiActivityStore((state) =>
+    paneIds.some((id) => state.activity[id] === "done"),
+  );
+
+  if (working) {
+    return (
+      <span
+        className="relative grid size-4 shrink-0 place-items-center"
+        title="Agent working"
+        aria-hidden
+      >
+        <svg
+          viewBox="0 0 16 16"
+          className="absolute inset-0 size-4 animate-spin text-swath-good"
+          fill="none"
+        >
+          <circle
+            cx="8"
+            cy="8"
+            r={TAB_RING_RADIUS}
+            stroke="currentColor"
+            strokeWidth="1.5"
+            strokeLinecap="round"
+            strokeDasharray={`${TAB_RING_CIRCUMFERENCE * 0.75} ${TAB_RING_CIRCUMFERENCE * 0.25}`}
+          />
+        </svg>
+        <span className="size-2 rounded-full bg-swath-good shadow-[0_0_8px_rgba(63,185,80,0.45)]" />
+      </span>
+    );
+  }
+  if (finished) {
+    return (
+      <svg
+        viewBox="0 0 16 16"
+        className="size-4 shrink-0 animate-pulse text-swath-good"
+        fill="none"
+        aria-hidden
+      >
+        <path
+          d="M3.5 8.5 6.5 11.5 12.5 4.5"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+      </svg>
+    );
+  }
+  return <span className={healthClass(undefined)} title="healthy" aria-hidden />;
 }
 
 function tabTypeIcon(kind: PaneKind): JSX.Element {
@@ -61,6 +125,7 @@ export function ViewTabBar({
     onMove: (fromIndex, toIndex) => appActions.moveView(workspace.id, fromIndex, toIndex),
   });
   const { draggedId: draggedViewId, dropIndex } = reorder;
+  const acknowledgePanes = usePiActivityStore((state) => state.acknowledgePanes);
 
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
@@ -99,10 +164,14 @@ export function ViewTabBar({
               id={tab.id}
               title={tab.title}
               health={tab.health}
+              piPaneIds={piPaneIdsOfView(tab)}
               active={workspace.activeViewId === tab.id}
               canClose={workspace.views.length > 1}
               dragging={draggedViewId === tab.id}
-              onSelect={() => appActions.selectView(workspace.id, tab.id)}
+              onSelect={() => {
+                acknowledgePanes(piPaneIdsOfView(tab));
+                appActions.selectView(workspace.id, tab.id);
+              }}
               onClose={() => appActions.closeView(workspace.id, tab.id)}
               onRename={(nextTitle) => appActions.renameView(workspace.id, tab.id, nextTitle)}
               onMouseDragStart={(event) => reorder.startPointerDrag(event, tab.id)}
@@ -169,6 +238,8 @@ interface WorkspaceViewButtonProps {
   id: string;
   title: string;
   health?: ViewHealth;
+  /** Pi agent panes in this tab; non-empty tabs get the agent lifecycle indicator. */
+  piPaneIds: string[];
   active: boolean;
   canClose: boolean;
   dragging: boolean;
@@ -182,6 +253,7 @@ function WorkspaceViewButton({
   id,
   title,
   health,
+  piPaneIds,
   active,
   canClose,
   dragging,
@@ -215,7 +287,11 @@ function WorkspaceViewButton({
       }}
       onMouseDown={onMouseDragStart}
     >
-      <span className={healthClass(health)} title={health ?? "healthy"} aria-hidden />
+      {piPaneIds.length > 0 ? (
+        <PiTabIndicator paneIds={piPaneIds} />
+      ) : (
+        <span className={healthClass(health)} title={health ?? "healthy"} aria-hidden />
+      )}
       {editing ? (
         <input
           className="h-[26px] w-[120px] rounded-lg border border-swath-border bg-swath-bg px-[7px] py-0.5 text-swath-text outline-none [-webkit-app-region:no-drag] [app-region:no-drag] focus:border-swath-accent focus:shadow-[0_0_0_2px_rgba(56,139,253,0.15)]"

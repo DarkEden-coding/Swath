@@ -24,6 +24,7 @@ import {
 } from "./eventReducer";
 import { reportError } from "../../../lib/errorLog";
 import { piPaneCache, resumedSessions, spawnedPanes, mountPiPaneEventCache } from "./piPaneCache";
+import { reportStreaming } from "./piActivity";
 
 type Action =
   | { type: "line"; line: string }
@@ -155,6 +156,7 @@ export function usePiAgent(
   useEffect(() => {
     const entry = piPaneCache.get(paneId);
     piPaneCache.set(paneId, { draft: "", images: [], ...entry, state });
+    reportStreaming(paneId, state.isStreaming);
   }, [paneId, state]);
 
   const send = useCallback(
