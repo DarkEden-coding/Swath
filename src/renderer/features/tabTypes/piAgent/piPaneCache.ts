@@ -10,6 +10,7 @@
 import { parsePiLine, type PiImageContent } from "../../../../shared/ipc/piRpc";
 import { reducePiEvent, type PiPaneState } from "./eventReducer";
 import { usePiActivityStore } from "./piActivity";
+import type { AttachedPaste } from "./placeholders";
 
 export interface AttachedImage extends PiImageContent {
   /** `[Image N]` marker mirroring the pi clipboard-image-paste extension. */
@@ -20,6 +21,7 @@ export interface PiPaneCacheEntry {
   state: PiPaneState;
   draft: string;
   images: AttachedImage[];
+  pastes: AttachedPaste[];
 }
 
 export const piPaneCache = new Map<string, PiPaneCacheEntry>();

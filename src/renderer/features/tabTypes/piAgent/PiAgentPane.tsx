@@ -29,6 +29,7 @@ import {
   ScopedModelSelector,
 } from "./ScopedModelSelector";
 import { piPaneCache, type AttachedImage } from "./piPaneCache";
+import type { AttachedPaste } from "./placeholders";
 import { Transcript } from "./Transcript";
 import { usePiAgent } from "./usePiAgent";
 import type { PiNotice } from "./eventReducer";
@@ -134,10 +135,13 @@ export function PiAgentPane({ workspace, view, pane }: PaneComponentProps): JSX.
   const [images, setImages] = useState<AttachedImage[]>(
     () => piPaneCache.get(paneId)?.images ?? [],
   );
+  const [pastes, setPastes] = useState<AttachedPaste[]>(
+    () => piPaneCache.get(paneId)?.pastes ?? [],
+  );
   useEffect(() => {
     const entry = piPaneCache.get(paneId);
-    if (entry) piPaneCache.set(paneId, { ...entry, draft, images });
-  }, [paneId, draft, images]);
+    if (entry) piPaneCache.set(paneId, { ...entry, draft, images, pastes });
+  }, [paneId, draft, images, pastes]);
   const [appliedEditorText, setAppliedEditorText] = useState<string | undefined>(undefined);
   const [treeOpen, setTreeOpen] = useState(false);
   const [resumeOpen, setResumeOpen] = useState(false);
@@ -461,8 +465,10 @@ export function PiAgentPane({ workspace, view, pane }: PaneComponentProps): JSX.
               thinkingLevel={state.state?.thinkingLevel}
               value={draft}
               images={images}
+              pastes={pastes}
               onChange={setDraft}
               onImagesChange={setImages}
+              onPastesChange={setPastes}
               onSubmit={(message, images) => {
                 pinToBottom();
                 if (!images.length && runUiCommand(message)) {

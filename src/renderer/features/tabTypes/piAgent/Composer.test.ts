@@ -5,8 +5,8 @@ import {
   clipboardImageFiles,
   imagePreviewSource,
   imagesForText,
-  removeTrailingImage,
 } from "./Composer";
+import { makePastes, tokenSpanAfter, tokenSpanBefore } from "./placeholders";
 import type { AttachedImage } from "./piPaneCache";
 
 const png = (data: string) => ({ type: "image" as const, data, mimeType: "image/png" });
@@ -20,10 +20,14 @@ describe("image placeholders", () => {
 
   it("never collides with a placeholder still in the prompt", () => {
     const first = attachImages("", [], [png("a"), png("b")]);
-    const removed = removeTrailingImage(first.text, first.images);
-    expect(removed).toEqual({ text: "[Image 1]", images: [first.images[0]] });
+    const removed = tokenSpanBefore(first.text, first.text.length);
+    expect(removed?.token).toBe("[Image 2]");
     // Reusing the number just freed is safe; nothing references it any more.
-    const second = attachImages(removed?.text ?? "", removed?.images ?? [], [png("c")]);
+    const second = attachImages(
+      "[Image 1]",
+      first.images.slice(0, 1),
+      [png("c")],
+    );
     expect(second.text).toBe("[Image 1] [Image 2]");
     expect(second.images.map((image) => image.data)).toEqual(["a", "c"]);
   });
@@ -37,10 +41,13 @@ describe("image placeholders", () => {
     expect(many.images).toHaveLength(8);
   });
 
-  it("removes only a trailing placeholder", () => {
+  it("locates a trailing placeholder for one-press removal", () => {
     const images: AttachedImage[] = [{ ...png("a"), placeholder: "[Image 1]" }];
-    expect(removeTrailingImage("hi [Image 1]", images)).toEqual({ text: "hi", images: [] });
-    expect(removeTrailingImage("[Image 1] tail", images)).toBeNull();
+    const span = tokenSpanBefore("hi [Image 1]", "hi [Image 1]".length);
+    expect(span).toEqual({ start: 2, end: 12, token: "[Image 1]" });
+    // "hi [Image 1] tail" keeps the token when the caret is past it.
+    expect(tokenSpanBefore("[Image 1] tail", 12)).toBeNull();
+    expect(imagesForText("only [Image 2]", images)).toHaveLength(0);
   });
 
   it("drops images whose placeholder the user deleted", () => {

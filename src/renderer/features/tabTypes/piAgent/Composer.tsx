@@ -11,6 +11,14 @@ import type { TerminalClipboardPayload } from "../../../../shared/types";
 import type { AttachedImage } from "./piPaneCache";
 import { mentionsForPane, rememberMention } from "./piPaneCache";
 import { expandMentions, mentionLabels, mentionSpanAfter, mentionSpanBefore } from "./mentions";
+import {
+  PASTE_THRESHOLD,
+  expandPastes,
+  makePastes,
+  tokenSpanAfter,
+  tokenSpanBefore,
+  type AttachedPaste,
+} from "./placeholders";
 import { usePiRoots } from "./PiRootsContext";
 
 /** Maximum attachments accepted per message. */
@@ -24,8 +32,10 @@ interface ComposerProps {
   thinkingLevel?: PiThinkingLevel;
   value: string;
   images: AttachedImage[];
+  pastes: AttachedPaste[];
   onChange: (value: string) => void;
   onImagesChange: (images: AttachedImage[]) => void;
+  onPastesChange: (pastes: AttachedPaste[]) => void;
   onSubmit: (message: string, images: PiImageContent[]) => void;
   onCycleModel: () => void;
   onCycleThinking: () => void;
@@ -60,20 +70,6 @@ export function attachImages(
     text,
   );
   return { text: nextText, images: [...images, ...attached] };
-}
-
-/** Removes the placeholder at the end of the prompt together with its image, or returns null. */
-export function removeTrailingImage(
-  text: string,
-  images: AttachedImage[],
-): { text: string; images: AttachedImage[] } | null {
-  const trimmed = text.trimEnd();
-  const image = images.find((candidate) => trimmed.endsWith(candidate.placeholder));
-  if (!image) return null;
-  return {
-    text: trimmed.slice(0, trimmed.length - image.placeholder.length).trimEnd(),
-    images: images.filter((candidate) => candidate !== image),
-  };
 }
 
 /** Images still referenced by the prompt; the rest were detached by editing their placeholder. */
@@ -152,8 +148,10 @@ export function Composer({
   thinkingLevel,
   value,
   images,
+  pastes,
   onChange,
   onImagesChange,
+  onPastesChange,
   onSubmit,
   onCycleModel,
   onCycleThinking,
@@ -242,6 +240,37 @@ export function Composer({
   };
 
   /**
+   * Replaces the selection with `[Pasted N: M chars]` blocks holding the full text. Like the
+   * image markers, the placeholder is the only thing in the prompt; the body rides in the pane
+   * cache and is expanded back in on send.
+   */
+  const attachPastes = (bodies: string[]): void => {
+    if (bodies.length === 0) return;
+    const added = makePastes(pastes, bodies);
+    const input = inputRef.current;
+    const start = input?.selectionStart ?? value.length;
+    const end = input?.selectionEnd ?? value.length;
+    const joined = added.map((paste) => paste.placeholder).join(" ");
+    const prefix = value.slice(0, start);
+    const next =
+      prefix && !prefix.endsWith(" ") && !prefix.endsWith("\n")
+        ? `${prefix} ${joined}`
+        : `${prefix}${joined}`;
+    onChange(`${next}${value.slice(end)}`);
+    onPastesChange([...pastes, ...added]);
+    const caret = next.length;
+    setCaret(caret);
+    window.requestAnimationFrame(() => inputRef.current?.setSelectionRange(caret, caret));
+    inputRef.current?.focus();
+  };
+
+  /** Drops the attachment a deleted placeholder stood for, image or paste. */
+  const detachToken = (token: string): void => {
+    onImagesChange(images.filter((image) => image.placeholder !== token));
+    onPastesChange(pastes.filter((paste) => paste.placeholder !== token));
+  };
+
+  /**
    * Reads the OS clipboard directly. The app menu binds Cmd/Ctrl+V to a custom item (see
    * `src-tauri/src/menu.rs`), so the webview never receives a native paste event for the
    * shortcut — this is the only paste path for the keyboard, not just an image fallback.
@@ -261,7 +290,8 @@ export function Composer({
           bytes: payload.imageData?.length,
         });
       }
-      if (payload.text) insertText(payload.text);
+      if (payload.text.length >= PASTE_THRESHOLD) attachPastes([payload.text]);
+      else insertText(payload.text);
     } catch (error) {
       console.error("Unable to paste clipboard contents", error);
     }
@@ -293,11 +323,12 @@ export function Composer({
   const attachedInPrompt = imagesForText(value, images);
 
   const submit = (): void => {
-    const message = expandMentions(value.trim(), knownMentions);
+    const message = expandPastes(expandMentions(value.trim(), knownMentions), pastes);
     const attached = imagesForText(message, images);
     if (!message && attached.length === 0) return;
     onSubmit(message, attached);
     onImagesChange([]);
+    onPastesChange([]);
   };
 
   return (
@@ -375,26 +406,61 @@ export function Composer({
             void addImages(pasted);
             return;
           }
+          const text = event.clipboardData.getData("text/plain");
+          if (text.length >= PASTE_THRESHOLD) {
+            event.preventDefault();
+            attachPastes([text]);
+            return;
+          }
           const hasImageItem = Array.from(event.clipboardData.items).some((item) =>
             item.type.startsWith("image/"),
           );
-          if (hasImageItem || !event.clipboardData.getData("text/plain")) {
+          if (hasImageItem || !text) {
             event.preventDefault();
             void pasteFromNativeClipboard();
           }
         }}
         onKeyDown={(event) => {
-          // Backspace at the end of the prompt detaches the trailing image, as pi's TUI does.
-          if (
-            event.key === "Backspace" &&
-            event.currentTarget.selectionStart === event.currentTarget.selectionEnd &&
-            event.currentTarget.selectionStart === value.length
-          ) {
-            const next = removeTrailingImage(value, images);
-            if (next) {
+          // Image markers and paste blocks are one object: they delete whole and the arrows step
+          // over them, the same way mentions do below.
+          const collapsed =
+            event.currentTarget.selectionStart === event.currentTarget.selectionEnd;
+          if (collapsed && (event.key === "ArrowLeft" || event.key === "ArrowRight")) {
+            const caret = event.currentTarget.selectionStart ?? 0;
+            const span =
+              event.key === "ArrowLeft"
+                ? tokenSpanBefore(value, caret)
+                : tokenSpanAfter(value, caret);
+            // One press crosses the whole token: from anywhere at/after its start going left,
+            // or anywhere at/before its end going right.
+            if (
+              span &&
+              (event.key === "ArrowLeft" ? caret > span.start : caret < span.end)
+            ) {
+              const target = event.key === "ArrowLeft" ? span.start : span.end;
               event.preventDefault();
-              onChange(next.text);
-              onImagesChange(next.images);
+              setCaret(target);
+              inputRef.current?.setSelectionRange(target, target);
+              return;
+            }
+          }
+          if (
+            (event.key === "Backspace" || event.key === "Delete") &&
+            event.currentTarget.selectionStart === event.currentTarget.selectionEnd
+          ) {
+            const caret = event.currentTarget.selectionStart ?? 0;
+            const span =
+              event.key === "Backspace"
+                ? tokenSpanBefore(value, caret)
+                : tokenSpanAfter(value, caret);
+            if (span) {
+              event.preventDefault();
+              onChange(value.slice(0, span.start) + value.slice(span.end));
+              detachToken(span.token);
+              setCaret(span.start);
+              window.requestAnimationFrame(() =>
+                inputRef.current?.setSelectionRange(span.start, span.start),
+              );
               return;
             }
           }
