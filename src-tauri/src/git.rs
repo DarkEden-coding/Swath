@@ -1,6 +1,6 @@
 use crate::types::{GitDataEvent, GIT_RUN_MAX_BUFFER_BYTES};
 use serde_json::{json, Value};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::io::Read;
 use std::process::{Command, Stdio};
@@ -296,6 +296,48 @@ fn discard_paths(cwd: &str, paths: &[String]) -> Value {
     json!({ "exitCode": exit_code, "stdout": out.join("\n"), "stderr": err.into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join("\n") })
 }
 
+/// Finds branch refs whose tip tree already exists on the base branch under a different commit.
+fn squash_merged_refs(cwd: &str, base: &str) -> Vec<String> {
+    let base_log = run_git(cwd, &["log", base, "--format=%H%x1f%T"], None);
+    let all_log = run_git(cwd, &["log", "--all", "--format=%H%x1f%T"], None);
+    let refs = run_git(
+        cwd,
+        &[
+            "for-each-ref",
+            "--format=%(refname)%1f%(objectname)",
+            "refs/heads",
+            "refs/remotes",
+        ],
+        None,
+    );
+    if base_log.exit_code != 0 || all_log.exit_code != 0 || refs.exit_code != 0 {
+        return Vec::new();
+    }
+
+    let parse_log = |output: &str| {
+        output
+            .lines()
+            .filter_map(|line| line.split_once(RS))
+            .map(|(hash, tree)| (hash.to_string(), tree.to_string()))
+            .collect::<HashMap<_, _>>()
+    };
+    let base_commits = parse_log(&base_log.stdout);
+    let base_trees: HashSet<&str> = base_commits.values().map(String::as_str).collect();
+    let all_commits = parse_log(&all_log.stdout);
+
+    refs.stdout
+        .lines()
+        .filter_map(|line| line.split_once(RS))
+        .filter(|(_, hash)| {
+            !base_commits.contains_key(*hash)
+                && all_commits
+                    .get(*hash)
+                    .is_some_and(|tree| base_trees.contains(tree.as_str()))
+        })
+        .map(|(ref_name, _)| ref_name.to_string())
+        .collect()
+}
+
 fn get_log(cwd: &str) -> Value {
     let wt = run_git(cwd, &["rev-parse", "--is-inside-work-tree"], None);
     if wt.exit_code != 0 || wt.stdout.trim() != "true" {
@@ -309,23 +351,43 @@ fn get_log(cwd: &str) -> Value {
         .lines()
         .map(str::to_owned)
         .collect();
-    let fmt = format!("--pretty=format:%H{RS}%P{RS}%h{RS}%s{RS}%an{RS}%cr{RS}%D");
-    let r = run_git(
+    let remote_head = run_git(
         cwd,
-        &[
-            "-c",
-            "core.quotepath=false",
-            "log",
-            "--all",
-            "--graph",
-            "--color=never",
-            "-n",
-            "100",
-            "--date=relative",
-            &fmt,
-        ],
+        &["symbolic-ref", "-q", "refs/remotes/origin/HEAD"],
         None,
     );
+    let base = if remote_head.exit_code == 0 {
+        remote_head.stdout.trim().to_string()
+    } else if run_git(
+        cwd,
+        &["rev-parse", "-q", "--verify", "refs/heads/main"],
+        None,
+    )
+    .exit_code
+        == 0
+    {
+        "refs/heads/main".to_string()
+    } else {
+        "HEAD".to_string()
+    };
+    let excluded = squash_merged_refs(cwd, &base);
+    let excludes: Vec<String> = excluded
+        .iter()
+        .map(|ref_name| format!("--exclude={ref_name}"))
+        .collect();
+    let fmt = format!("--pretty=format:%H{RS}%P{RS}%h{RS}%s{RS}%an{RS}%cr{RS}%D");
+    let mut args = vec!["-c", "core.quotepath=false", "log"];
+    args.extend(excludes.iter().map(String::as_str));
+    args.extend([
+        "--all",
+        "--graph",
+        "--color=never",
+        "-n",
+        "100",
+        "--date=relative",
+        &fmt,
+    ]);
+    let r = run_git(cwd, &args, None);
     if r.exit_code != 0 {
         return json!({ "ok": false, "commits": [], "error": if r.stderr.trim().is_empty() { "git log failed" } else { r.stderr.trim() }, "stderr": r.stderr });
     }
