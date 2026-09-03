@@ -7,6 +7,7 @@ export type GitRpcRequest =
   | { op: "pull"; cwd: string; runId?: string }
   | { op: "push"; cwd: string; runId?: string }
   | { op: "sync"; cwd: string; runId?: string }
+  | { op: "fetch"; cwd: string }
   | { op: "getLog"; cwd: string }
   | { op: "listBranches"; cwd: string }
   | { op: "checkoutBranch"; cwd: string; branch: string };
@@ -63,7 +64,7 @@ export function parseGitRpcRequest(raw: unknown): GitRpcRequest | null {
       ...(runId?.trim() ? { runId: runId.trim() } : {}),
     };
   }
-  if (op === "getLog" || op === "listBranches") {
+  if (op === "fetch" || op === "getLog" || op === "listBranches") {
     const cwd = stringField(raw, "cwd");
     return cwd !== null && cwd.trim() ? { op, cwd: cwd.trim() } : null;
   }

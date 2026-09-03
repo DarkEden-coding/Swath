@@ -473,6 +473,7 @@ pub fn rpc(app: &AppHandle, request: Value) -> GitResult<Value> {
         }
         "pull" => run_json(cwd, &["pull", "--progress"], stream.as_ref()),
         "push" => run_json(cwd, &["push", "--progress"], stream.as_ref()),
+        "fetch" => run_json(cwd, &["fetch", "--quiet"], None),
         "sync" => {
             if let Some(ref target) = stream {
                 target.emit("$ git pull --progress\n");

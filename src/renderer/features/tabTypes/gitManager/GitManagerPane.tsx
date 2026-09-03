@@ -28,6 +28,7 @@ import {
 } from "../../shell/icons";
 
 const COMMIT_MSG_DISPLAY_MAX = 72;
+const REMOTE_REFRESH_INTERVAL_MS = 5_000;
 
 /** Renders source-control operations and repository history for a workspace pane. */
 export function GitManagerPane({ workspace, view, pane }: PaneComponentProps): JSX.Element {
@@ -58,6 +59,7 @@ export function GitManagerPane({ workspace, view, pane }: PaneComponentProps): J
   const logScrollRef = useRef<HTMLDivElement>(null);
   const activeRunIdRef = useRef<string | null>(null);
   const streamReceivedRef = useRef(false);
+  const refreshingRef = useRef(false);
 
   useOnClickOutside(overflowRef, () => setOverflowOpen(false), overflowOpen);
   useOnClickOutside(fileMenuRef, () => setFileMenu(null), fileMenu !== null);
@@ -77,11 +79,13 @@ export function GitManagerPane({ workspace, view, pane }: PaneComponentProps): J
   }, [log]);
 
   const refresh = useCallback(
-    async (options: { includeLog?: boolean } = {}) => {
-      if (!cwd) return;
+    async (options: { includeLog?: boolean; fetch?: boolean } = {}) => {
+      if (!cwd || refreshingRef.current) return;
       const includeLog = options.includeLog ?? true;
+      refreshingRef.current = true;
       setBusy(true);
       try {
+        if (options.fetch) await gitClient.fetch(cwd);
         const [next, logRes] = await Promise.all([
           gitClient.getStatus(cwd),
           includeLog ? gitClient.getLog(cwd) : Promise.resolve(null),
@@ -100,6 +104,7 @@ export function GitManagerPane({ workspace, view, pane }: PaneComponentProps): J
           return n;
         });
       } finally {
+        refreshingRef.current = false;
         setBusy(false);
       }
     },
@@ -113,10 +118,15 @@ export function GitManagerPane({ workspace, view, pane }: PaneComponentProps): J
   }, [cwd]);
 
   useEffect(() => {
-    // Refresh is the external repository synchronization performed when the active path changes.
+    if (!isActive) return;
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    void refresh();
-  }, [refresh]);
+    void refresh({ fetch: true });
+    const interval = window.setInterval(
+      () => void refresh({ fetch: true }),
+      REMOTE_REFRESH_INTERVAL_MS,
+    );
+    return () => window.clearInterval(interval);
+  }, [isActive, refresh]);
 
   const stagedList = useMemo(() => (status?.ok ? uniqueSortedPaths(status.staged) : []), [status]);
   const unstagedList = useMemo(

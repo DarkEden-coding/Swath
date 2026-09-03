@@ -191,6 +191,9 @@ export const gitClient = {
       return { ...base, steps };
     });
   },
+  fetch(cwd: string): Promise<GitRunResult> {
+    return gitRpc({ op: "fetch", cwd }).then(parseRun);
+  },
   getLog(cwd: string): Promise<GitLogResult> {
     return gitRpc({ op: "getLog", cwd }).then(parseLog);
   },
