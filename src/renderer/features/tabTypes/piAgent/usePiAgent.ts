@@ -155,7 +155,7 @@ export function usePiAgent(
   // Republish every render so a remount (tab switch) restores the transcript synchronously.
   useEffect(() => {
     const entry = piPaneCache.get(paneId);
-    piPaneCache.set(paneId, { draft: "", images: [], ...entry, state });
+    piPaneCache.set(paneId, { draft: "", images: [], pastes: [], ...entry, state });
     reportStreaming(paneId, state.isStreaming);
   }, [paneId, state]);
 
