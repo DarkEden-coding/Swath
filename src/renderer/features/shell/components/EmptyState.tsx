@@ -45,6 +45,13 @@ export function EmptyState({ sidebarCollapsed, onToggleSidebar }: EmptyStateProp
           >
             Choose Folder
           </button>
+          <button
+            type="button"
+            className="ml-2 cursor-pointer rounded-lg border border-swath-border bg-swath-bg px-3.5 py-2 font-semibold text-swath-accent-strong hover:border-swath-accent"
+            onClick={appActions.openRemoteConnect}
+          >
+            Connect to Remote
+          </button>
         </div>
       </div>
     </>

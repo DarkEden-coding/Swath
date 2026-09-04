@@ -7,6 +7,7 @@ import { Sidebar } from "./features/shell/components/Sidebar";
 import { StatusBar } from "./features/shell/components/StatusBar";
 import { WindowTitleBar } from "./features/shell/components/WindowTitleBar";
 import { SettingsModal } from "./features/settings/components/SettingsModal";
+import { RemoteConnectModal } from "./features/remote/RemoteConnectModal";
 import { piPaneIdsOfWorkspace, setViewedPanes } from "./features/tabTypes/piAgent/piActivity";
 import { useConfigStore } from "./state/configStore";
 import { useUiStore } from "./state/uiStore";
@@ -184,6 +185,7 @@ export function App(): JSX.Element {
           <StatusBar />
         </div>
         <SettingsModal />
+        <RemoteConnectModal />
       </main>
     </div>
   );

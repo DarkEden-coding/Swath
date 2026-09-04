@@ -37,7 +37,32 @@ export const TauriCommands = {
   askImagesLoad: "ask_images_load",
   filesRpc: "files_rpc",
   piRpc: "pi_rpc",
+  remoteServerStart: "remote_server_start",
+  remoteServerStop: "remote_server_stop",
+  remoteServerStatus: "remote_server_status",
 } as const;
+
+export interface RemoteServerOptions {
+  bind: string;
+  port: number;
+  token: string;
+}
+
+export interface RemoteServerStatus {
+  running: boolean;
+  bind?: string;
+  port?: number;
+  machineId: string;
+  platform: string;
+}
+
+export interface RemoteHandshake {
+  protocol: 1;
+  machineId: string;
+  name: string;
+  platform: string;
+  config: AppConfig;
+}
 
 /** Stable host API exposed as `window.swath` in both Tauri and browser development. */
 export interface SwathApi {
@@ -85,5 +110,16 @@ export interface SwathApi {
     onEvent(
       callback: (paneId: string, line: string | undefined, exited: boolean) => void,
     ): () => void;
+  };
+  remote: {
+    connect(url: string, token: string): Promise<RemoteHandshake>;
+    forget(connectionId: string): void;
+    status(connectionId: string): "connected" | "connecting" | "offline";
+    onStatus(
+      callback: (connectionId: string, status: "connected" | "connecting" | "offline") => void,
+    ): () => void;
+    serverStart(options: RemoteServerOptions): Promise<RemoteServerStatus>;
+    serverStop(): Promise<void>;
+    serverStatus(): Promise<RemoteServerStatus>;
   };
 }

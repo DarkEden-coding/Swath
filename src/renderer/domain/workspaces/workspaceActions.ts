@@ -1,7 +1,7 @@
 import type { AppConfig, FolderSelectResult, Workspace } from "../../../shared/types";
 import { createId } from "../../utils/ids";
 import { createWorkspaceView } from "../views/viewActions";
-import { dissolveGroup, isGroupRoot, membersOf, reflowGroups } from "./groupActions";
+import { dissolveGroup, isGroupRoot, machineIdOf, membersOf, reflowGroups } from "./groupActions";
 
 export function getActiveWorkspace(config: AppConfig): Workspace | null {
   return (
@@ -115,8 +115,15 @@ export function moveWorkspace(config: AppConfig, fromIndex: number, toIndex: num
       : previous?.groupId !== undefined
         ? previous.groupId
         : undefined;
-    if (adoptedGroupId !== moved.groupId)
-      placed = [{ ...moved, groupId: adoptedGroupId, updatedAt: Date.now() }];
+    const candidateRoot = adoptedGroupId
+      ? config.workspaces.find((workspace) => workspace.id === adoptedGroupId)
+      : undefined;
+    const safeGroupId =
+      candidateRoot && machineIdOf(candidateRoot) === machineIdOf(moved)
+        ? adoptedGroupId
+        : undefined;
+    if (safeGroupId !== moved.groupId)
+      placed = [{ ...moved, groupId: safeGroupId, updatedAt: Date.now() }];
   }
 
   const workspaces = [...rest.slice(0, insertAt), ...placed, ...rest.slice(insertAt)];

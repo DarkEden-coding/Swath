@@ -19,6 +19,8 @@ export interface Workspace {
   id: string;
   name: string;
   path: string;
+  /** Connection that owns this project. Missing means this machine. */
+  remoteConnectionId?: string;
   /** True when the stored folder path is currently unavailable. */
   isMissing?: boolean;
   /**

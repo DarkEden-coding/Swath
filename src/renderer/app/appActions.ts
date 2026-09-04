@@ -22,6 +22,8 @@ import {
 } from "../features/tabTypes/piAgent/piAgentTabType";
 import { prewarmPiAgent } from "../features/tabTypes/piAgent/usePiAgent";
 import { reportError } from "../lib/errorLog";
+import { importRemoteValue } from "../../shared/ipc/remote";
+import type { RemoteConnection, Workspace } from "../../shared/types";
 
 /** Commits configuration state and schedules persistence. */
 function commit(config: AppConfig, activePaneId?: string | null): void {
@@ -109,6 +111,76 @@ export function openSettings(): void {
 /** Closes the settings interface. */
 export function closeSettings(): void {
   useUiStore.getState().closeSettings();
+}
+
+export function openRemoteConnect(): void {
+  useUiStore.getState().openRemoteConnect();
+}
+export function closeRemoteConnect(): void {
+  useUiStore.getState().closeRemoteConnect();
+}
+
+/** Authenticates, imports the device's projects, and activates its first available project. */
+export async function connectRemote(url: string, token: string): Promise<void> {
+  const handshake = await window.swath.remote.connect(url.trim(), token);
+  const normalizedUrl = new URL(url.includes("://") ? url : `http://${url}`)
+    .toString()
+    .replace(/\/$/, "");
+  const id = handshake.machineId;
+  const imported = handshake.config.workspaces.map((workspace) => ({
+    ...importRemoteValue(id, workspace),
+    remoteConnectionId: id,
+    isMissing: false,
+  })) as Workspace[];
+  const profile: RemoteConnection = {
+    id,
+    name: handshake.name,
+    url: normalizedUrl,
+    token,
+    machineId: id,
+    platform: handshake.platform,
+    lastConnectedAt: Date.now(),
+  };
+  withConfig((config) => {
+    const retained = config.workspaces.filter((workspace) => workspace.remoteConnectionId !== id);
+    const connections = [
+      ...(config.remoteConnections ?? []).filter((item) => item.id !== id),
+      profile,
+    ];
+    return {
+      config: {
+        ...config,
+        workspaces: [...retained, ...imported],
+        remoteConnections: connections,
+        activeWorkspaceId: imported[0]?.id ?? config.activeWorkspaceId,
+      },
+      activePaneId: imported[0]
+        ? workspaceActions.getActivePaneIdForConfig({
+            ...config,
+            workspaces: imported,
+            activeWorkspaceId: imported[0].id,
+          })
+        : undefined,
+    };
+  });
+  closeRemoteConnect();
+}
+
+export async function forgetRemote(connectionId: string): Promise<void> {
+  const config = useConfigStore.getState().config;
+  if (!config) return;
+  const nextWorkspaces = config.workspaces.filter(
+    (workspace) => workspace.remoteConnectionId !== connectionId,
+  );
+  window.swath.remote.forget(connectionId);
+  commit({
+    ...config,
+    workspaces: nextWorkspaces,
+    remoteConnections: (config.remoteConnections ?? []).filter((item) => item.id !== connectionId),
+    activeWorkspaceId: nextWorkspaces.some((w) => w.id === config.activeWorkspaceId)
+      ? config.activeWorkspaceId
+      : (nextWorkspaces[0]?.id ?? null),
+  });
 }
 
 /** Prompts for a folder and adds it as a workspace. */

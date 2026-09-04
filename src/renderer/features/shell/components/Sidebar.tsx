@@ -11,6 +11,7 @@ import * as appActions from "../../../app/appActions";
 import { useConfigStore } from "../../../state/configStore";
 import appIcon from "../../../assets/app-icon-64.png";
 import { IconChevronDown, IconChevronsRight, IconFolder, IconPlus, IconSparkle } from "../icons";
+import { displayWorkspacePath } from "../../../../shared/ipc/remote";
 import { useReorderDrag } from "../../../hooks/useReorderDrag";
 import {
   groupableTargets,
@@ -169,7 +170,7 @@ export function Sidebar({ onToggleCollapse }: SidebarProps): JSX.Element {
       </div>
 
       <footer className="border-t border-swath-border px-3 pb-3 pt-2.5">
-        <div className="flex flex-row items-center gap-2">
+        <div className="grid grid-cols-[34px_1fr] items-center gap-2">
           <button
             type="button"
             className="grid size-[34px] shrink-0 cursor-pointer place-items-center rounded-lg border border-transparent bg-transparent text-base text-swath-muted [-webkit-app-region:no-drag] [app-region:no-drag] hover:border-swath-border hover:bg-swath-bg hover:text-swath-text"
@@ -187,6 +188,17 @@ export function Sidebar({ onToggleCollapse }: SidebarProps): JSX.Element {
               <IconPlus width={16} height={16} className="block" />
             </span>
             Add Project
+          </button>
+          <span />
+          <button
+            type="button"
+            className="flex min-w-0 items-center justify-center gap-2 rounded-md border border-swath-border bg-swath-bg px-2.5 py-2 text-[12px] font-semibold text-swath-muted hover:border-swath-accent hover:text-swath-accent-strong"
+            onClick={appActions.openRemoteConnect}
+          >
+            <span className="text-swath-accent" aria-hidden>
+              ⇄
+            </span>{" "}
+            Connect to Remote
           </button>
         </div>
       </footer>
@@ -268,10 +280,10 @@ function WorkspaceItem({
 
   async function copyWorkingDirectory(): Promise<void> {
     try {
-      await navigator.clipboard.writeText(workspace.path);
+      await navigator.clipboard.writeText(displayWorkspacePath(workspace.path));
     } catch {
       const textarea = document.createElement("textarea");
-      textarea.value = workspace.path;
+      textarea.value = displayWorkspacePath(workspace.path);
       textarea.setAttribute("readonly", "");
       textarea.style.position = "fixed";
       textarea.style.opacity = "0";
@@ -325,7 +337,11 @@ function WorkspaceItem({
         onClick={() => {
           if (!missing) onSelect();
         }}
-        title={missing ? `${workspace.path} (folder unavailable)` : workspace.path}
+        title={
+          missing
+            ? `${displayWorkspacePath(workspace.path)} (folder unavailable)`
+            : displayWorkspacePath(workspace.path)
+        }
       >
         <span className="shrink-0 text-sm opacity-85" aria-hidden>
           <IconFolder width={16} height={16} className="block" />
@@ -356,6 +372,9 @@ function WorkspaceItem({
             </span>
           )}
         </span>
+        {workspace.remoteConnectionId ? (
+          <RemoteProjectIndicator connectionId={workspace.remoteConnectionId} />
+        ) : null}
         <AgentActivityIndicator counts={agentCounts} />
       </button>
       {menuPosition ? (
@@ -467,6 +486,31 @@ function WorkspaceItem({
         </div>
       ) : null}
     </div>
+  );
+}
+
+function RemoteProjectIndicator({ connectionId }: { connectionId: string }): JSX.Element {
+  const [status, setStatus] = useState(() => window.swath.remote.status(connectionId));
+  useEffect(
+    () =>
+      window.swath.remote.onStatus((id, next) => {
+        if (id === connectionId) setStatus(next);
+      }),
+    [connectionId],
+  );
+  const color =
+    status === "connected"
+      ? "bg-swath-good"
+      : status === "connecting"
+        ? "bg-swath-warning"
+        : "bg-swath-danger";
+  return (
+    <span
+      className="flex shrink-0 items-center gap-1 rounded-full border border-swath-border bg-swath-bg px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-swath-muted"
+      title={`Remote device: ${status}`}
+    >
+      <span className={`size-1.5 rounded-full ${color}`} aria-hidden /> remote
+    </span>
   );
 }
 

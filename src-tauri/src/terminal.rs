@@ -180,6 +180,16 @@ impl TerminalManager {
         })
     }
 
+    /// Replays through the global event bus used by remote connector subscribers.
+    pub fn replay_to_connector(&self, session_id: &str) -> Result<TerminalSessionStatus> {
+        let running = self.get(session_id)?.running.load(Ordering::SeqCst);
+        self.replay_to_app(session_id)?;
+        Ok(TerminalSessionStatus {
+            session_id: session_id.to_string(),
+            running,
+        })
+    }
+
     /// Enables live UI events and adjusts replay capacity for attachment state.
     pub fn set_streaming(&self, session_id: &str, enabled: bool) -> Result<()> {
         let session = self.get(session_id)?;

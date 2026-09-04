@@ -185,3 +185,22 @@ pub fn pi_rpc(
 ) -> CommandResult<serde_json::Value> {
     pi_agent::rpc(&app, &state.pi, request)
 }
+
+#[tauri::command]
+pub async fn remote_server_start(
+    state: State<'_, AppState>,
+    options: crate::remote::RemoteServerOptions,
+) -> CommandResult<crate::remote::RemoteServerStatus> {
+    state.remote.start(options, state.inner().clone()).await
+}
+
+#[tauri::command]
+pub async fn remote_server_stop(state: State<'_, AppState>) -> CommandResult<()> {
+    state.remote.stop().await;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn remote_server_status(state: State<'_, AppState>) -> crate::remote::RemoteServerStatus {
+    state.remote.status()
+}

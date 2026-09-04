@@ -35,12 +35,15 @@ function saveSidebarWidthPx(width: number): void {
 interface UiState {
   sidebarQuery: string;
   settingsOpen: boolean;
+  remoteConnectOpen: boolean;
   activePaneId: string | null;
   sidebarCollapsed: boolean;
   sidebarWidthPx: number;
   setSidebarQuery: (query: string) => void;
   openSettings: () => void;
   closeSettings: () => void;
+  openRemoteConnect: () => void;
+  closeRemoteConnect: () => void;
   setActivePaneId: (paneId: string | null) => void;
   setSidebarCollapsed: (collapsed: boolean) => void;
   toggleSidebarCollapsed: () => void;
@@ -50,12 +53,15 @@ interface UiState {
 export const useUiStore = create<UiState>((set) => ({
   sidebarQuery: "",
   settingsOpen: false,
+  remoteConnectOpen: false,
   activePaneId: null,
   sidebarCollapsed: false,
   sidebarWidthPx: loadSidebarWidthPx(),
   setSidebarQuery: (sidebarQuery) => set({ sidebarQuery }),
   openSettings: () => set({ settingsOpen: true }),
   closeSettings: () => set({ settingsOpen: false }),
+  openRemoteConnect: () => set({ remoteConnectOpen: true }),
+  closeRemoteConnect: () => set({ remoteConnectOpen: false }),
   setActivePaneId: (activePaneId) => set({ activePaneId }),
   setSidebarCollapsed: (sidebarCollapsed) => set({ sidebarCollapsed }),
   toggleSidebarCollapsed: () => set((state) => ({ sidebarCollapsed: !state.sidebarCollapsed })),

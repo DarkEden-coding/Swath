@@ -19,6 +19,10 @@ export const GROUP_VIEW_KINDS = ["piAgent"] as const;
 /** Read-only helpers only need the project list, not a whole configuration. */
 type WorkspaceList = Pick<AppConfig, "workspaces">;
 
+export function machineIdOf(workspace: Workspace): string {
+  return workspace.remoteConnectionId ?? "local";
+}
+
 export function isGroupRoot(workspace: Workspace | null | undefined): boolean {
   return workspace?.isGroupRoot === true;
 }
@@ -58,16 +62,23 @@ export function groupableTargets(config: WorkspaceList, workspaceId: string): Wo
   const workspace = findWorkspace(config, workspaceId);
   if (!workspace || isGroupRoot(workspace)) return [];
   return config.workspaces.filter(
-    (candidate) => isGroupRoot(candidate) && candidate.id !== workspace.groupId,
+    (candidate) =>
+      isGroupRoot(candidate) &&
+      candidate.id !== workspace.groupId &&
+      machineIdOf(candidate) === machineIdOf(workspace),
   );
 }
 
 /** Projects a workspace could be paired with into a brand new group. */
 export function pairableProjects(config: WorkspaceList, workspaceId: string): Workspace[] {
-  return config.workspaces.filter(
-    (candidate) =>
-      !isGroupRoot(candidate) && candidate.id !== workspaceId && candidate.groupId === undefined,
-  );
+  return config.workspaces
+    .filter(
+      (candidate) =>
+        !isGroupRoot(candidate) && candidate.id !== workspaceId && candidate.groupId === undefined,
+    )
+    .filter(
+      (candidate) => machineIdOf(candidate) === machineIdOf(findWorkspace(config, workspaceId)!),
+    );
 }
 
 function defaultGroupName(members: Workspace[]): string {
@@ -88,7 +99,11 @@ export function reflowGroups(config: AppConfig): AppConfig {
 
   // Membership pointing at something that is no longer a group root is dropped.
   let workspaces = config.workspaces.map((workspace) =>
-    !isGroupRoot(workspace) && workspace.groupId !== undefined && !roots.has(workspace.groupId)
+    !isGroupRoot(workspace) &&
+    workspace.groupId !== undefined &&
+    (!roots.has(workspace.groupId) ||
+      machineIdOf(workspace) !==
+        machineIdOf(config.workspaces.find((item) => item.id === workspace.groupId)!))
       ? { ...workspace, groupId: undefined }
       : workspace,
   );
@@ -162,6 +177,7 @@ export function createGroup(
     .map((id) => findWorkspace(config, id))
     .filter((workspace): workspace is Workspace => workspace !== null && !isGroupRoot(workspace));
   if (members.length < 2) return { config, rootId: null };
+  if (new Set(members.map(machineIdOf)).size !== 1) return { config, rootId: null };
 
   const rootId = createId("workspace");
   const view = createWorkspaceView("Agent 1", members[0]!.path, config.settings, "piAgent");
@@ -169,6 +185,7 @@ export function createGroup(
     id: rootId,
     name: name?.trim() || defaultGroupName(members),
     path: members[0]!.path,
+    remoteConnectionId: members[0]!.remoteConnectionId,
     isGroupRoot: true,
     views: [view],
     activeViewId: view.id,
@@ -191,6 +208,7 @@ export function addToGroup(config: AppConfig, workspaceId: string, rootId: strin
   const workspace = findWorkspace(config, workspaceId);
   const root = findWorkspace(config, rootId);
   if (!workspace || isGroupRoot(workspace) || !isGroupRoot(root)) return config;
+  if (machineIdOf(workspace) !== machineIdOf(root!)) return config;
   return reflowGroups({
     ...config,
     workspaces: config.workspaces.map((item) =>

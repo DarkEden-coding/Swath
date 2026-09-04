@@ -5,6 +5,7 @@
 - [Git manager pane](./git-manager.md)
 - [Pi agent pane](./pi-agent-pane.md) — plan
 - [Project groups](./project-groups.md)
+- [Remote connectors](./remote-connectors.md)
 
 Related:
 

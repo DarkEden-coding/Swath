@@ -229,5 +229,16 @@ export function createBrowserStubSwath(): SwathApi {
       },
       onEvent: () => () => {},
     },
+    remote: {
+      connect: async () => {
+        throw new Error("Remote connectors require the Swath desktop app");
+      },
+      forget: () => {},
+      status: () => "offline",
+      onStatus: () => () => {},
+      serverStart: async () => ({ running: false, machineId: "browser", platform: "web" }),
+      serverStop: async () => {},
+      serverStatus: async () => ({ running: false, machineId: "browser", platform: "web" }),
+    },
   };
 }

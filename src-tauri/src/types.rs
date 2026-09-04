@@ -12,6 +12,20 @@ pub struct AppConfig {
     pub workspaces: Vec<Workspace>,
     pub active_workspace_id: Option<String>,
     pub settings: AppSettings,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_connections: Option<Vec<RemoteConnection>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteConnection {
+    pub id: String,
+    pub name: String,
+    pub url: String,
+    pub token: String,
+    pub machine_id: String,
+    pub platform: String,
+    pub last_connected_at: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -20,6 +34,8 @@ pub struct Workspace {
     pub id: String,
     pub name: String,
     pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_connection_id: Option<String>,
     /// Computed while loading; it is not persisted so a restored folder becomes available again.
     #[serde(skip_serializing, default)]
     pub is_missing: bool,

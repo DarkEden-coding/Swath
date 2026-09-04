@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import type { ShellProfile } from "../../../../shared/types";
+import type { RemoteServerStatus } from "../../../../shared/ipc/swath";
 import * as appActions from "../../../app/appActions";
 import { useConfigStore } from "../../../state/configStore";
 import { useUiStore } from "../../../state/uiStore";
@@ -302,9 +303,144 @@ export function SettingsModal(): JSX.Element | null {
           </div>
         </section>
 
+        <RemoteHostingSection open={open} />
+
         <DiagnosticsSection />
       </section>
     </div>
+  );
+}
+
+function makeToken(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(24));
+  return Array.from(bytes, (value) => value.toString(16).padStart(2, "0")).join("");
+}
+
+function RemoteHostingSection({ open }: { open: boolean }): JSX.Element {
+  const remoteConnections = useConfigStore((state) => state.config?.remoteConnections);
+  const connections = remoteConnections ?? [];
+  const [bind, setBind] = useState("0.0.0.0");
+  const [port, setPort] = useState(7878);
+  const [token, setToken] = useState(makeToken);
+  const [activeToken, setActiveToken] = useState("");
+  const [status, setStatus] = useState<RemoteServerStatus | null>(null);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    if (open)
+      void window.swath.remote
+        .serverStatus()
+        .then((next) => {
+          setStatus(next);
+          if (next.bind) setBind(next.bind);
+          if (next.port) setPort(next.port);
+        })
+        .catch(() => undefined);
+  }, [open]);
+
+  const start = async (): Promise<void> => {
+    setError("");
+    try {
+      setStatus(await window.swath.remote.serverStart({ bind, port, token }));
+      setActiveToken(token);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    }
+  };
+  const stop = async (): Promise<void> => {
+    await window.swath.remote.serverStop();
+    setStatus(await window.swath.remote.serverStatus());
+  };
+  return (
+    <section className="mt-6 border-t border-swath-border pt-[18px]">
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <h3 className="mb-1 text-[15px]">Remote connector &amp; Web UI</h3>
+          <p className="mb-3 text-xs text-swath-muted-2">
+            Host this device on Tailscale. One multiplexed connection carries terminals, Git, files,
+            and Pi agents.
+          </p>
+        </div>
+        <span
+          className={`rounded-full border px-2 py-1 text-[10px] font-bold uppercase ${status?.running ? "border-swath-good/40 text-swath-good" : "border-swath-border text-swath-muted"}`}
+        >
+          {status?.running ? "Running" : "Stopped"}
+        </span>
+      </div>
+      <div className="grid grid-cols-[1fr_110px] gap-2 max-[980px]:grid-cols-1">
+        <label className={fieldLabel}>
+          Bind address
+          <input className={fieldInput} value={bind} onChange={(e) => setBind(e.target.value)} />
+        </label>
+        <label className={fieldLabel}>
+          Port
+          <input
+            className={fieldInput}
+            type="number"
+            min={1}
+            max={65535}
+            value={port}
+            onChange={(e) => setPort(Number(e.target.value))}
+          />
+        </label>
+        <label className={`${fieldLabel} col-span-2 max-[980px]:col-span-1`}>
+          Access token
+          <input
+            className={`${fieldInput} font-mono`}
+            value={token}
+            onChange={(e) => setToken(e.target.value)}
+          />
+        </label>
+      </div>
+      {status?.running ? (
+        <p className="mt-2 font-mono text-xs text-swath-accent-strong">
+          http://&lt;tailscale-device&gt;:{status.port}/
+          {activeToken ? `?token=${activeToken}` : " (token configured at launch)"}
+        </p>
+      ) : null}
+      {error ? <p className="mt-2 text-xs text-swath-danger">{error}</p> : null}
+      <div className="mt-3 flex gap-2">
+        {status?.running ? (
+          <button className={secondaryBtn} onClick={() => void stop()}>
+            Stop hosting
+          </button>
+        ) : (
+          <button className={secondaryBtn} onClick={() => void start()}>
+            Start connector
+          </button>
+        )}
+        <button className={secondaryBtn} onClick={() => setToken(makeToken())}>
+          Regenerate token
+        </button>
+      </div>
+      {connections.length > 0 ? (
+        <div className="mt-5 border-t border-swath-border pt-4">
+          <h4 className="mb-2 text-xs font-bold uppercase tracking-wide text-swath-muted">
+            Connected devices
+          </h4>
+          <div className="grid gap-2">
+            {connections.map((connection) => (
+              <div
+                key={connection.id}
+                className="flex items-center justify-between gap-3 rounded-lg border border-swath-border bg-swath-bg p-2.5"
+              >
+                <div className="min-w-0">
+                  <strong className="block truncate text-[13px]">{connection.name}</strong>
+                  <span className="block truncate font-mono text-[11px] text-swath-muted-2">
+                    {connection.url}
+                  </span>
+                </div>
+                <button
+                  className={secondaryBtn}
+                  onClick={() => void appActions.forgetRemote(connection.id)}
+                >
+                  Forget
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : null}
+    </section>
   );
 }
 

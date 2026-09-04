@@ -306,7 +306,7 @@ export type PiIncoming =
       delayMs: number;
       errorMessage?: string;
     }
-  | { type: "auto_retry_end"; success: boolean; attempt: number; finalError?: string }
+  | { type: "auto_retry_end"; success: boolean; attempt?: number; finalError?: string }
   | {
       type: "summarization_retry_scheduled";
       attempt: number;

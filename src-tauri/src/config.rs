@@ -116,7 +116,10 @@ pub fn save(app: &AppHandle, config: &AppConfig) -> Result<()> {
 fn normalize_config(config: &mut AppConfig) {
     config.version = 2;
     for workspace in &mut config.workspaces {
-        workspace.is_missing = !std::path::Path::new(&workspace.path).exists();
+        // A remote path belongs to another filesystem; connector health, not local fs metadata,
+        // determines whether it is usable.
+        workspace.is_missing = workspace.remote_connection_id.is_none()
+            && !std::path::Path::new(&workspace.path).exists();
     }
     // A group root has no folder of its own: it is unavailable only once every member is.
     let live_groups: std::collections::HashSet<String> = config
@@ -163,6 +166,7 @@ pub fn default_config() -> AppConfig {
         workspaces: Vec::new(),
         active_workspace_id: None,
         settings: default_settings(),
+        remote_connections: None,
     }
 }
 
@@ -270,5 +274,29 @@ mod tests {
         assert!(serde_json::to_value(config).unwrap()["workspaces"][0]
             .get("isMissing")
             .is_none());
+    }
+
+    #[test]
+    fn remote_workspaces_are_not_checked_against_the_local_filesystem() {
+        let mut config = default_config();
+        config.workspaces.push(
+            serde_json::from_value(serde_json::json!({
+                "id": "remote:project",
+                "name": "Remote project",
+                "path": "swath-remote://device/%2Frepo",
+                "remoteConnectionId": "device",
+                "views": [],
+                "activeViewId": "",
+                "createdAt": 0,
+                "updatedAt": 0
+            }))
+            .unwrap(),
+        );
+        normalize_config(&mut config);
+        assert!(!config.workspaces[0].is_missing);
+        assert_eq!(
+            config.active_workspace_id.as_deref(),
+            Some("remote:project")
+        );
     }
 }

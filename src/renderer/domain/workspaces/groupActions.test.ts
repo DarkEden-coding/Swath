@@ -42,6 +42,16 @@ const idOf = (config: AppConfig, name: string): string =>
 const names = (config: AppConfig): string[] => config.workspaces.map((workspace) => workspace.name);
 
 describe("project groups", () => {
+  it("refuses to group projects owned by different machines", () => {
+    const config = withProjects("local", "remote");
+    config.workspaces[1] = { ...config.workspaces[1]!, remoteConnectionId: "remote-a" };
+    expect(
+      createGroup(
+        config,
+        config.workspaces.map((workspace) => workspace.id),
+      ),
+    ).toEqual({ config, rootId: null });
+  });
   it("creates a group root owning a shared agent view", () => {
     const config = withProjects("api", "web");
     const { config: next, rootId } = createGroup(config, [
