@@ -7,7 +7,7 @@ type Status = "connected" | "connecting" | "offline";
 type EventChannel = RemoteEvent["channel"];
 
 function normalizeUrl(value: string): string {
-  const url = new URL(value.includes("://") ? value : `http://${value}`);
+  const url = new URL(value.includes("://") ? value : `https://${value}`);
   url.pathname = url.pathname.replace(/\/$/, "");
   return url.toString().replace(/\/$/, "");
 }

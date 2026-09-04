@@ -49,9 +49,19 @@ pub fn run() {
                     .ok()
                     .and_then(|v| v.parse().ok())
                     .unwrap_or(7878);
+                let tailscale_https = std::env::var("SWATH_CONNECTOR_TAILSCALE_HTTPS")
+                    .is_ok_and(|value| !matches!(value.as_str(), "0" | "false" | "no"));
                 tauri::async_runtime::spawn(async move {
                     if let Err(err) = remote
-                        .start(remote::RemoteServerOptions { bind, port, token }, state)
+                        .start(
+                            remote::RemoteServerOptions {
+                                bind,
+                                port,
+                                token,
+                                tailscale_https,
+                            },
+                            state,
+                        )
                         .await
                     {
                         eprintln!("failed to auto-start remote connector: {err}");

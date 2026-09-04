@@ -319,8 +319,9 @@ function makeToken(): string {
 function RemoteHostingSection({ open }: { open: boolean }): JSX.Element {
   const remoteConnections = useConfigStore((state) => state.config?.remoteConnections);
   const connections = remoteConnections ?? [];
-  const [bind, setBind] = useState("0.0.0.0");
+  const [bind, setBind] = useState("127.0.0.1");
   const [port, setPort] = useState(7878);
+  const [tailscaleHttps, setTailscaleHttps] = useState(true);
   const [token, setToken] = useState(makeToken);
   const [activeToken, setActiveToken] = useState("");
   const [status, setStatus] = useState<RemoteServerStatus | null>(null);
@@ -333,6 +334,7 @@ function RemoteHostingSection({ open }: { open: boolean }): JSX.Element {
           setStatus(next);
           if (next.bind) setBind(next.bind);
           if (next.port) setPort(next.port);
+          if (next.tailscaleHttps !== undefined) setTailscaleHttps(next.tailscaleHttps);
         })
         .catch(() => undefined);
   }, [open]);
@@ -340,7 +342,7 @@ function RemoteHostingSection({ open }: { open: boolean }): JSX.Element {
   const start = async (): Promise<void> => {
     setError("");
     try {
-      setStatus(await window.swath.remote.serverStart({ bind, port, token }));
+      setStatus(await window.swath.remote.serverStart({ bind, port, token, tailscaleHttps }));
       setActiveToken(token);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
@@ -356,8 +358,8 @@ function RemoteHostingSection({ open }: { open: boolean }): JSX.Element {
         <div>
           <h3 className="mb-1 text-[15px]">Remote connector &amp; Web UI</h3>
           <p className="mb-3 text-xs text-swath-muted-2">
-            Host this device on Tailscale. One multiplexed connection carries terminals, Git, files,
-            and Pi agents.
+            Host this device through Tailscale Serve HTTPS. One multiplexed connection carries
+            terminals, Git, files, and Pi agents.
           </p>
         </div>
         <span
@@ -368,7 +370,7 @@ function RemoteHostingSection({ open }: { open: boolean }): JSX.Element {
       </div>
       <div className="grid grid-cols-[1fr_110px] gap-2 max-[980px]:grid-cols-1">
         <label className={fieldLabel}>
-          Bind address
+          Local backend bind
           <input className={fieldInput} value={bind} onChange={(e) => setBind(e.target.value)} />
         </label>
         <label className={fieldLabel}>
@@ -390,12 +392,28 @@ function RemoteHostingSection({ open }: { open: boolean }): JSX.Element {
             onChange={(e) => setToken(e.target.value)}
           />
         </label>
+        <label className="col-span-2 flex items-center gap-2 text-xs font-semibold text-swath-muted max-[980px]:col-span-1">
+          <input
+            type="checkbox"
+            checked={tailscaleHttps}
+            onChange={(event) => setTailscaleHttps(event.target.checked)}
+          />
+          Publish securely with Tailscale Serve on HTTPS port 443
+        </label>
       </div>
       {status?.running ? (
-        <p className="mt-2 font-mono text-xs text-swath-accent-strong">
-          http://&lt;tailscale-device&gt;:{status.port}/
-          {activeToken ? `?token=${activeToken}` : " (token configured at launch)"}
-        </p>
+        <div className="mt-2 text-xs">
+          {status.httpsUrl ? (
+            <p className="break-all font-mono text-swath-accent-strong">
+              {status.httpsUrl}
+              {activeToken ? `?token=${activeToken}` : " (token configured at launch)"}
+            </p>
+          ) : (
+            <p className="font-mono text-swath-muted-2">
+              Local backend: http://{status.bind}:{status.port}/
+            </p>
+          )}
+        </div>
       ) : null}
       {error ? <p className="mt-2 text-xs text-swath-danger">{error}</p> : null}
       <div className="mt-3 flex gap-2">

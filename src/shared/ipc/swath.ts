@@ -46,12 +46,16 @@ export interface RemoteServerOptions {
   bind: string;
   port: number;
   token: string;
+  /** Publishes the loopback connector through Tailscale Serve on HTTPS port 443. */
+  tailscaleHttps?: boolean;
 }
 
 export interface RemoteServerStatus {
   running: boolean;
   bind?: string;
   port?: number;
+  tailscaleHttps?: boolean;
+  httpsUrl?: string;
   machineId: string;
   platform: string;
 }

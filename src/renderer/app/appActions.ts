@@ -129,7 +129,7 @@ export function closeAddProject(): void {
 /** Authenticates and saves a remote device for the Add Project workflow. */
 export async function connectRemote(url: string, token: string): Promise<void> {
   const handshake = await window.swath.remote.connect(url.trim(), token);
-  const normalizedUrl = new URL(url.includes("://") ? url : `http://${url}`)
+  const normalizedUrl = new URL(url.includes("://") ? url : `https://${url}`)
     .toString()
     .replace(/\/$/, "");
   const id = handshake.machineId;

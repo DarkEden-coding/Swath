@@ -20,7 +20,13 @@ use futures_util::{SinkExt, StreamExt};
 use rust_embed::RustEmbed;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::{collections::HashMap, net::IpAddr, sync::Mutex};
+use std::{
+    collections::HashMap,
+    net::IpAddr,
+    path::Path,
+    process::{Command, Output},
+    sync::Mutex,
+};
 use tauri::{AppHandle, Listener};
 use tokio::{
     net::TcpListener,
@@ -38,6 +44,8 @@ pub struct RemoteServerOptions {
     pub bind: String,
     pub port: u16,
     pub token: String,
+    #[serde(default)]
+    pub tailscale_https: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -48,12 +56,17 @@ pub struct RemoteServerStatus {
     pub bind: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub port: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tailscale_https: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub https_url: Option<String>,
     pub machine_id: String,
     pub platform: String,
 }
 
 struct RunningServer {
     options: RemoteServerOptions,
+    https_url: Option<String>,
     stop: oneshot::Sender<()>,
 }
 
@@ -106,6 +119,8 @@ impl RemoteServerManager {
             running: running.is_some(),
             bind: running.as_ref().map(|v| v.options.bind.clone()),
             port: running.as_ref().map(|v| v.options.port),
+            tailscale_https: running.as_ref().map(|v| v.options.tailscale_https),
+            https_url: running.as_ref().and_then(|v| v.https_url.clone()),
             machine_id: self.machine_id.clone(),
             platform: std::env::consts::OS.into(),
         }
@@ -123,8 +138,13 @@ impl RemoteServerManager {
             options.port = 7878;
         }
         let ip: IpAddr = options.bind.parse().map_err(|_| {
-            "Bind address must be an IP address (use 0.0.0.0 for Tailscale)".to_string()
+            "Bind address must be an IP address (use 127.0.0.1 with Tailscale Serve)".to_string()
         })?;
+        if options.tailscale_https && !ip.is_loopback() {
+            return Err(
+                "Tailscale Serve requires a loopback backend; use bind address 127.0.0.1".into(),
+            );
+        }
         self.stop().await;
         let listener = TcpListener::bind((ip, options.port))
             .await
@@ -144,6 +164,11 @@ impl RemoteServerManager {
             .layer(CorsLayer::permissive())
             .with_state(context);
         let (stop_tx, stop_rx) = oneshot::channel();
+        let https_url = if options.tailscale_https {
+            configure_tailscale_serve(options.port)?
+        } else {
+            None
+        };
         tokio::spawn(async move {
             let _ = axum::serve(listener, router)
                 .with_graceful_shutdown(async {
@@ -153,6 +178,7 @@ impl RemoteServerManager {
         });
         *self.running.lock().unwrap() = Some(RunningServer {
             options,
+            https_url,
             stop: stop_tx,
         });
         Ok(self.status())
@@ -161,8 +187,74 @@ impl RemoteServerManager {
     pub async fn stop(&self) {
         if let Some(server) = self.running.lock().unwrap().take() {
             let _ = server.stop.send(());
+            if server.options.tailscale_https {
+                let _ = run_tailscale(&["serve", "--https=443", "off"]);
+            }
         }
     }
+}
+
+fn run_tailscale(args: &[&str]) -> Result<Output, String> {
+    let configured = std::env::var("SWATH_TAILSCALE_BIN").ok();
+    let mut candidates: Vec<&str> = configured.iter().map(String::as_str).collect();
+    candidates.push("tailscale");
+    if cfg!(target_os = "macos") {
+        candidates.push("/Applications/Tailscale.app/Contents/MacOS/Tailscale");
+    }
+    let mut last_error = None;
+    for candidate in candidates {
+        if candidate.contains('/') && !Path::new(candidate).is_file() {
+            continue;
+        }
+        match Command::new(candidate).args(args).output() {
+            Ok(output) => return Ok(output),
+            Err(error) => last_error = Some(error),
+        }
+    }
+    Err(format!(
+        "Unable to run Tailscale CLI{}",
+        last_error
+            .map(|error| format!(": {error}"))
+            .unwrap_or_default()
+    ))
+}
+
+fn configure_tailscale_serve(port: u16) -> Result<Option<String>, String> {
+    let target = format!("http://127.0.0.1:{port}");
+    let output = run_tailscale(&["serve", "--bg", "--yes", "--https=443", target.as_str()])?;
+    let message = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    if !output.status.success() {
+        return Err(format!(
+            "Unable to enable Tailscale Serve: {}",
+            message.trim()
+        ));
+    }
+    Ok(tailscale_https_url(&message).or_else(tailscale_dns_url))
+}
+
+fn tailscale_https_url(message: &str) -> Option<String> {
+    message.lines().find_map(|line| {
+        let start = line.find("https://")?;
+        let url = &line[start..];
+        let end = url
+            .find(|character: char| character.is_whitespace() || character == '\u{1b}')
+            .unwrap_or(url.len());
+        Some(url[..end].to_string())
+    })
+}
+
+fn tailscale_dns_url() -> Option<String> {
+    let output = run_tailscale(&["status", "--json"]).ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let status: Value = serde_json::from_slice(&output.stdout).ok()?;
+    let dns_name = status.get("Self")?.get("DNSName")?.as_str()?;
+    Some(format!("https://{}/", dns_name.trim_end_matches('.')))
 }
 
 fn bearer(headers: &HeaderMap) -> Option<&str> {
@@ -484,7 +576,7 @@ fn asset_impl(
 
 #[cfg(test)]
 mod tests {
-    use super::list_directories;
+    use super::{list_directories, tailscale_https_url};
     use serde_json::json;
     use std::fs;
 
@@ -508,5 +600,15 @@ mod tests {
         assert!(result["parent"].is_string());
 
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn extracts_colored_tailscale_serve_url() {
+        let output =
+            "Available within your tailnet:\n\u{1b}[1mhttps://swath.example.ts.net/\u{1b}[0m\n";
+        assert_eq!(
+            tailscale_https_url(output).as_deref(),
+            Some("https://swath.example.ts.net/")
+        );
     }
 }

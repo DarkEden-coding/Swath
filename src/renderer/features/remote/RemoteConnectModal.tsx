@@ -75,7 +75,7 @@ export function RemoteConnectModal(): JSX.Element | null {
             <input
               ref={ref}
               className={input}
-              placeholder="http://devbox.tailnet.ts.net:7878"
+              placeholder="https://devbox.example-tailnet.ts.net"
               value={url}
               onChange={(e) => setUrl(e.target.value)}
             />
