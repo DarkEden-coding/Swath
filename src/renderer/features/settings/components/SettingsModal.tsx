@@ -412,11 +412,21 @@ function RemoteHostingSection({ open }: { open: boolean }): JSX.Element {
           Regenerate token
         </button>
       </div>
-      {connections.length > 0 ? (
-        <div className="mt-5 border-t border-swath-border pt-4">
-          <h4 className="mb-2 text-xs font-bold uppercase tracking-wide text-swath-muted">
-            Connected devices
-          </h4>
+      <div className="mt-5 border-t border-swath-border pt-4">
+        <div className="mb-2 flex items-center justify-between gap-3">
+          <div>
+            <h4 className="text-xs font-bold uppercase tracking-wide text-swath-muted">
+              Remote machines
+            </h4>
+            <p className="mt-1 text-xs text-swath-muted-2">
+              Save devices here, then choose their folders from Add Project.
+            </p>
+          </div>
+          <button className={secondaryBtn} onClick={appActions.openRemoteConnect}>
+            Add connection
+          </button>
+        </div>
+        {connections.length > 0 ? (
           <div className="grid gap-2">
             {connections.map((connection) => (
               <div
@@ -438,8 +448,10 @@ function RemoteHostingSection({ open }: { open: boolean }): JSX.Element {
               </div>
             ))}
           </div>
-        </div>
-      ) : null}
+        ) : (
+          <p className="text-xs text-swath-muted-2">No remote machines configured.</p>
+        )}
+      </div>
     </section>
   );
 }

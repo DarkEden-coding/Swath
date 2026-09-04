@@ -22,8 +22,8 @@ import {
 } from "../features/tabTypes/piAgent/piAgentTabType";
 import { prewarmPiAgent } from "../features/tabTypes/piAgent/usePiAgent";
 import { reportError } from "../lib/errorLog";
-import { importRemoteValue } from "../../shared/ipc/remote";
-import type { RemoteConnection, Workspace } from "../../shared/types";
+import { toRemotePath } from "../../shared/ipc/remote";
+import type { RemoteConnection } from "../../shared/types";
 
 /** Commits configuration state and schedules persistence. */
 function commit(config: AppConfig, activePaneId?: string | null): void {
@@ -119,19 +119,20 @@ export function openRemoteConnect(): void {
 export function closeRemoteConnect(): void {
   useUiStore.getState().closeRemoteConnect();
 }
+export function openAddProject(): void {
+  useUiStore.getState().openAddProject();
+}
+export function closeAddProject(): void {
+  useUiStore.getState().closeAddProject();
+}
 
-/** Authenticates, imports the device's projects, and activates its first available project. */
+/** Authenticates and saves a remote device for the Add Project workflow. */
 export async function connectRemote(url: string, token: string): Promise<void> {
   const handshake = await window.swath.remote.connect(url.trim(), token);
   const normalizedUrl = new URL(url.includes("://") ? url : `http://${url}`)
     .toString()
     .replace(/\/$/, "");
   const id = handshake.machineId;
-  const imported = handshake.config.workspaces.map((workspace) => ({
-    ...importRemoteValue(id, workspace),
-    remoteConnectionId: id,
-    isMissing: false,
-  })) as Workspace[];
   const profile: RemoteConnection = {
     id,
     name: handshake.name,
@@ -142,28 +143,32 @@ export async function connectRemote(url: string, token: string): Promise<void> {
     lastConnectedAt: Date.now(),
   };
   withConfig((config) => {
-    const retained = config.workspaces.filter((workspace) => workspace.remoteConnectionId !== id);
     const connections = [
       ...(config.remoteConnections ?? []).filter((item) => item.id !== id),
       profile,
     ];
-    return {
-      config: {
-        ...config,
-        workspaces: [...retained, ...imported],
-        remoteConnections: connections,
-        activeWorkspaceId: imported[0]?.id ?? config.activeWorkspaceId,
-      },
-      activePaneId: imported[0]
-        ? workspaceActions.getActivePaneIdForConfig({
-            ...config,
-            workspaces: imported,
-            activeWorkspaceId: imported[0].id,
-          })
-        : undefined,
-    };
+    return { ...config, remoteConnections: connections };
   });
   closeRemoteConnect();
+}
+
+/** Adds one selected folder from an already authenticated remote device. */
+export function addRemoteWorkspace(connectionId: string, path: string, name: string): void {
+  withConfig((config) => {
+    const routed = toRemotePath(connectionId, path);
+    const next = workspaceActions.addWorkspaceFromFolder(config, {
+      canceled: false,
+      path: routed,
+      name,
+    });
+    const activeId = next.activeWorkspaceId;
+    const workspaces = next.workspaces.map((workspace) =>
+      workspace.id === activeId ? { ...workspace, remoteConnectionId: connectionId } : workspace,
+    );
+    const result = { ...next, workspaces };
+    return { config: result, activePaneId: workspaceActions.getActivePaneIdForConfig(result) };
+  });
+  closeAddProject();
 }
 
 export async function forgetRemote(connectionId: string): Promise<void> {

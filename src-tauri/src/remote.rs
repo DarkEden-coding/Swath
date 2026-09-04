@@ -362,8 +362,51 @@ async fn dispatch(ctx: &ServerContext, method: &str, params: Value) -> Result<Va
         "files.rpc" => files::rpc(params),
         "askImages.load" => ask_images::load(params),
         "pi.rpc" => pi_agent::rpc(&ctx.app, &ctx.swath.pi, params),
+        "directories.list" => list_directories(params),
         _ => Err(format!("unsupported remote method: {method}")),
     }
+}
+
+fn list_directories(params: Value) -> Result<Value, String> {
+    let requested = params
+        .get("path")
+        .and_then(Value::as_str)
+        .filter(|path| !path.trim().is_empty());
+    let fallback = std::env::var_os(if cfg!(target_os = "windows") {
+        "USERPROFILE"
+    } else {
+        "HOME"
+    })
+    .map(std::path::PathBuf::from)
+    .ok_or_else(|| "Unable to resolve the remote home folder".to_string())?;
+    let path = requested.map(std::path::PathBuf::from).unwrap_or(fallback);
+    let canonical = path
+        .canonicalize()
+        .map_err(|err| format!("Unable to open folder: {err}"))?;
+    if !canonical.is_dir() {
+        return Err("The selected path is not a folder".into());
+    }
+    let mut folders = std::fs::read_dir(&canonical)
+        .map_err(|err| format!("Unable to read folder: {err}"))?
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let kind = entry.file_type().ok()?;
+            if !kind.is_dir() || kind.is_symlink() { return None; }
+            Some(json!({ "name": entry.file_name().to_string_lossy(), "path": entry.path().to_string_lossy() }))
+        })
+        .collect::<Vec<_>>();
+    folders.sort_by(|a, b| {
+        a["name"]
+            .as_str()
+            .unwrap_or("")
+            .to_lowercase()
+            .cmp(&b["name"].as_str().unwrap_or("").to_lowercase())
+    });
+    Ok(json!({
+        "path": canonical.to_string_lossy(),
+        "parent": canonical.parent().map(|parent| parent.to_string_lossy()),
+        "folders": folders
+    }))
 }
 
 async fn asset_root(
@@ -436,5 +479,34 @@ fn asset_impl(
             .status(StatusCode::NOT_FOUND)
             .body(Body::empty())
             .unwrap(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::list_directories;
+    use serde_json::json;
+    use std::fs;
+
+    #[test]
+    fn directory_browser_returns_folders_only() {
+        let root =
+            std::env::temp_dir().join(format!("swath-remote-folders-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("beta")).unwrap();
+        fs::create_dir_all(root.join("Alpha")).unwrap();
+        fs::write(root.join("notes.txt"), "not a folder").unwrap();
+
+        let result = list_directories(json!({ "path": root })).unwrap();
+        let names = result["folders"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry["name"].as_str().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(names, ["Alpha", "beta"]);
+        assert!(result["parent"].is_string());
+
+        fs::remove_dir_all(root).unwrap();
     }
 }

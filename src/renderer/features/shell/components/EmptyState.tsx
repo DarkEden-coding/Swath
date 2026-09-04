@@ -38,19 +38,8 @@ export function EmptyState({ sidebarCollapsed, onToggleSidebar }: EmptyStateProp
             Projects map to local folders. Tabs, splits, and shell sessions are tracked per project.
             Pick a folder to get started, or keep the built-in demo workspaces from a fresh install.
           </p>
-          <button
-            type="button"
-            className={primaryBtn}
-            onClick={() => void appActions.addWorkspaceFromFolder()}
-          >
+          <button type="button" className={primaryBtn} onClick={appActions.openAddProject}>
             Choose Folder
-          </button>
-          <button
-            type="button"
-            className="ml-2 cursor-pointer rounded-lg border border-swath-border bg-swath-bg px-3.5 py-2 font-semibold text-swath-accent-strong hover:border-swath-accent"
-            onClick={appActions.openRemoteConnect}
-          >
-            Connect to Remote
           </button>
         </div>
       </div>

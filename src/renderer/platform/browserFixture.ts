@@ -236,6 +236,7 @@ export function createBrowserStubSwath(): SwathApi {
       forget: () => {},
       status: () => "offline",
       onStatus: () => () => {},
+      listFolders: async () => ({ path: "/", parent: null, folders: [] }),
       serverStart: async () => ({ running: false, machineId: "browser", platform: "web" }),
       serverStop: async () => {},
       serverStatus: async () => ({ running: false, machineId: "browser", platform: "web" }),

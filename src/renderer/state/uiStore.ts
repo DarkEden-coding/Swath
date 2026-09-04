@@ -36,6 +36,7 @@ interface UiState {
   sidebarQuery: string;
   settingsOpen: boolean;
   remoteConnectOpen: boolean;
+  addProjectOpen: boolean;
   activePaneId: string | null;
   sidebarCollapsed: boolean;
   sidebarWidthPx: number;
@@ -44,6 +45,8 @@ interface UiState {
   closeSettings: () => void;
   openRemoteConnect: () => void;
   closeRemoteConnect: () => void;
+  openAddProject: () => void;
+  closeAddProject: () => void;
   setActivePaneId: (paneId: string | null) => void;
   setSidebarCollapsed: (collapsed: boolean) => void;
   toggleSidebarCollapsed: () => void;
@@ -54,6 +57,7 @@ export const useUiStore = create<UiState>((set) => ({
   sidebarQuery: "",
   settingsOpen: false,
   remoteConnectOpen: false,
+  addProjectOpen: false,
   activePaneId: null,
   sidebarCollapsed: false,
   sidebarWidthPx: loadSidebarWidthPx(),
@@ -62,6 +66,8 @@ export const useUiStore = create<UiState>((set) => ({
   closeSettings: () => set({ settingsOpen: false }),
   openRemoteConnect: () => set({ remoteConnectOpen: true }),
   closeRemoteConnect: () => set({ remoteConnectOpen: false }),
+  openAddProject: () => set({ addProjectOpen: true }),
+  closeAddProject: () => set({ addProjectOpen: false }),
   setActivePaneId: (activePaneId) => set({ activePaneId }),
   setSidebarCollapsed: (sidebarCollapsed) => set({ sidebarCollapsed }),
   toggleSidebarCollapsed: () => set((state) => ({ sidebarCollapsed: !state.sidebarCollapsed })),

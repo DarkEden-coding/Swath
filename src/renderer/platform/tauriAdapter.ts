@@ -147,6 +147,9 @@ export function createTauriSwath(): SwathApi {
       forget: () => {},
       status: () => "offline",
       onStatus: () => () => {},
+      listFolders: async () => {
+        throw new Error("Remote transport is not initialized");
+      },
       serverStart: (options) => invoke(TauriCommands.remoteServerStart, { options }),
       serverStop: () => invoke(TauriCommands.remoteServerStop),
       serverStatus: () => invoke(TauriCommands.remoteServerStatus),

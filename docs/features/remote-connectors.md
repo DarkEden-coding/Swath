@@ -20,10 +20,14 @@ Server-oriented installs can auto-start without opening Settings by defining
 
 ## Connect from the desktop app
 
-Choose **Connect to Remote** in the sidebar and enter the connector's Tailscale URL and token.
-Remote projects are imported with a `remote` health badge. Terminal, Git manager, file browser,
-image prompts, and Pi CodingAgent calls are routed to their owning machine. Session and pane owners
-are retained for follow-up messages and process events.
+Open **Settings → Remote connector & Web UI → Add connection** and enter the connector's Tailscale
+URL and token. Native Edit → Paste works in both connection fields, including the masked token
+field. Adding a connection saves the machine without importing its existing Swath workspaces.
+
+Choose **Add Project**, select **Remote**, choose a saved machine, and browse to the folder that
+should become a project. Remote projects receive a `remote` health badge. Terminal, Git manager,
+file browser, image prompts, and Pi CodingAgent calls are routed to their owning machine. Session
+and pane owners are retained for follow-up messages and process events.
 
 Project paths and ids are namespaced inside the client. This prevents a local `/repo` from being
 confused with a remote `/repo`, and prevents pane/session collisions. Groups are machine-scoped:

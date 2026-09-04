@@ -8,6 +8,7 @@ import { StatusBar } from "./features/shell/components/StatusBar";
 import { WindowTitleBar } from "./features/shell/components/WindowTitleBar";
 import { SettingsModal } from "./features/settings/components/SettingsModal";
 import { RemoteConnectModal } from "./features/remote/RemoteConnectModal";
+import { AddProjectModal } from "./features/remote/AddProjectModal";
 import { piPaneIdsOfWorkspace, setViewedPanes } from "./features/tabTypes/piAgent/piActivity";
 import { useConfigStore } from "./state/configStore";
 import { useUiStore } from "./state/uiStore";
@@ -79,7 +80,7 @@ export function App(): JSX.Element {
         activeWorkspace,
         activeView,
         activePaneId,
-        addWorkspaceFromFolder: appActions.addWorkspaceFromFolder,
+        addWorkspaceFromFolder: appActions.openAddProject,
         createView: appActions.createView,
         closeView: appActions.closeView,
         splitPane: appActions.splitPane,
@@ -100,7 +101,7 @@ export function App(): JSX.Element {
         activeWorkspace,
         activeView,
         activePaneId,
-        addWorkspaceFromFolder: appActions.addWorkspaceFromFolder,
+        addWorkspaceFromFolder: appActions.openAddProject,
         createView: appActions.createView,
         closeView: appActions.closeView,
         splitPane: appActions.splitPane,
@@ -186,6 +187,7 @@ export function App(): JSX.Element {
         </div>
         <SettingsModal />
         <RemoteConnectModal />
+        <AddProjectModal />
       </main>
     </div>
   );

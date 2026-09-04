@@ -64,6 +64,12 @@ export interface RemoteHandshake {
   config: AppConfig;
 }
 
+export interface RemoteFolderListing {
+  path: string;
+  parent: string | null;
+  folders: Array<{ name: string; path: string }>;
+}
+
 /** Stable host API exposed as `window.swath` in both Tauri and browser development. */
 export interface SwathApi {
   platform: NodeJS.Platform | string;
@@ -118,6 +124,7 @@ export interface SwathApi {
     onStatus(
       callback: (connectionId: string, status: "connected" | "connecting" | "offline") => void,
     ): () => void;
+    listFolders(connectionId: string, path?: string): Promise<RemoteFolderListing>;
     serverStart(options: RemoteServerOptions): Promise<RemoteServerStatus>;
     serverStop(): Promise<void>;
     serverStatus(): Promise<RemoteServerStatus>;

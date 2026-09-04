@@ -15,7 +15,8 @@ export type RemoteMethod =
   | "git.rpc"
   | "files.rpc"
   | "askImages.load"
-  | "pi.rpc";
+  | "pi.rpc"
+  | "directories.list";
 
 export interface RemoteRequest {
   type: "request";

@@ -182,23 +182,12 @@ export function Sidebar({ onToggleCollapse }: SidebarProps): JSX.Element {
           <button
             type="button"
             className="flex min-w-0 flex-1 cursor-pointer items-center justify-center gap-2 rounded-md border border-swath-accent bg-transparent px-2.5 py-2 text-[13px] font-semibold text-swath-accent-strong [-webkit-app-region:no-drag] [app-region:no-drag] hover:bg-[rgba(56,139,253,0.08)]"
-            onClick={() => void appActions.addWorkspaceFromFolder()}
+            onClick={appActions.openAddProject}
           >
             <span className="block text-base leading-none" aria-hidden>
               <IconPlus width={16} height={16} className="block" />
             </span>
             Add Project
-          </button>
-          <span />
-          <button
-            type="button"
-            className="flex min-w-0 items-center justify-center gap-2 rounded-md border border-swath-border bg-swath-bg px-2.5 py-2 text-[12px] font-semibold text-swath-muted hover:border-swath-accent hover:text-swath-accent-strong"
-            onClick={appActions.openRemoteConnect}
-          >
-            <span className="text-swath-accent" aria-hidden>
-              ⇄
-            </span>{" "}
-            Connect to Remote
           </button>
         </div>
       </footer>
