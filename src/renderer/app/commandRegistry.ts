@@ -63,10 +63,11 @@ export function runAppCommand(command: string, context: CommandContext): void {
 }
 
 /** Native macOS menu accelerators bypass the WebView's ordinary paste command. */
-function pasteIntoFocusedField(): boolean {
+export function pasteIntoFocusedField(): boolean {
   const target = document.activeElement;
   if (!(target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement)) return false;
-  if (target.classList.contains("xterm-helper-textarea")) return false;
+  if (target.classList.contains("xterm-helper-textarea") || target.dataset.swathPasteHandler)
+    return false;
   if (target.disabled || target.readOnly) return false;
   void window.swath.clipboard.readForTerminal().then(({ text }) => {
     const start = target.selectionStart ?? target.value.length;

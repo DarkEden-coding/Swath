@@ -389,6 +389,7 @@ export function Composer({
 
       <textarea
         ref={inputRef}
+        data-swath-paste-handler
         rows={1}
         placeholder={streaming ? "Queue a follow-up…" : "Message pi…   @file  /command"}
         value={value}
