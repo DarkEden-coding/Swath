@@ -413,7 +413,7 @@ body.is-reordering * {
 
 .pi-todo-cols {
   display: grid;
-  gap: 28px;
+  gap: 12px 40px;
   position: relative;
   z-index: 1;
 }

@@ -240,36 +240,92 @@ function routeGraph(
     });
   }
 
-  const routed: Routed[] = [];
-  const occupied: Point[][] = [];
-  const bounds = { w: size.width, h: size.height };
+  const depth = new Map<string, number>();
+  layersOf(tasks).forEach((layer, index) => layer.forEach((task) => depth.set(task.id, index)));
+
+  interface Edge {
+    dep: string;
+    task: TodoTask;
+    from: NodeBox;
+    to: NodeBox;
+    adjacent: boolean;
+  }
+  const edges: Edge[] = [];
   for (const task of tasks) {
     for (const dep of waitsOn.get(task.id) ?? []) {
       const from = boxes.get(dep);
       const to = boxes.get(task.id);
-      const fromTask = byId.get(dep);
-      if (!from || !to || !fromTask) continue;
-      const start: Point = { x: from.x + from.w, y: from.y + from.h / 2 };
-      const end: Point = { x: to.x, y: to.y + to.h / 2 };
-      const routeStart: Point = { x: start.x + ROUTE_CLEARANCE, y: start.y };
-      const routeEnd: Point = { x: end.x - ROUTE_CLEARANCE, y: end.y };
-      const obstacles = [...boxes.values()].filter((box) => box.id !== dep && box.id !== task.id);
-      const middle = routeOrthogonal(routeStart, routeEnd, obstacles, bounds, occupied);
-      const points = insetEnds([start, ...middle, end], EDGE_PAD, EDGE_PAD);
-      occupied.push(points);
-      const fromKind = kindOf(fromTask, isReady(fromTask, byId));
-      const toKind = kindOf(task, isReady(task, byId));
-      const visStart = points[0];
-      const visEnd = points[points.length - 1];
-      routed.push({
-        d: roundedPath(points),
-        start: visStart,
-        end: visEnd,
-        fromColor: stroke(fromKind),
-        toColor: stroke(toKind),
-        dashed: toKind === "blocked",
-      });
+      if (!from || !to || !byId.has(dep)) continue;
+      const adjacent = (depth.get(task.id) ?? 0) - (depth.get(dep) ?? 0) === 1;
+      edges.push({ dep, task, from, to, adjacent });
     }
+  }
+
+  // Edges between neighbouring columns share one vertical lane per source inside the gutter, so
+  // fan-outs branch from a single trunk and fan-ins merge into one, instead of parallel zig-zags.
+  const laneX = new Map<string, number>();
+  const gutters = new Map<number, Edge[]>();
+  for (const edge of edges) {
+    if (!edge.adjacent) continue;
+    const gutter = depth.get(edge.dep) ?? 0;
+    (gutters.get(gutter) ?? gutters.set(gutter, []).get(gutter)!).push(edge);
+  }
+  for (const gutterEdges of gutters.values()) {
+    const left = Math.max(...gutterEdges.map((edge) => edge.from.x + edge.from.w)) + EDGE_PAD;
+    const right = Math.min(...gutterEdges.map((edge) => edge.to.x)) - EDGE_PAD;
+    const span = new Map<string, { min: number; max: number }>();
+    for (const edge of gutterEdges) {
+      const ys = [edge.from.y + edge.from.h / 2, edge.to.y + edge.to.h / 2];
+      const current = span.get(edge.dep) ?? { min: Infinity, max: -Infinity };
+      current.min = Math.min(current.min, ...ys);
+      current.max = Math.max(current.max, ...ys);
+      span.set(edge.dep, current);
+    }
+    // Narrow fan-outs take the lanes nearest their source so wide trunks do not cut their stubs.
+    const sources = [...span.entries()]
+      .sort(([, a], [, b]) => a.max - a.min - (b.max - b.min) || a.min - b.min)
+      .map(([id]) => id);
+    sources.forEach((id, index) => {
+      laneX.set(id, left + ((right - left) * (index + 1)) / (sources.length + 1));
+    });
+  }
+
+  const routed: Routed[] = [];
+  const occupied: Point[][] = [];
+  const bounds = { w: size.width, h: size.height };
+  const route = (edge: Edge): Point[] => {
+    const { dep, task, from, to } = edge;
+    const start: Point = { x: from.x + from.w, y: from.y + from.h / 2 };
+    const end: Point = { x: to.x, y: to.y + to.h / 2 };
+    const lane = laneX.get(dep);
+    if (edge.adjacent && lane !== undefined) {
+      if (Math.abs(start.y - end.y) < 0.5) return [start, end];
+      return [start, { x: lane, y: start.y }, { x: lane, y: end.y }, end];
+    }
+    const routeStart: Point = { x: start.x + ROUTE_CLEARANCE, y: start.y };
+    const routeEnd: Point = { x: end.x - ROUTE_CLEARANCE, y: end.y };
+    const obstacles = [...boxes.values()].filter((box) => box.id !== dep && box.id !== task.id);
+    return [start, ...routeOrthogonal(routeStart, routeEnd, obstacles, bounds, occupied), end];
+  };
+  // Lane routes first so longer, obstacle-avoiding edges steer clear of them.
+  const ordered = [
+    ...edges.filter((edge) => edge.adjacent),
+    ...edges.filter((edge) => !edge.adjacent),
+  ];
+  for (const edge of ordered) {
+    const fromTask = byId.get(edge.dep)!;
+    const points = insetEnds(route(edge), EDGE_PAD, EDGE_PAD);
+    occupied.push(points);
+    const fromKind = kindOf(fromTask, isReady(fromTask, byId));
+    const toKind = kindOf(edge.task, isReady(edge.task, byId));
+    routed.push({
+      d: roundedPath(points),
+      start: points[0],
+      end: points[points.length - 1],
+      fromColor: stroke(fromKind),
+      toColor: stroke(toKind),
+      dashed: toKind === "blocked",
+    });
   }
   return routed;
 }
