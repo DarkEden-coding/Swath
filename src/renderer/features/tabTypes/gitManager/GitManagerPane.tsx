@@ -111,6 +111,19 @@ export function GitManagerPane({ workspace, view, pane }: PaneComponentProps): J
     [cwd],
   );
 
+  /** Fetches remote commits without disturbing the rest of the source-control form. */
+  const refreshGraph = useCallback(async () => {
+    if (!cwd || refreshingRef.current) return;
+    refreshingRef.current = true;
+    try {
+      await gitClient.fetch(cwd);
+      const result = await gitClient.getLog(cwd);
+      setCommits(result.ok ? result.commits : []);
+    } finally {
+      refreshingRef.current = false;
+    }
+  }, [cwd]);
+
   const loadBranches = useCallback(async () => {
     if (!cwd) return;
     const r = await gitClient.listBranches(cwd);
@@ -121,12 +134,9 @@ export function GitManagerPane({ workspace, view, pane }: PaneComponentProps): J
     if (!isActive) return;
     // eslint-disable-next-line react-hooks/set-state-in-effect
     void refresh({ fetch: true });
-    const interval = window.setInterval(
-      () => void refresh({ fetch: true }),
-      REMOTE_REFRESH_INTERVAL_MS,
-    );
+    const interval = window.setInterval(() => void refreshGraph(), REMOTE_REFRESH_INTERVAL_MS);
     return () => window.clearInterval(interval);
-  }, [isActive, refresh]);
+  }, [isActive, refresh, refreshGraph]);
 
   const stagedList = useMemo(() => (status?.ok ? uniqueSortedPaths(status.staged) : []), [status]);
   const unstagedList = useMemo(
