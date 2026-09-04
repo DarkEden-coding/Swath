@@ -304,7 +304,10 @@ export function TodoWebPreview({
     .map((task) => `${task.id}:${task.status}:${task.dependencies.join(",")}`)
     .join("|");
   const tasksRef = useRef(tasks);
-  tasksRef.current = tasks;
+
+  useLayoutEffect(() => {
+    tasksRef.current = tasks;
+  });
 
   useLayoutEffect(() => {
     const root = rootRef.current;
