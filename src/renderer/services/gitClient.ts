@@ -44,6 +44,13 @@ export interface GitLogResult {
   stderr?: string;
 }
 
+export interface GitCommitDiffResult {
+  ok: boolean;
+  patch: string;
+  error?: string;
+  stderr?: string;
+}
+
 export interface GitStreamOptions {
   runId?: string;
 }
@@ -137,6 +144,16 @@ function parseLog(raw: unknown): GitLogResult {
   };
 }
 
+function parseCommitDiff(raw: unknown): GitCommitDiffResult {
+  if (!isRecord(raw)) return { ok: false, patch: "", error: "Invalid response" };
+  return {
+    ok: raw.ok === true,
+    patch: typeof raw.patch === "string" ? raw.patch : "",
+    error: typeof raw.error === "string" ? raw.error : undefined,
+    stderr: typeof raw.stderr === "string" ? raw.stderr : undefined,
+  };
+}
+
 function parseBranches(raw: unknown): { ok: boolean; branches: string[]; error?: string } {
   if (!isRecord(raw)) return { ok: false, branches: [], error: "Invalid response" };
   const list = raw.branches;
@@ -196,6 +213,12 @@ export const gitClient = {
   },
   getLog(cwd: string): Promise<GitLogResult> {
     return gitRpc({ op: "getLog", cwd }).then(parseLog);
+  },
+  getCommitDiff(cwd: string, hash: string): Promise<GitCommitDiffResult> {
+    return gitRpc({ op: "getCommitDiff", cwd, hash }).then(parseCommitDiff);
+  },
+  getWorkingDiff(cwd: string, path: string, staged: boolean): Promise<GitCommitDiffResult> {
+    return gitRpc({ op: "getWorkingDiff", cwd, path, staged }).then(parseCommitDiff);
   },
   listBranches(cwd: string): Promise<{ ok: boolean; branches: string[]; error?: string }> {
     return gitRpc({ op: "listBranches", cwd }).then(parseBranches);

@@ -3,6 +3,7 @@ use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::io::Read;
+use std::path::{Component, Path};
 use std::process::{Command, Stdio};
 use std::thread;
 use tauri::{AppHandle, Emitter};
@@ -413,6 +414,100 @@ fn get_log(cwd: &str) -> Value {
     json!({ "ok": true, "commits": commits })
 }
 
+fn get_commit_diff(cwd: &str, hash: &str) -> Value {
+    if hash.len() != 40 || !hash.chars().all(|c| c.is_ascii_hexdigit()) {
+        return json!({ "ok": false, "patch": "", "error": "Invalid commit hash" });
+    }
+    let r = run_git(
+        cwd,
+        &[
+            "-c",
+            "core.quotepath=false",
+            "show",
+            "--format=",
+            "--no-ext-diff",
+            "--find-renames",
+            "--find-copies",
+            "--diff-merges=first-parent",
+            "--unified=3",
+            hash,
+            "--",
+        ],
+        None,
+    );
+    if r.exit_code != 0 {
+        return json!({ "ok": false, "patch": "", "error": if r.stderr.trim().is_empty() { "Unable to load commit diff" } else { r.stderr.trim() }, "stderr": r.stderr });
+    }
+    json!({ "ok": true, "patch": r.stdout, "stderr": r.stderr })
+}
+
+fn get_working_diff(cwd: &str, path: &str, staged: bool) -> Value {
+    if path.trim().is_empty()
+        || Path::new(path).components().any(|component| {
+            matches!(
+                component,
+                Component::ParentDir | Component::RootDir | Component::Prefix(_)
+            )
+        })
+    {
+        return json!({ "ok": false, "patch": "", "error": "Invalid file path" });
+    }
+
+    let tracked = run_git(cwd, &["ls-files", "--error-unmatch", "--", path], None).exit_code == 0;
+    let r = if staged {
+        run_git(
+            cwd,
+            &[
+                "-c",
+                "core.quotepath=false",
+                "diff",
+                "--cached",
+                "--no-ext-diff",
+                "--find-renames",
+                "--unified=3",
+                "--",
+                path,
+            ],
+            None,
+        )
+    } else if tracked {
+        run_git(
+            cwd,
+            &[
+                "-c",
+                "core.quotepath=false",
+                "diff",
+                "--no-ext-diff",
+                "--find-renames",
+                "--unified=3",
+                "--",
+                path,
+            ],
+            None,
+        )
+    } else {
+        run_git(
+            cwd,
+            &[
+                "-c",
+                "core.quotepath=false",
+                "diff",
+                "--no-index",
+                "--no-ext-diff",
+                "--unified=3",
+                "--",
+                "/dev/null",
+                path,
+            ],
+            None,
+        )
+    };
+    if r.exit_code != 0 && !(r.exit_code == 1 && !tracked && !staged) {
+        return json!({ "ok": false, "patch": "", "error": if r.stderr.trim().is_empty() { "Unable to load file diff" } else { r.stderr.trim() }, "stderr": r.stderr });
+    }
+    json!({ "ok": true, "patch": r.stdout, "stderr": r.stderr })
+}
+
 fn list_branches(cwd: &str) -> Value {
     let r = run_git(cwd, &["branch", "-a", "--format=%(refname:short)"], None);
     if r.exit_code != 0 {
@@ -496,6 +591,15 @@ pub fn rpc(app: &AppHandle, request: Value) -> GitResult<Value> {
             }
         }
         "getLog" => get_log(cwd),
+        "getCommitDiff" => get_commit_diff(cwd, str_field(&request, "hash").unwrap_or("")),
+        "getWorkingDiff" => get_working_diff(
+            cwd,
+            str_field(&request, "path").unwrap_or(""),
+            request
+                .get("staged")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+        ),
         "listBranches" => list_branches(cwd),
         "checkoutBranch" => run_json(
             cwd,

@@ -180,6 +180,41 @@ export function createBrowserStubSwath(): SwathApi {
             ],
           };
         }
+        if (request.op === "getCommitDiff") {
+          return {
+            ok: true,
+            patch: `diff --git a/src/App.tsx b/src/App.tsx
+index 1111111..2222222 100644
+--- a/src/App.tsx
++++ b/src/App.tsx
+@@ -1,4 +1,4 @@
+ import React from "react";
+-const title = "Swath";
++const title = "Source Control";
+
+ export function App() {}
+@@ -24,3 +24,4 @@ export function Footer() {
+   return <footer />;
+ }
++export default App;
+`,
+          };
+        }
+        if (request.op === "getWorkingDiff") {
+          return {
+            ok: true,
+            patch: `diff --git a/${request.path} b/${request.path}
+index 1111111..2222222 100644
+--- a/${request.path}
++++ b/${request.path}
+@@ -1,3 +1,3 @@
+ import React from "react";
+-old value
++new value
+ export default App;
+`,
+          };
+        }
         if (request.op === "listBranches") {
           return { ok: true, branches: ["feature/auth", "main", "origin/main"] };
         }

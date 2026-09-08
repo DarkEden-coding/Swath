@@ -9,6 +9,8 @@ export type GitRpcRequest =
   | { op: "sync"; cwd: string; runId?: string }
   | { op: "fetch"; cwd: string }
   | { op: "getLog"; cwd: string }
+  | { op: "getCommitDiff"; cwd: string; hash: string }
+  | { op: "getWorkingDiff"; cwd: string; path: string; staged: boolean }
   | { op: "listBranches"; cwd: string }
   | { op: "checkoutBranch"; cwd: string; branch: string };
 
@@ -67,6 +69,18 @@ export function parseGitRpcRequest(raw: unknown): GitRpcRequest | null {
   if (op === "fetch" || op === "getLog" || op === "listBranches") {
     const cwd = stringField(raw, "cwd");
     return cwd !== null && cwd.trim() ? { op, cwd: cwd.trim() } : null;
+  }
+  if (op === "getCommitDiff") {
+    const cwd = stringField(raw, "cwd");
+    const hash = stringField(raw, "hash");
+    if (!cwd?.trim() || !hash || !/^[0-9a-f]{40}$/i.test(hash)) return null;
+    return { op: "getCommitDiff", cwd: cwd.trim(), hash };
+  }
+  if (op === "getWorkingDiff") {
+    const cwd = stringField(raw, "cwd");
+    const path = stringField(raw, "path");
+    if (!cwd?.trim() || !path || typeof raw.staged !== "boolean") return null;
+    return { op: "getWorkingDiff", cwd: cwd.trim(), path, staged: raw.staged };
   }
   if (op === "checkoutBranch") {
     const cwd = stringField(raw, "cwd");

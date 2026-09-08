@@ -10,6 +10,7 @@ import {
 } from "../../../services/gitClient";
 import { PaneFrame } from "../../panes/components/PaneFrame";
 import type { PaneComponentProps } from "../../panes/paneTypes";
+import { GitDiffDialog, type GitDiffTarget } from "./CommitDiffDialog";
 import { GitChangesSection, GitHistorySection } from "./GitManagerSections";
 import {
   changePaths,
@@ -50,6 +51,7 @@ export function GitManagerPane({ workspace, view, pane }: PaneComponentProps): J
   const [changesOpen, setChangesOpen] = useState(true);
   const [historyOpen, setHistoryOpen] = useState(true);
   const [overflowOpen, setOverflowOpen] = useState(false);
+  const [diffTarget, setDiffTarget] = useState<GitDiffTarget | null>(null);
   const [fileMenu, setFileMenu] = useState<{ path: string; kind: "staged" | "unstaged" } | null>(
     null,
   );
@@ -602,6 +604,7 @@ export function GitManagerPane({ workspace, view, pane }: PaneComponentProps): J
                   stage: (paths) => void runStage(paths),
                   unstage: (paths) => void runUnstage(paths),
                   discard: (paths) => void runDiscard(paths),
+                  viewDiff: (path, kind) => setDiffTarget({ path, kind }),
                 }}
               />
               <GitHistorySection
@@ -609,10 +612,15 @@ export function GitManagerPane({ workspace, view, pane }: PaneComponentProps): J
                 open={historyOpen}
                 toggleOpen={() => setHistoryOpen((o) => !o)}
                 copyHash={(hash) => void copyHash(hash)}
+                viewDiff={(commit) => setDiffTarget({ kind: "commit", commit })}
               />
             </>
           )}
         </div>
+
+        {diffTarget ? (
+          <GitDiffDialog cwd={cwd} target={diffTarget} onClose={() => setDiffTarget(null)} />
+        ) : null}
 
         {log ? (
           <div

@@ -13,7 +13,7 @@ import {
   simplifyRefLabel,
   statusLetterClass,
 } from "./gitManagerUtils";
-import { IconChevronDown, IconCopy, IconMoreVertical } from "../../shell/icons";
+import { IconChevronDown, IconCopy, IconFileDiff, IconMoreVertical } from "../../shell/icons";
 
 export type FileMenu = { path: string; kind: "staged" | "unstaged" } | null;
 export interface ChangesViewModel {
@@ -32,6 +32,7 @@ export interface ChangesViewModel {
   stage(paths?: string[]): void;
   unstage(paths: string[]): void;
   discard(paths: string[]): void;
+  viewDiff(path: string, kind: "staged" | "unstaged"): void;
 }
 const iconBtn =
   "grid size-8 shrink-0 place-items-center rounded-md border border-transparent text-swath-muted hover:border-swath-border hover:bg-swath-panel-2 hover:text-swath-text disabled:opacity-40";
@@ -88,6 +89,15 @@ export function GitChangesSection({ vm }: { vm: ChangesViewModel }): JSX.Element
                       {e.status}
                     </span>
                     <span className="min-w-0 flex-1 truncate font-mono text-[12px]">{e.path}</span>
+                    <button
+                      className={iconBtn}
+                      title={`View staged diff for ${e.path}`}
+                      aria-label={`View staged diff for ${e.path}`}
+                      disabled={vm.busy}
+                      onClick={() => vm.viewDiff(e.path, "staged")}
+                    >
+                      <IconFileDiff width={14} />
+                    </button>
                     <div className="relative">
                       <button
                         className={iconBtn}
@@ -168,6 +178,15 @@ export function GitChangesSection({ vm }: { vm: ChangesViewModel }): JSX.Element
                       {letter}
                     </span>
                     <span className="min-w-0 flex-1 truncate font-mono text-[12px]">{path}</span>
+                    <button
+                      className={iconBtn}
+                      title={`View working-tree diff for ${path}`}
+                      aria-label={`View working-tree diff for ${path}`}
+                      disabled={vm.busy}
+                      onClick={() => vm.viewDiff(path, "unstaged")}
+                    >
+                      <IconFileDiff width={14} />
+                    </button>
                     <button disabled={vm.busy} onClick={() => vm.stage([path])}>
                       Stage
                     </button>
@@ -225,11 +244,13 @@ export function GitHistorySection({
   open,
   toggleOpen,
   copyHash,
+  viewDiff,
 }: {
   commits: GitLogEntry[];
   open: boolean;
   toggleOpen(): void;
   copyHash(hash: string): void;
+  viewDiff(commit: GitLogEntry): void;
 }): JSX.Element {
   const layout = buildCommitGraphLayout(commits);
   const width = layout.cols * COMMIT_GRAPH_CELL_W;
@@ -281,6 +302,14 @@ export function GitHistorySection({
                     </div>
                   </div>
                   <code className="text-[10px]">{c.short}</code>
+                  <button
+                    className={iconBtn}
+                    title={`View diff for ${c.short}`}
+                    aria-label={`View diff for ${c.subject}`}
+                    onClick={() => viewDiff(c)}
+                  >
+                    <IconFileDiff width={14} />
+                  </button>
                   <button
                     className={iconBtn}
                     title="Copy full hash"
