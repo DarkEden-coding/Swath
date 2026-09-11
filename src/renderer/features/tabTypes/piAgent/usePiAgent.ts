@@ -317,9 +317,18 @@ export function usePiAgent(
         sendRef.current({ id: "tree", type: "get_tree" });
       }
 
-      // Refresh the footer once the run is fully settled, when totals are final.
-      if (event.type === "agent_settled") {
+      // Footer totals (tokens, cost, context %) change as soon as a turn lands, not only
+      // when the whole agent loop settles. Assistant `message_end` is when the main model's
+      // usage is written; `turn_end` then includes tool results in the context estimate.
+      if (
+        event.type === "turn_end" ||
+        event.type === "compaction_end" ||
+        event.type === "agent_settled" ||
+        (event.type === "message_end" && event.message.role === "assistant")
+      ) {
         sendRef.current({ id: "stats", type: "get_session_stats" });
+      }
+      if (event.type === "agent_settled") {
         sendRef.current({ id: "state", type: "get_state" });
       }
     }
