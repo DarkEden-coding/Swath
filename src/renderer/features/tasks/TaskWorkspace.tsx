@@ -371,7 +371,7 @@ export function TaskWorkspace(): JSX.Element {
   const mutate = (request: Parameters<typeof window.swath.tasks.rpc>[0]) =>
     void window.swath.tasks.rpc(request).then(refresh);
   return (
-    <div className="grid h-full min-h-0 grid-rows-[auto_1fr] bg-swath-bg">
+    <div className="grid h-full min-h-0 grid-rows-[1fr] bg-swath-bg">
       <TaskTabBar
         tasks={projectTasks}
         activeTaskId={local.activeTaskId}

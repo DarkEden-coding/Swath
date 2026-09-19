@@ -1,4 +1,5 @@
 import { Fragment, useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
+import { createPortal } from "react-dom";
 import type { PaneKind, ViewHealth, Workspace } from "../../../../shared/types";
 import * as appActions from "../../../app/appActions";
 import {
@@ -115,10 +116,19 @@ export function TaskTabBar({
   onCreate: () => void;
   onHistory: () => void;
 }): JSX.Element {
-  return (
+  const [titleBarTarget, setTitleBarTarget] = useState<HTMLElement | null>(null);
+
+  useEffect(() => {
+    setTitleBarTarget(document.getElementById("swath-titlebar-tasks"));
+  }, []);
+
+  if (!titleBarTarget) return <></>;
+
+  return createPortal(
     <div
-      className="flex h-9 items-center gap-1 border-b border-swath-border bg-swath-panel px-2"
+      className="flex h-full min-w-0 flex-1 items-center gap-1 overflow-x-auto px-2"
       role="tablist"
+      aria-label="Tasks in this project"
     >
       {tasks
         .filter((task) => task.lifecycle === "active")
@@ -128,22 +138,26 @@ export function TaskTabBar({
             role="tab"
             aria-selected={task.id === activeTaskId}
             onClick={() => onSelect(task.id)}
-            className={`max-w-52 truncate rounded px-3 py-1 text-sm ${task.id === activeTaskId ? "bg-swath-bg text-swath-text" : "text-swath-muted hover:bg-swath-bg"}`}
+            className={`max-w-52 shrink-0 truncate rounded px-3 py-1 text-sm ${task.id === activeTaskId ? "bg-swath-bg text-swath-text" : "text-swath-muted hover:bg-swath-bg"}`}
           >
             {task.title}
           </button>
         ))}
       <button
         onClick={onCreate}
-        className="ml-auto rounded px-2 py-1 text-swath-accent hover:bg-swath-bg"
+        className="ml-auto shrink-0 rounded px-2 py-1 text-swath-accent hover:bg-swath-bg"
         aria-label="Create task"
       >
         +
       </button>
-      <button onClick={onHistory} className="rounded px-2 py-1 text-swath-muted hover:bg-swath-bg">
+      <button
+        onClick={onHistory}
+        className="shrink-0 rounded px-2 py-1 text-swath-muted hover:bg-swath-bg"
+      >
         History
       </button>
-    </div>
+    </div>,
+    titleBarTarget,
   );
 }
 

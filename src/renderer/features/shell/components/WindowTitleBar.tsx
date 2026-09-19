@@ -125,7 +125,7 @@ export function WindowTitleBar(): JSX.Element {
         }}
       >
         <div
-          className="pointer-events-none flex min-w-0 flex-1 items-center gap-2.5 px-3"
+          className="pointer-events-none flex shrink-0 items-center gap-2.5 px-3"
           data-tauri-drag-region
         >
           <img src={appIcon} alt="" className="size-5 object-contain" draggable={false} />
@@ -133,6 +133,10 @@ export function WindowTitleBar(): JSX.Element {
             Swath
           </span>
         </div>
+        <div
+          id="swath-titlebar-tasks"
+          className="flex min-w-0 flex-1 items-stretch overflow-hidden [-webkit-app-region:no-drag] [app-region:no-drag]"
+        />
         <div className="flex shrink-0 items-stretch [-webkit-app-region:no-drag] [app-region:no-drag]">
           <button
             type="button"
