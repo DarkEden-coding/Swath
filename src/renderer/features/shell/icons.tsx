@@ -47,6 +47,17 @@ export function IconSettings(props: IconProps): JSX.Element {
   );
 }
 
+export function IconNetwork(props: IconProps): JSX.Element {
+  return (
+    <svg viewBox="0 0 24 24" width={18} height={18} aria-hidden {...stroke} {...props}>
+      <circle cx="12" cy="5" r="2.5" />
+      <circle cx="5" cy="18" r="2.5" />
+      <circle cx="19" cy="18" r="2.5" />
+      <path d="m10.8 7.2-4.6 8.6M13.2 7.2l4.6 8.6M7.5 18h9" />
+    </svg>
+  );
+}
+
 export function IconChevronsRight(props: IconProps): JSX.Element {
   return (
     <svg viewBox="0 0 24 24" width={18} height={18} aria-hidden {...stroke} {...props}>
