@@ -295,6 +295,9 @@ index 1111111..2222222 100644
       promote: async () => {
         throw new Error("Network setup requires the Swath desktop app");
       },
+      demote: async () => {
+        throw new Error("Network setup requires the Swath desktop app");
+      },
       health: async (networkId) => ({
         networkId,
         voters: 0,

@@ -615,24 +615,33 @@ where
                 |row| row.get(0),
             )?;
             if !belongs_to_network {
-                return Err(anyhow!("mapped project does not exist in this network: {existing_project}"));
+                return Err(anyhow!(
+                    "mapped project does not exist in this network: {existing_project}"
+                ));
             }
         } else {
-            let project_operation = format!("migration:{}:project:{}", r.operation_id, m.project_key);
+            let project_operation =
+                format!("migration:{}:project:{}", r.operation_id, m.project_key);
             let response = write(crate::network::raft::CatalogRequest::Project {
                 expected_revision: dedup_revision(c, &project_operation, 0)?,
                 operation_id: project_operation,
                 payload: json!({"action":"create","projectId":project,"networkId":r.network_id,"name":name,"repositorySource":path,"defaultBranch":"main"}),
             }).await.map_err(|e| anyhow!("project import failed for {name}: {}", e.message))?;
             if response.status != "committed" {
-                return Err(anyhow!("project import failed for {name}: {}", response.status));
+                return Err(anyhow!(
+                    "project import failed for {name}: {}",
+                    response.status
+                ));
             }
         }
-        let project_revision: i64 = c.query_row(
-            "SELECT revision FROM projects WHERE id=?1 AND tombstoned_at IS NULL",
-            [&project],
-            |row| row.get(0),
-        ).optional()?.unwrap_or(1);
+        let project_revision: i64 = c
+            .query_row(
+                "SELECT revision FROM projects WHERE id=?1 AND tombstoned_at IS NULL",
+                [&project],
+                |row| row.get(0),
+            )
+            .optional()?
+            .unwrap_or(1);
         let task_operation = format!("migration:{}:task:{}", r.operation_id, m.task_key);
         let response = write(crate::network::raft::CatalogRequest::Task {
             expected_revision: dedup_revision(c, &task_operation, project_revision)?,
@@ -640,7 +649,10 @@ where
             payload: json!({"action":"create","taskId":task,"projectId":project,"title":name,"deviceId":device,"baseCommit":"legacy","worktreePath":path}),
         }).await.map_err(|e| anyhow!("task import failed for {name}: {}", e.message))?;
         if response.status != "committed" {
-            return Err(anyhow!("task import failed for {name}: {}", response.status));
+            return Err(anyhow!(
+                "task import failed for {name}: {}",
+                response.status
+            ));
         }
         for (pane_index, legacy_pane) in workspace_panes(w).into_iter().enumerate() {
             let kind = legacy_pane
@@ -658,11 +670,14 @@ where
                 .unwrap_or_else(|| format!("{id}:{pane_index}"));
             let pane = format!("legacy-pane:{}:{}", r.operation_id, source_pane);
             let pane_operation = format!("migration:{}:pane:{}", r.operation_id, source_pane);
-            let task_revision: i64 = c.query_row(
-                "SELECT revision FROM tasks WHERE id=?1 AND tombstoned_at IS NULL",
-                [&task],
-                |row| row.get(0),
-            ).optional()?.unwrap_or(pane_index as i64 + 1);
+            let task_revision: i64 = c
+                .query_row(
+                    "SELECT revision FROM tasks WHERE id=?1 AND tombstoned_at IS NULL",
+                    [&task],
+                    |row| row.get(0),
+                )
+                .optional()?
+                .unwrap_or(pane_index as i64 + 1);
             let metadata = legacy_pane
                 .get("metadata")
                 .cloned()
@@ -694,7 +709,10 @@ where
             .await
             .map_err(|e| anyhow!("pane import failed for {name}/{source_pane}: {}", e.message))?;
             if response.status != "committed" {
-                return Err(anyhow!("pane import failed for {name}/{source_pane}: {}", response.status));
+                return Err(anyhow!(
+                    "pane import failed for {name}/{source_pane}: {}",
+                    response.status
+                ));
             }
             pane_count += 1;
             if let Some(path) = session_file {
@@ -736,40 +754,60 @@ where
     for old_operation in superseded {
         let task_prefix = format!("legacy-task:{old_operation}:%");
         let old_tasks: Vec<(String, i64)> = {
-            let mut statement = c.prepare("SELECT id,revision FROM tasks WHERE id LIKE ?1 AND tombstoned_at IS NULL")?;
+            let mut statement = c.prepare(
+                "SELECT id,revision FROM tasks WHERE id LIKE ?1 AND tombstoned_at IS NULL",
+            )?;
             let rows = statement
                 .query_map([&task_prefix], |row| Ok((row.get(0)?, row.get(1)?)))?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
             rows
         };
         for (task_id, task_revision) in old_tasks {
-            let operation_id = format!("migration:{}:cleanup:{}:task:{}", r.operation_id, old_operation, task_id);
+            let operation_id = format!(
+                "migration:{}:cleanup:{}:task:{}",
+                r.operation_id, old_operation, task_id
+            );
             let response = write(crate::network::raft::CatalogRequest::Task {
                 expected_revision: dedup_revision(c, &operation_id, task_revision)?,
                 operation_id,
                 payload: json!({"action":"tombstone","taskId":task_id}),
-            }).await.map_err(|e| anyhow!("failed to clean up superseded task: {}", e.message))?;
+            })
+            .await
+            .map_err(|e| anyhow!("failed to clean up superseded task: {}", e.message))?;
             if response.status != "committed" {
-                return Err(anyhow!("failed to clean up superseded task: {}", response.status));
+                return Err(anyhow!(
+                    "failed to clean up superseded task: {}",
+                    response.status
+                ));
             }
         }
         let project_prefix = format!("legacy-project:{old_operation}:%");
         let old_projects: Vec<(String, i64)> = {
-            let mut statement = c.prepare("SELECT id,revision FROM projects WHERE id LIKE ?1 AND tombstoned_at IS NULL")?;
+            let mut statement = c.prepare(
+                "SELECT id,revision FROM projects WHERE id LIKE ?1 AND tombstoned_at IS NULL",
+            )?;
             let rows = statement
                 .query_map([&project_prefix], |row| Ok((row.get(0)?, row.get(1)?)))?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
             rows
         };
         for (project_id, project_revision) in old_projects {
-            let operation_id = format!("migration:{}:cleanup:{}:project:{}", r.operation_id, old_operation, project_id);
+            let operation_id = format!(
+                "migration:{}:cleanup:{}:project:{}",
+                r.operation_id, old_operation, project_id
+            );
             let response = write(crate::network::raft::CatalogRequest::Project {
                 expected_revision: dedup_revision(c, &operation_id, project_revision)?,
                 operation_id,
                 payload: json!({"action":"tombstone","projectId":project_id}),
-            }).await.map_err(|e| anyhow!("failed to clean up superseded project: {}", e.message))?;
+            })
+            .await
+            .map_err(|e| anyhow!("failed to clean up superseded project: {}", e.message))?;
             if response.status != "committed" {
-                return Err(anyhow!("failed to clean up superseded project: {}", response.status));
+                return Err(anyhow!(
+                    "failed to clean up superseded project: {}",
+                    response.status
+                ));
             }
         }
         c.execute(
@@ -1066,7 +1104,10 @@ mod tests {
         .unwrap();
         assert_eq!(result["imported"], 1);
         let writes = writes.lock().unwrap();
-        assert!(!writes.iter().any(|request| matches!(request, crate::network::raft::CatalogRequest::Project { .. })));
+        assert!(!writes.iter().any(|request| matches!(
+            request,
+            crate::network::raft::CatalogRequest::Project { .. }
+        )));
         assert!(writes.iter().any(|request| matches!(request, crate::network::raft::CatalogRequest::Task { payload, .. } if payload["projectId"] == "existing-project")));
     }
 

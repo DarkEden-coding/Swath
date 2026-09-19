@@ -71,6 +71,7 @@ export const TauriCommands = {
   networkApproveJoin: "network_approve_join",
   networkMembership: "network_membership",
   networkPromote: "network_promote",
+  networkDemote: "network_demote",
   networkHealth: "network_health",
   catalogSnapshot: "catalog_snapshot",
   catalogMutate: "catalog_mutate",
@@ -208,6 +209,7 @@ export interface SwathApi {
     approveJoin(networkId: string, enrollmentId: string): Promise<void>;
     membership(networkId: string): Promise<NetworkMember[]>;
     promote(networkId: string, deviceId: string): Promise<void>;
+    demote(networkId: string, deviceId: string): Promise<void>;
     health(networkId: string): Promise<NetworkHealth>;
   };
   catalog: {

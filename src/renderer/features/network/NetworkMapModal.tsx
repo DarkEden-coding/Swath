@@ -13,17 +13,13 @@ interface NetworkMapModalProps {
 const stateColor = {
   running: "#58a6ff",
   available: "#3fb950",
-  offline: "#8b949e",
+  offline: "#d29922",
 } as const;
-
-function shortName(value: string): string {
-  return value.length > 21 ? `${value.slice(0, 19)}…` : value;
-}
 
 function stateLabel(node: NetworkGraphNode): string {
   if (node.state === "running")
     return `${node.running} agent${node.running === 1 ? "" : "s"} running`;
-  return node.state === "available" ? "Available" : "Offline";
+  return node.state === "available" ? "Available" : "Unreachable";
 }
 
 export function NetworkMapModal({ open, onClose }: NetworkMapModalProps): JSX.Element | null {
@@ -33,6 +29,27 @@ export function NetworkMapModal({ open, onClose }: NetworkMapModalProps): JSX.El
   const [members, setMembers] = useState<NetworkMember[]>([]);
   const [health, setHealth] = useState<NetworkHealth | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [changingRole, setChangingRole] = useState<string | null>(null);
+
+  const changeRole = async (deviceId: string, promote: boolean) => {
+    if (!networkId) return;
+    setChangingRole(deviceId);
+    setError(null);
+    try {
+      if (promote) await window.swath.network.promote(networkId, deviceId);
+      else await window.swath.network.demote(networkId, deviceId);
+      const [nextMembers, nextHealth] = await Promise.all([
+        window.swath.network.membership(networkId),
+        window.swath.network.health(networkId),
+      ]);
+      setMembers(nextMembers);
+      setHealth(nextHealth);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setChangingRole(null);
+    }
+  };
 
   useEffect(() => {
     if (!open) return;
@@ -158,23 +175,37 @@ export function NetworkMapModal({ open, onClose }: NetworkMapModalProps): JSX.El
                   const leader = health?.leaderId === node.device.id;
                   return (
                     <g key={node.device.id} transform={`translate(${node.x} ${node.y})`}>
-                      <circle
-                        r="47"
+                      <rect
+                        x="-100"
+                        y="-39"
+                        width="200"
+                        height="78"
+                        rx="13"
                         fill="rgba(13,17,23,0.95)"
                         stroke={color}
-                        strokeWidth="2.5"
+                        strokeWidth="2"
                         filter={node.state === "running" ? "url(#network-glow)" : undefined}
                       />
-                      <circle r="5" cy="-18" fill={color} />
-                      <text y="3" textAnchor="middle" fill="#d0d7de" fontSize="13" fontWeight="600">
-                        {shortName(node.device.displayName)}
+                      <circle r="4" cx="-82" cy="-22" fill={color} />
+                      <text
+                        x="-70"
+                        y="-18"
+                        fill="#8b949e"
+                        fontSize="8.5"
+                        fontWeight="700"
+                        letterSpacing=".8"
+                      >
+                        {node.member?.voter ? "COORDINATOR" : "MESH NODE"}
                       </text>
-                      <text y="21" textAnchor="middle" fill={color} fontSize="10.5">
+                      <text x="-82" y="6" fill="#d0d7de" fontSize="12.5" fontWeight="600">
+                        {node.device.displayName}
+                      </text>
+                      <text x="-82" y="25" fill={color} fontSize="10.5">
                         {stateLabel(node)}
                       </text>
                       {leader ? (
                         <text
-                          y="-59"
+                          y="-51"
                           textAnchor="middle"
                           fill="#58a6ff"
                           fontSize="10"
@@ -217,8 +248,20 @@ export function NetworkMapModal({ open, onClose }: NetworkMapModalProps): JSX.El
                   <span>
                     {node.activeTasks} active task{node.activeTasks === 1 ? "" : "s"}
                   </span>
-                  <span>{node.member?.voter ? "Voter" : "Learner"}</span>
+                  <span>{node.member?.voter ? "Coordinator" : "Mesh node"}</span>
                 </div>
+                <button
+                  type="button"
+                  disabled={changingRole !== null || (!node.member?.voter && !node.healthy)}
+                  onClick={() => void changeRole(node.device.id, !node.member?.voter)}
+                  className="mt-3 rounded-md border border-swath-border px-2.5 py-1 text-[11px] font-medium text-swath-muted hover:border-swath-accent hover:text-swath-accent-strong disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  {changingRole === node.device.id
+                    ? "Updating…"
+                    : node.member?.voter
+                      ? "Use as mesh node"
+                      : "Promote coordinator"}
+                </button>
               </div>
             ))}
           </div>

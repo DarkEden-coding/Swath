@@ -30,6 +30,7 @@ export type RemoteMethod =
   | "network.approveJoin"
   | "network.membership"
   | "network.promote"
+  | "network.demote"
   | "network.health"
   | "catalog.snapshot"
   | "catalog.mutate"

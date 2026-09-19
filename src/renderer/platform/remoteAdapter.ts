@@ -455,6 +455,7 @@ export function createRemoteWebSwath(): SwathApi {
         client.call("network.approveJoin", { networkId, enrollmentId }),
       membership: (networkId) => client.call("network.membership", { networkId }),
       promote: (networkId, deviceId) => client.call("network.promote", { networkId, deviceId }),
+      demote: (networkId, deviceId) => client.call("network.demote", { networkId, deviceId }),
       health: (networkId) => client.call("network.health", { networkId }),
     },
     catalog: {

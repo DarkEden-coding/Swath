@@ -160,6 +160,7 @@ export function createTauriSwath(): SwathApi {
       membership: (networkId) => invoke(TauriCommands.networkMembership, { networkId }),
       promote: (networkId, deviceId) =>
         invoke(TauriCommands.networkPromote, { networkId, deviceId }),
+      demote: (networkId, deviceId) => invoke(TauriCommands.networkDemote, { networkId, deviceId }),
       health: (networkId) => invoke(TauriCommands.networkHealth, { networkId }),
     },
     catalog: {

@@ -145,6 +145,7 @@ pub fn run() {
             commands::network_join_status,
             commands::network_approve_join,
             commands::network_promote,
+            commands::network_demote,
             commands::network_membership,
             commands::network_health,
             commands::catalog_snapshot,

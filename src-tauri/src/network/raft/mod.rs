@@ -153,7 +153,7 @@ impl SqliteStore {
             .query_row(
                 "SELECT payload FROM raft_catalog_state WHERE network_id=?1",
                 params![self.network_id],
-                |r| r.get(0),
+                |r| Ok(r.get_ref(0)?.as_bytes()?.to_vec()),
             )
             .optional()
             .map_err(Self::err)?;

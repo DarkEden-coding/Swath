@@ -1,5 +1,6 @@
 use crate::types::*;
 use crate::{ask_images, config, files, git, migration, network, platform, AppState};
+use futures_util::future::join_all;
 use rusqlite::{params, OptionalExtension};
 use tauri::{AppHandle, Manager, State, Window};
 
@@ -598,7 +599,7 @@ pub async fn network_promote(
                 "networkId": network_id,
                 "deviceId": device_id,
                 "voter": true,
-                "healthy": false
+                "healthy": true
             }),
         },
     )
@@ -611,11 +612,102 @@ pub async fn network_promote(
 }
 
 #[tauri::command]
-pub fn network_membership(
+pub async fn network_demote(
+    state: State<'_, AppState>,
+    network_id: String,
+    device_id: String,
+) -> CommandResult<()> {
+    let conn = network_connection(&state)?;
+    let revision: i64 = conn
+        .query_row(
+            "SELECT revision FROM networks WHERE id=?1 AND tombstoned_at IS NULL",
+            [&network_id],
+            |row| row.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    let mut ids: Vec<u64> = conn.prepare("SELECT r.node_id FROM raft_node_members r JOIN coordinator_members m ON m.network_id=r.network_id AND m.device_id=r.device_id WHERE r.network_id=?1 AND m.voter=1 AND r.device_id!=?2").map_err(|e| e.to_string())?.query_map(params![network_id,device_id], |r| r.get::<_, i64>(0)).map_err(|e| e.to_string())?.collect::<Result<Vec<_>,_>>().map_err(|e| e.to_string())?.into_iter().map(|id| id as u64).collect();
+    ids.sort_unstable();
+    ids.dedup();
+    if ids.is_empty() {
+        return Err("cannot demote the last coordinator".into());
+    }
+    let db = config::db_path_in(state.core.data_dir()).map_err(|e| e.to_string())?;
+    let service = network::raft::CatalogService::open_discovered(
+        db.to_string_lossy(),
+        "local-catalog-command",
+        "http://127.0.0.1:0",
+    )
+    .await
+    .map_err(|e| e.to_string())?
+    .ok_or_else(|| "network_not_found".to_string())?;
+    let response = catalog_write(&state, network::raft::CatalogRequest::Membership {
+        operation_id: format!("demote:{network_id}:{device_id}:{revision}"),
+        expected_revision: revision,
+        payload: serde_json::json!({"networkId":network_id,"deviceId":device_id,"voter":false,"healthy":true}),
+    }).await?;
+    if response.status != "committed" {
+        return Err(response.status);
+    }
+    service
+        .raft()
+        .change_membership(ids)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn network_membership(
     state: State<'_, AppState>,
     network_id: String,
 ) -> CommandResult<Vec<network::Member>> {
-    network::membership(&network_connection(&state)?, &network_id).map_err(|e| e.to_string())
+    let conn = network_connection(&state)?;
+    let members = network::membership(&conn, &network_id).map_err(|e| e.to_string())?;
+    let local_id: Option<String> = conn.query_row("SELECT id FROM devices WHERE network_id=?1 AND enrollment_id='local-device' AND tombstoned_at IS NULL", [&network_id], |row| row.get(0)).optional().map_err(|e|e.to_string())?;
+    let connectors = {
+        let mut statement = conn.prepare("SELECT d.id,c.endpoint,c.credential FROM devices d JOIN device_connectors c ON c.device_id=d.id WHERE d.network_id=?1 AND d.tombstoned_at IS NULL").map_err(|e|e.to_string())?;
+        let rows = statement
+            .query_map([&network_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .map(|(id, endpoint, credential)| (id, (endpoint, credential)))
+            .collect::<std::collections::HashMap<_, _>>();
+        rows
+    };
+    drop(conn);
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(3))
+        .build()
+        .map_err(|e| e.to_string())?;
+    Ok(join_all(members.into_iter().map(|mut member| {
+        let client = client.clone();
+        let local = local_id.as_deref() == Some(member.device_id.as_str());
+        let connector = connectors.get(&member.device_id).cloned();
+        async move {
+            member.healthy = if local {
+                true
+            } else if let Some((endpoint, credential)) = connector {
+                client
+                    .get(format!("{}/api/handshake", endpoint.trim_end_matches('/')))
+                    .bearer_auth(credential)
+                    .send()
+                    .await
+                    .is_ok()
+            } else {
+                false
+            };
+            member
+        }
+    }))
+    .await)
 }
 
 #[tauri::command]
