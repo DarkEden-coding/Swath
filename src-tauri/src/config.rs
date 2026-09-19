@@ -37,6 +37,7 @@ fn connection(app: &AppHandle) -> Result<Connection> {
 pub fn connection_at(file: &std::path::Path) -> Result<Connection> {
     let conn =
         Connection::open(file).with_context(|| format!("failed to open {}", file.display()))?;
+    conn.busy_timeout(std::time::Duration::from_secs(10))?;
     conn.pragma_update(None, "journal_mode", "WAL")?;
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS app_config (

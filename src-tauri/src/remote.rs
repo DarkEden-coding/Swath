@@ -1886,8 +1886,9 @@ async fn dispatch_local(
             .map_err(|e| e.to_string())
         }
         "migration.confirm" => {
-            let raft = open_catalog_raft(&ctx.core, &ctx.token, &ctx.connector_endpoint)
-                .await?
+            let raft = ctx
+                .raft
+                .clone()
                 .ok_or_else(|| "quorum_unavailable".to_string())?;
             let data_dir = ctx.core.data_dir().to_owned();
             let mut conn = config::connection_at(

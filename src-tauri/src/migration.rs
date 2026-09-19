@@ -490,6 +490,16 @@ where
     >,
     I: FnMut(&str, &str, i64, &Path) -> Result<bool>,
 {
+    fn dedup_revision(c: &Connection, operation_id: &str, fallback: i64) -> Result<i64> {
+        Ok(c.query_row(
+            "SELECT CAST(json_extract(request_hash,'$[1]') AS INTEGER) FROM operation_dedup WHERE operation_id=?1",
+            [operation_id],
+            |row| row.get(0),
+        )
+        .optional()?
+        .unwrap_or(fallback))
+    }
+
     if r.operation_id.trim().is_empty() {
         return Err(anyhow!("operationId is required"));
     }
@@ -545,14 +555,7 @@ where
         |x| x.get(0),
     )?;
     let fence_operation = format!("migration:{}", r.operation_id);
-    let fence_revision = c
-        .query_row(
-            "SELECT CAST(json_extract(request_hash,'$[1]') AS INTEGER) FROM operation_dedup WHERE operation_id=?1",
-            [&fence_operation],
-            |row| row.get::<_, i64>(0),
-        )
-        .optional()?
-        .unwrap_or(revision);
+    let fence_revision = dedup_revision(c, &fence_operation, revision)?;
     c.execute("INSERT INTO legacy_import_operations(operation_id,network_id,source_hash,state) VALUES(?1,?2,?3,'importing') ON CONFLICT(operation_id) DO UPDATE SET state='importing',updated_at=strftime('%s','now')", params![r.operation_id,r.network_id,hash])?;
 
     let mut records: Vec<Value> = raw.get("workspaces").and_then(Value::as_array).into_iter().flatten()
@@ -615,8 +618,10 @@ where
                 return Err(anyhow!("mapped project does not exist in this network: {existing_project}"));
             }
         } else {
+            let project_operation = format!("migration:{}:project:{}", r.operation_id, m.project_key);
             let response = write(crate::network::raft::CatalogRequest::Project {
-                operation_id: format!("migration:{}:project:{}", r.operation_id, m.project_key), expected_revision: 0,
+                expected_revision: dedup_revision(c, &project_operation, 0)?,
+                operation_id: project_operation,
                 payload: json!({"action":"create","projectId":project,"networkId":r.network_id,"name":name,"repositorySource":path,"defaultBranch":"main"}),
             }).await.map_err(|e| anyhow!("project import failed for {name}: {}", e.message))?;
             if response.status != "committed" {
@@ -628,14 +633,15 @@ where
             [&project],
             |row| row.get(0),
         ).optional()?.unwrap_or(1);
+        let task_operation = format!("migration:{}:task:{}", r.operation_id, m.task_key);
         let response = write(crate::network::raft::CatalogRequest::Task {
-            operation_id: format!("migration:{}:task:{}", r.operation_id, m.task_key), expected_revision: project_revision,
+            expected_revision: dedup_revision(c, &task_operation, project_revision)?,
+            operation_id: task_operation,
             payload: json!({"action":"create","taskId":task,"projectId":project,"title":name,"deviceId":device,"baseCommit":"legacy","worktreePath":path}),
         }).await.map_err(|e| anyhow!("task import failed for {name}: {}", e.message))?;
         if response.status != "committed" {
             return Err(anyhow!("task import failed for {name}: {}", response.status));
         }
-        let mut task_revision = 1;
         for (pane_index, legacy_pane) in workspace_panes(w).into_iter().enumerate() {
             let kind = legacy_pane
                 .get("kind")
@@ -651,6 +657,12 @@ where
                 .map(str::to_owned)
                 .unwrap_or_else(|| format!("{id}:{pane_index}"));
             let pane = format!("legacy-pane:{}:{}", r.operation_id, source_pane);
+            let pane_operation = format!("migration:{}:pane:{}", r.operation_id, source_pane);
+            let task_revision: i64 = c.query_row(
+                "SELECT revision FROM tasks WHERE id=?1 AND tombstoned_at IS NULL",
+                [&task],
+                |row| row.get(0),
+            ).optional()?.unwrap_or(pane_index as i64 + 1);
             let metadata = legacy_pane
                 .get("metadata")
                 .cloned()
@@ -667,8 +679,8 @@ where
                 .unwrap_or(&source_pane)
                 .to_owned();
             let response = write(crate::network::raft::CatalogRequest::Pane {
-                operation_id: format!("migration:{}:pane:{}", r.operation_id, source_pane),
-                expected_revision: task_revision,
+                expected_revision: dedup_revision(c, &pane_operation, task_revision)?,
+                operation_id: pane_operation,
                 payload: json!({
                     "action":"create",
                     "paneId":pane,
@@ -684,10 +696,21 @@ where
             if response.status != "committed" {
                 return Err(anyhow!("pane import failed for {name}/{source_pane}: {}", response.status));
             }
-            task_revision += 1;
             pane_count += 1;
             if let Some(path) = session_file {
-                if import_session(&task, &pane, 1, Path::new(&path))? {
+                let session_key = format!("pi-session:{path}");
+                let already_imported: bool = c.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM legacy_import_records WHERE operation_id=?1 AND stable_key=?2 AND kind='pi_session_import')",
+                    params![r.operation_id, session_key],
+                    |row| row.get(0),
+                )?;
+                if already_imported {
+                    session_count += 1;
+                } else if import_session(&task, &pane, 1, Path::new(&path))? {
+                    c.execute(
+                        "INSERT OR IGNORE INTO legacy_import_records(operation_id,stable_key,kind,original_json,imported_id) VALUES(?1,?2,'pi_session_import',?3,?4)",
+                        params![r.operation_id, session_key, json!({"path":path}).to_string(), pane],
+                    )?;
                     session_count += 1;
                 }
             }
@@ -699,6 +722,60 @@ where
     }
     for (i, item) in p.unsupported.iter().enumerate() {
         c.execute("INSERT OR IGNORE INTO legacy_import_unsupported(operation_id,stable_key,original_json,reason) VALUES(?1,?2,?3,'unsupported pane retained')",params![r.operation_id,format!("pane:{i}"),item.to_string()])?;
+    }
+    // A crashed import may have committed a prefix of its catalog mutations before its local
+    // operation record could be completed. Once a retry succeeds, hide those superseded tasks
+    // and projects through consensus so every device sees one canonical import.
+    let superseded: Vec<String> = {
+        let mut statement = c.prepare("SELECT operation_id FROM legacy_import_operations WHERE source_hash=?1 AND operation_id<>?2 AND state<>'complete'")?;
+        let rows = statement
+            .query_map(params![hash, r.operation_id], |row| row.get(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows
+    };
+    for old_operation in superseded {
+        let task_prefix = format!("legacy-task:{old_operation}:%");
+        let old_tasks: Vec<(String, i64)> = {
+            let mut statement = c.prepare("SELECT id,revision FROM tasks WHERE id LIKE ?1 AND tombstoned_at IS NULL")?;
+            let rows = statement
+                .query_map([&task_prefix], |row| Ok((row.get(0)?, row.get(1)?)))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            rows
+        };
+        for (task_id, task_revision) in old_tasks {
+            let operation_id = format!("migration:{}:cleanup:{}:task:{}", r.operation_id, old_operation, task_id);
+            let response = write(crate::network::raft::CatalogRequest::Task {
+                expected_revision: dedup_revision(c, &operation_id, task_revision)?,
+                operation_id,
+                payload: json!({"action":"tombstone","taskId":task_id}),
+            }).await.map_err(|e| anyhow!("failed to clean up superseded task: {}", e.message))?;
+            if response.status != "committed" {
+                return Err(anyhow!("failed to clean up superseded task: {}", response.status));
+            }
+        }
+        let project_prefix = format!("legacy-project:{old_operation}:%");
+        let old_projects: Vec<(String, i64)> = {
+            let mut statement = c.prepare("SELECT id,revision FROM projects WHERE id LIKE ?1 AND tombstoned_at IS NULL")?;
+            let rows = statement
+                .query_map([&project_prefix], |row| Ok((row.get(0)?, row.get(1)?)))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            rows
+        };
+        for (project_id, project_revision) in old_projects {
+            let operation_id = format!("migration:{}:cleanup:{}:project:{}", r.operation_id, old_operation, project_id);
+            let response = write(crate::network::raft::CatalogRequest::Project {
+                expected_revision: dedup_revision(c, &operation_id, project_revision)?,
+                operation_id,
+                payload: json!({"action":"tombstone","projectId":project_id}),
+            }).await.map_err(|e| anyhow!("failed to clean up superseded project: {}", e.message))?;
+            if response.status != "committed" {
+                return Err(anyhow!("failed to clean up superseded project: {}", response.status));
+            }
+        }
+        c.execute(
+            "UPDATE legacy_import_operations SET state='complete',result_json=?2,updated_at=strftime('%s','now') WHERE operation_id=?1",
+            params![old_operation, json!({"state":"superseded","supersededBy":r.operation_id}).to_string()],
+        )?;
     }
     let result = json!({"operationId":r.operation_id,"state":"complete","imported":n,"panes":pane_count,"piSessions":session_count,"unsupported":p.unsupported.len()});
     let tx = c.transaction()?;

@@ -135,6 +135,7 @@ pub struct SqliteStore {
 impl SqliteStore {
     pub fn open(path: &str, network_id: impl Into<String>) -> anyhow::Result<Self> {
         let c = Connection::open(path)?;
+        c.busy_timeout(std::time::Duration::from_secs(10))?;
         crate::network::migrate(&c)?;
         crate::task_store::migrate(&c)?;
         c.execute_batch("CREATE TABLE IF NOT EXISTS raft_catalog_state (network_id TEXT PRIMARY KEY, payload BLOB NOT NULL)")?;
