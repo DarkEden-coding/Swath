@@ -59,9 +59,17 @@ pub struct RemoteServerOptions {
     pub token: String,
     #[serde(default)]
     pub tailscale_https: bool,
+    /// Tailscale Serve HTTPS listener reserved for this connector. Keeping this configurable
+    /// prevents Swath from replacing an existing service on the tailnet's default port 443.
+    #[serde(default = "default_tailscale_https_port")]
+    pub tailscale_https_port: u16,
     /// Exact browser origins permitted to use this connector.
     #[serde(default)]
     pub allowed_origins: Vec<String>,
+}
+
+fn default_tailscale_https_port() -> u16 {
+    443
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -305,7 +313,7 @@ impl RemoteServerManager {
             }
         }
         let https_url = if options.tailscale_https {
-            configure_tailscale_serve(options.port)?
+            configure_tailscale_serve(options.port, options.tailscale_https_port)?
         } else {
             None
         };
@@ -398,7 +406,8 @@ impl RemoteServerManager {
                 raft.shutdown().await;
             }
             if server.options.tailscale_https {
-                let _ = run_tailscale(&["serve", "--https=443", "off"]);
+                let serve_port = format!("--https={}", server.options.tailscale_https_port);
+                let _ = run_tailscale(&["serve", serve_port.as_str(), "off"]);
             }
         }
     }
@@ -434,9 +443,16 @@ fn run_tailscale(args: &[&str]) -> Result<Output, String> {
     ))
 }
 
-fn configure_tailscale_serve(port: u16) -> Result<Option<String>, String> {
+fn configure_tailscale_serve(port: u16, https_port: u16) -> Result<Option<String>, String> {
     let target = format!("http://127.0.0.1:{port}");
-    let output = run_tailscale(&["serve", "--bg", "--yes", "--https=443", target.as_str()])?;
+    let serve_port = format!("--https={https_port}");
+    let output = run_tailscale(&[
+        "serve",
+        "--bg",
+        "--yes",
+        serve_port.as_str(),
+        target.as_str(),
+    ])?;
     let message = format!(
         "{}{}",
         String::from_utf8_lossy(&output.stdout),

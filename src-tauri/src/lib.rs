@@ -44,6 +44,10 @@ pub fn headless_options(token: String) -> remote::RemoteServerOptions {
         token,
         tailscale_https: std::env::var("SWATH_CONNECTOR_TAILSCALE_HTTPS")
             .is_ok_and(|v| !matches!(v.as_str(), "0" | "false" | "no")),
+        tailscale_https_port: std::env::var("SWATH_CONNECTOR_TAILSCALE_HTTPS_PORT")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(443),
         allowed_origins: std::env::var("SWATH_CONNECTOR_ALLOWED_ORIGINS")
             .unwrap_or_default()
             .split(',')
