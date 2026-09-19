@@ -530,13 +530,54 @@ fn authorized(headers: &HeaderMap, expected: &str) -> bool {
         || protocol_token(headers).is_some_and(|v| v == expected)
 }
 
-fn peer_authorized(ctx: &ServerContext, headers: &HeaderMap) -> bool {
-    let credential = local_device_id(&ctx.core).and_then(|device_id| {
-        config::connection_at(&config::db_path_in(ctx.core.data_dir()).ok()?).ok()?.query_row(
+/// Returns every catalog-issued capability that currently identifies this device.
+///
+/// `enrollment_credentials` is the source of truth, while `device_connectors` is the
+/// destination capability distributed to peers. During credential repair/rotation those two
+/// replicated rows can briefly differ, so accepting either prevents an otherwise healthy peer
+/// from being locked out while still requiring a capability stored for this exact device.
+fn local_peer_credentials(ctx: &ServerContext) -> Vec<String> {
+    let Some(device_id) = ctx.device_id.clone().or_else(|| local_device_id(&ctx.core)) else {
+        return Vec::new();
+    };
+    let Ok(path) = config::db_path_in(ctx.core.data_dir()) else {
+        return Vec::new();
+    };
+    let Ok(conn) = config::connection_at(&path) else {
+        return Vec::new();
+    };
+    let mut credentials = Vec::new();
+    if let Ok(Some(value)) = conn
+        .query_row(
             "SELECT credential FROM enrollment_credentials WHERE device_id=?1 AND credential IS NOT NULL ORDER BY approved_at DESC LIMIT 1",
-            [device_id], |row| row.get::<_, String>(0)).optional().ok().flatten()
-    });
-    authorized(headers, credential.as_deref().unwrap_or(&ctx.token))
+            [&device_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+    {
+        credentials.push(value);
+    }
+    if let Ok(Some(value)) = conn
+        .query_row(
+            "SELECT credential FROM device_connectors WHERE device_id=?1",
+            [&device_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+    {
+        if !credentials.contains(&value) {
+            credentials.push(value);
+        }
+    }
+    credentials
+}
+
+fn peer_authorized(ctx: &ServerContext, headers: &HeaderMap) -> bool {
+    let credentials = local_peer_credentials(ctx);
+    credentials
+        .iter()
+        .any(|credential| authorized(headers, credential))
+        || (credentials.is_empty() && authorized(headers, &ctx.token))
 }
 
 async fn raft_context(
@@ -546,12 +587,8 @@ async fn raft_context(
     // Raft is intentionally not authenticated by the arbitrary browser connector token.
     // Only the credential issued for this local enrolled device is accepted.
     let credential = bearer(headers);
-    let enrolled = ctx.device_id.clone().or_else(|| local_device_id(&ctx.core)).and_then(|device_id| {
-        config::connection_at(&config::db_path_in(ctx.core.data_dir()).ok()?).ok()?.query_row(
-            "SELECT credential FROM enrollment_credentials WHERE device_id=?1 AND credential IS NOT NULL ORDER BY approved_at DESC LIMIT 1",
-            [device_id], |r| r.get::<_, String>(0)).optional().ok().flatten()
-    });
-    if credential.is_none() || credential != enrolled.as_deref() {
+    let accepted = local_peer_credentials(ctx);
+    if !credential.is_some_and(|value| accepted.iter().any(|item| item == value)) {
         return Err((
             StatusCode::UNAUTHORIZED,
             Json(json!({"error":"unauthorized"})),
@@ -1313,6 +1350,11 @@ async fn dispatch_to_owner(
     // Transfer staging is an authenticated, destination-local storage operation. It is not an
     // executor request and therefore must not be routed back to the current source owner.
     if method == "transfer.stage" {
+        return dispatch_local(ctx, method, params).await;
+    }
+    // Completing a task changes replicated catalog lifecycle only. Routing it to the executor
+    // made the action unnecessarily depend on that machine being reachable and authenticated.
+    if method == "task.rpc" && params.get("op").and_then(Value::as_str) == Some("completeTask") {
         return dispatch_local(ctx, method, params).await;
     }
     let owner = task_device(ctx, method, &params)?;
@@ -2428,6 +2470,24 @@ mod tests {
         }
         conn.execute("INSERT INTO projects(id,network_id,name,default_branch,revision,created_at) VALUES('p','n','p','main',1,0)", []).unwrap();
         conn.execute("INSERT INTO tasks(id,project_id,title,assigned_device_id,lifecycle,revision,created_at) VALUES('t','p','before','b','active',1,0)", []).unwrap();
+    }
+
+    #[test]
+    fn peer_auth_accepts_the_distributed_destination_credential_during_rotation() {
+        let root = std::env::temp_dir().join(format!("swath-peer-auth-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let core = Core::start(root.clone(), ConnectorEvents::new()).unwrap();
+        catalog(&core, "a");
+        let conn = config::connection_at(&config::db_path_in(core.data_dir()).unwrap()).unwrap();
+        conn.execute("INSERT INTO enrollment_credentials(enrollment_id,network_id,device_id,secret,challenge_secret,credential,approved_at,created_at) VALUES('local:a','n','a','s','s','new-credential',1,0)", []).unwrap();
+        conn.execute("INSERT INTO device_connectors(device_id,endpoint,credential) VALUES('a','http://a','distributed-credential')", []).unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            "Bearer distributed-credential".parse().unwrap(),
+        );
+        assert!(peer_authorized(&context(core, "a"), &headers));
+        let _ = fs::remove_dir_all(root);
     }
 
     #[tokio::test]
