@@ -59,9 +59,12 @@ function NoticeRow({ notice, onDismiss }: { notice: PiNotice; onDismiss: (id: st
     dismissRef.current = onDismiss;
   }, [onDismiss]);
   useEffect(() => {
-    const timer = window.setTimeout(() => dismissRef.current(notice.id), 5_000);
+    const timer = window.setTimeout(
+      () => dismissRef.current(notice.id),
+      notice.level === "error" ? 5_000 : 1_000,
+    );
     return () => window.clearTimeout(timer);
-  }, [notice.id]);
+  }, [notice.id, notice.level]);
 
   return (
     <button
@@ -145,6 +148,12 @@ export function PiAgentPane({
         : agent.history.status === "pending"
           ? "Sync pending acknowledgement"
           : "History unavailable";
+  const [showHistoryStatus, setShowHistoryStatus] = useState(true);
+  useEffect(() => {
+    setShowHistoryStatus(true);
+    const timer = window.setTimeout(() => setShowHistoryStatus(false), 1_000);
+    return () => window.clearTimeout(timer);
+  }, [historyLabel]);
   const sessionFile = state.state?.sessionFile;
   useEffect(() => {
     if (sessionFile && sessionFile !== paneMeta?.metadata?.piSessionFile) {
@@ -391,17 +400,19 @@ export function PiAgentPane({
       >
         <div className="pi-agent relative flex h-full min-h-0 overflow-hidden">
           <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-            <div className="shrink-0 border-b border-[var(--pi-border-muted)] px-3 py-1 text-[11px] text-[var(--pi-muted)]">
-              {historyLabel}
-              {agent.history.conflicts.length > 0 ? (
-                <details className="mt-1">
-                  <summary>{agent.history.conflicts.length} replication conflict(s)</summary>
-                  <pre className="max-h-24 overflow-auto">
-                    {JSON.stringify(agent.history.conflicts, null, 2)}
-                  </pre>
-                </details>
-              ) : null}
-            </div>
+            {showHistoryStatus || agent.history.conflicts.length > 0 ? (
+              <div className="shrink-0 border-b border-[var(--pi-border-muted)] px-3 py-1 text-[11px] text-[var(--pi-muted)]">
+                {showHistoryStatus ? historyLabel : null}
+                {agent.history.conflicts.length > 0 ? (
+                  <details className="mt-1">
+                    <summary>{agent.history.conflicts.length} replication conflict(s)</summary>
+                    <pre className="max-h-24 overflow-auto">
+                      {JSON.stringify(agent.history.conflicts, null, 2)}
+                    </pre>
+                  </details>
+                ) : null}
+              </div>
+            ) : null}
             {state.notices.length > 0 ? (
               <div className="shrink-0 border-b border-[var(--pi-border-muted)]">
                 {state.notices.slice(-3).map((notice) => (
