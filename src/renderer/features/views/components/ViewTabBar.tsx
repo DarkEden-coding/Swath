@@ -166,7 +166,14 @@ export function TaskTabBar({
               .filter((pane) => pane.kind === "piAgent")
               .map((pane) => pane.id);
             return (
-              <div key={task.id} className="relative flex h-full shrink-0 items-center">
+              <div
+                key={task.id}
+                className={`relative flex shrink-0 items-center transition-colors ${
+                  expandedTaskId === task.id
+                    ? "h-[calc(100%-6px)] rounded-lg border border-swath-accent/70 bg-swath-accent/[0.04] px-0.5 shadow-[0_0_0_1px_rgba(56,139,253,0.06)]"
+                    : "h-full"
+                }`}
+              >
                 <button
                   role="tab"
                   aria-selected={task.id === activeTaskId}
