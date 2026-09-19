@@ -5,6 +5,7 @@ description = "A lightweight terminal-first project/workspace manager for coding
 authors = ["Generated with ChatGPT"]
 license = "MIT"
 edition = "2021"
+default-run = "swath"
 
 [lib]
 name = "swath_lib"
