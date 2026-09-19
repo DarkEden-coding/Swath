@@ -1300,7 +1300,18 @@ impl CatalogService {
         let conn = Connection::open(&db)?;
         crate::network::migrate(&conn)?;
         conn.execute("INSERT INTO catalog_nodes(network_id,node_id,endpoint,updated_at) VALUES(?1,?2,?3,strftime('%s','now')) ON CONFLICT(network_id) DO UPDATE SET endpoint=excluded.endpoint,updated_at=excluded.updated_at", params![network_id, node_id as i64, endpoint])?;
-        if let Some(device_id) = conn.query_row("SELECT id FROM devices WHERE network_id=?1 AND enrollment_id IN ('local-device', 'joined-device') AND tombstoned_at IS NULL ORDER BY created_at LIMIT 1", [&network_id], |r| r.get::<_, String>(0)).optional()? {
+        let bound_device: Option<String> = conn
+            .query_row(
+                "SELECT device_id FROM raft_node_members WHERE network_id=?1 AND node_id=?2",
+                params![network_id, node_id as i64],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let local_device = match bound_device {
+            Some(device_id) => Some(device_id),
+            None => conn.query_row("SELECT id FROM devices WHERE network_id=?1 AND enrollment_id IN ('local-device', 'joined-device') AND tombstoned_at IS NULL ORDER BY created_at LIMIT 1", [&network_id], |r| r.get::<_, String>(0)).optional()?,
+        };
+        if let Some(device_id) = local_device {
             conn.execute("INSERT INTO raft_node_members(network_id,device_id,node_id,endpoint) VALUES(?1,?2,?3,?4) ON CONFLICT(network_id,device_id) DO UPDATE SET node_id=excluded.node_id,endpoint=excluded.endpoint", params![network_id,device_id,node_id as i64,endpoint])?;
         }
         let bootstrap = conn.query_row(
