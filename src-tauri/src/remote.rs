@@ -1780,7 +1780,7 @@ async fn dispatch_local(
             let network_id = field::<String>(&params, "networkId")?;
             let device_id = field::<String>(&params, "deviceId")?;
             let db = config::db_path_in(ctx.core.data_dir()).map_err(|e| e.to_string())?;
-            let (revision, ids) = {
+            let (revision, ids, target_node, target_endpoint) = {
                 let conn = config::connection_at(&db).map_err(|e| e.to_string())?;
                 let revision: i64 = conn
                     .query_row(
@@ -1800,7 +1800,12 @@ async fn dispatch_local(
                     .collect();
                 ids.sort_unstable();
                 ids.dedup();
-                (revision, ids)
+                let (target_node, target_endpoint): (i64, String) = conn.query_row(
+                    "SELECT node_id,endpoint FROM raft_node_members WHERE network_id=?1 AND device_id=?2",
+                    params![network_id, device_id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                ).map_err(|e| e.to_string())?;
+                (revision, ids, target_node as u64, target_endpoint)
             };
             let catalog = network::raft::CatalogService::open_discovered(
                 db.to_string_lossy(),
@@ -1812,13 +1817,23 @@ async fn dispatch_local(
             .ok_or_else(|| "network_not_found".to_string())?;
             catalog
                 .raft()
+                .trigger_snapshot()
+                .await
+                .map_err(|e| e.to_string())?;
+            catalog
+                .raft()
+                .add_learner(target_node, openraft::BasicNode::new(target_endpoint))
+                .await
+                .map_err(|e| e.to_string())?;
+            catalog
+                .raft()
                 .change_membership(ids)
                 .await
                 .map_err(|e| e.to_string())?;
             let response = catalog.client_write(network::raft::CatalogRequest::Membership {
                 operation_id: format!("promote:{network_id}:{device_id}:{revision}"),
                 expected_revision: revision,
-                payload: json!({"networkId":network_id,"deviceId":device_id,"voter":true,"healthy":false}),
+                payload: json!({"networkId":network_id,"deviceId":device_id,"voter":true,"healthy":true}),
             }).await.map_err(|e|serde_json::to_string(&e).unwrap_or(e.message))?;
             if response.status == "committed" {
                 Ok(Value::Null)

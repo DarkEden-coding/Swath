@@ -590,6 +590,13 @@ pub async fn network_promote(
     .await
     .map_err(|e| e.to_string())?
     .ok_or_else(|| "network_not_found".to_string())?;
+    // Compact first so a newly enrolled or reinstalled peer can catch up from one durable
+    // snapshot instead of replaying the entire catalog history.
+    service
+        .raft()
+        .trigger_snapshot()
+        .await
+        .map_err(|e| e.to_string())?;
     // add_learner waits for catch-up; commit the SQL voter projection only after Raft agrees.
     service
         .raft()

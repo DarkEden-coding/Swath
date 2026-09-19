@@ -1056,12 +1056,17 @@ impl RaftStateMachine<CatalogType> for SqliteStore {
         m: &SnapshotMeta<NodeId, BasicNode>,
         x: Box<Cursor<Vec<u8>>>,
     ) -> Result<(), StorageError<NodeId>> {
-        let b: SnapshotBlob = serde_json::from_slice(&x.into_inner()).map_err(Self::err)?;
+        let payload = x.into_inner();
+        let b: SnapshotBlob = serde_json::from_slice(&payload).map_err(Self::err)?;
         self.put_state(&State {
             last: m.last_log_id,
             membership: m.last_membership.clone(),
             data: b.data,
         })?;
+        self.db.lock().unwrap().execute(
+            "INSERT INTO raft_snapshots(network_id,last_log_index,last_log_term,payload,created_at) VALUES(?1,?2,?3,?4,strftime('%s','now')) ON CONFLICT(network_id) DO UPDATE SET last_log_index=excluded.last_log_index,last_log_term=excluded.last_log_term,payload=excluded.payload,created_at=excluded.created_at",
+            params![self.network_id,m.last_log_id.map(|x|x.index as i64).unwrap_or(0),m.last_log_id.map(|x|x.leader_id.term as i64).unwrap_or(0),payload],
+        ).map_err(Self::err)?;
         Ok(())
     }
     async fn get_current_snapshot(
@@ -1414,9 +1419,12 @@ impl CatalogRaft {
         let store = SqliteStore::open(path, network_id)?;
         let cfg = Arc::new(
             Config {
-                election_timeout_min: 100,
-                election_timeout_max: 200,
-                heartbeat_interval: 50,
+                // Production peers communicate across the device mesh. Sub-second election
+                // windows make a newly promoted remote voter pre-empt the healthy leader before
+                // the joint-consensus entry can commit.
+                election_timeout_min: 3_000,
+                election_timeout_max: 5_000,
+                heartbeat_interval: 500,
                 ..Config::default()
             }
             .validate()?,
@@ -1491,10 +1499,27 @@ impl CatalogRaft {
     > {
         self.raft.change_membership(m, true).await
     }
+    pub async fn remove_learners(
+        &self,
+        ids: impl IntoIterator<Item = NodeId>,
+    ) -> Result<
+        openraft::raft::ClientWriteResponse<CatalogType>,
+        openraft::error::RaftError<NodeId, openraft::error::ClientWriteError<NodeId, BasicNode>>,
+    > {
+        self.raft
+            .change_membership(
+                openraft::ChangeMembers::RemoveNodes(ids.into_iter().collect()),
+                true,
+            )
+            .await
+    }
     pub fn metrics(
         &self,
     ) -> tokio::sync::watch::Receiver<openraft::RaftMetrics<NodeId, BasicNode>> {
         self.raft.metrics()
+    }
+    pub async fn trigger_snapshot(&self) -> Result<(), openraft::error::Fatal<NodeId>> {
+        self.raft.trigger().snapshot().await
     }
     pub async fn append(
         &self,
