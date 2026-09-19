@@ -189,7 +189,7 @@ function ProjectItem({
     <div
       role="listitem"
       onContextMenu={openMenu}
-      className={`relative my-0.5 flex min-w-0 items-center rounded-md border ${grouped ? "ml-4 border-l-swath-accent/30" : "border-transparent"} ${active ? "bg-[rgba(56,139,253,0.12)] text-swath-text" : "text-swath-muted hover:bg-swath-bg"}`}
+      className={`relative my-0.5 flex min-w-0 items-center rounded-md border border-transparent ${grouped ? "ml-4 before:absolute before:-left-px before:inset-y-1 before:w-px before:bg-swath-accent/30 before:content-['']" : ""} ${active ? "bg-[rgba(56,139,253,0.12)] text-swath-text" : "text-swath-muted hover:bg-swath-bg"}`}
     >
       {group ? (
         <button
