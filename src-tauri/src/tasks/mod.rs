@@ -186,6 +186,7 @@ pub async fn rpc(data_dir: &Path, request: Value) -> Result<Value, String> {
         "createTask" => create_task(data_dir, &request).await,
         "listCatalog" => list_catalog(data_dir, &request),
         "renameProject" => rename_project(data_dir, &request).await,
+        "removeProject" => remove_project(data_dir, &request).await,
         "renameTask" => rename_task(data_dir, &request).await,
         "reorderTasks" => reorder_tasks(data_dir, &request).await,
         "completeTask" => complete_task(data_dir, &request).await,
@@ -414,6 +415,19 @@ fn list_catalog(data_dir: &Path, request: &Value) -> Result<Value, String> {
 
 async fn rename_project(data_dir: &Path, request: &Value) -> Result<Value, String> {
     mutate_name(data_dir, "projects", "project", "projectId", request).await
+}
+async fn remove_project(data_dir: &Path, request: &Value) -> Result<Value, String> {
+    let project = field(request, "projectId")?;
+    let conn = catalog_connection(data_dir)?;
+    catalog_write(
+        data_dir,
+        request,
+        "project",
+        revision(&conn, "projects", project)?,
+        json!({"action":"tombstone","projectId":project}),
+    )
+    .await?;
+    Ok(json!({"ok":true}))
 }
 async fn rename_task(data_dir: &Path, request: &Value) -> Result<Value, String> {
     mutate_name(data_dir, "tasks", "task", "taskId", request).await

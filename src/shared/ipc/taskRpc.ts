@@ -9,6 +9,7 @@ export type TaskRpcRequest =
     }
   | { op: "listCatalog"; networkId: string }
   | { op: "renameProject"; projectId: string; name: string }
+  | { op: "removeProject"; projectId: string }
   | { op: "renameTask"; taskId: string; title: string }
   | { op: "reorderTasks"; projectId: string; taskIds: string[] }
   | { op: "completeTask"; taskId: string }
@@ -73,6 +74,10 @@ export function parseTaskRpcRequest(raw: unknown): TaskRpcRequest | null {
     const projectId = text(raw.projectId),
       name = text(raw.name);
     return projectId && name ? { op: raw.op, projectId, name } : null;
+  }
+  if (raw.op === "removeProject") {
+    const projectId = text(raw.projectId);
+    return projectId ? { op: raw.op, projectId } : null;
   }
   if (raw.op === "renameTask") {
     const taskId = text(raw.taskId),

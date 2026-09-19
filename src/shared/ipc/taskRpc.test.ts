@@ -17,5 +17,9 @@ describe("task RPC validation", () => {
       taskId: "t",
       paneIds: ["a", "b"],
     });
+    expect(parseTaskRpcRequest({ op: "removeProject", projectId: "p" })).toEqual({
+      op: "removeProject",
+      projectId: "p",
+    });
   });
 });

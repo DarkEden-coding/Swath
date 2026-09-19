@@ -111,6 +111,7 @@ export function TaskTabBar({
   onSelect,
   onSelectView,
   onCreatePane,
+  piOnly = false,
   onCreate,
   onHistory,
 }: {
@@ -126,6 +127,7 @@ export function TaskTabBar({
   onSelect: (id: string) => void;
   onSelectView: (id: string) => void;
   onCreatePane: (taskId: string, kind: string) => void;
+  piOnly?: boolean;
   onCreate: () => void;
   onHistory: () => void;
 }): JSX.Element {
@@ -226,12 +228,14 @@ export function TaskTabBar({
                       {paneMenuTaskId === task.id ? (
                         <div className="absolute right-0 top-[calc(100%+4px)] z-[150] min-w-44 rounded-md border border-swath-border bg-swath-panel p-1 shadow-swath-float">
                           {(
-                            [
-                              ["terminal", "Terminal"],
-                              ["piAgent", "Pi Agent"],
-                              ["gitManager", "Source Control"],
-                              ["fileBrowser", "Files"],
-                            ] as const
+                            (piOnly
+                              ? [["piAgent", "Pi Agent"]]
+                              : [
+                                  ["terminal", "Terminal"],
+                                  ["piAgent", "Pi Agent"],
+                                  ["gitManager", "Source Control"],
+                                  ["fileBrowser", "Files"],
+                                ]) as readonly (readonly [PaneKind, string])[]
                           ).map(([kind, label]) => (
                             <button
                               key={kind}

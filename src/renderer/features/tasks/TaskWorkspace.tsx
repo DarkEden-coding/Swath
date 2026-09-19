@@ -480,6 +480,7 @@ export function TaskWorkspace(): JSX.Element {
               setActiveViewIds((current) => ({ ...current, [taskId]: `task-view:${paneId}` }));
           })
         }
+        piOnly={legacyWorkspace?.isGroupRoot === true}
         onCreate={() => setCreateOpen(true)}
         onHistory={() => setHistoryOpen(true)}
       />
