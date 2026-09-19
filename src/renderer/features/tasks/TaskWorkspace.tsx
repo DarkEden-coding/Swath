@@ -11,7 +11,29 @@ export function taskRendererProjection(
   panes: { id: string; kind: string; title: string | null; sessionId?: string | null }[],
   cwd: string,
   focusedPaneId?: string | null,
+  legacyWorkspace?: Workspace | null,
+  activeViewId?: string | null,
 ): { workspace: Workspace; view: WorkspaceView } {
+  if (legacyWorkspace?.views.length) {
+    const paneIds = new Map(panes.map((pane) => [pane.id.split(":").at(-1) ?? pane.id, pane.id]));
+    const remap = (node: LayoutNode): LayoutNode => {
+      if (node.type === "pane") return { ...node, id: paneIds.get(node.id) ?? node.id };
+      return { ...node, first: remap(node.first), second: remap(node.second) };
+    };
+    const views = legacyWorkspace.views.map((view) => ({ ...view, layout: remap(view.layout) }));
+    const view = views.find((item) => item.id === activeViewId) ?? views[0]!;
+    return {
+      workspace: {
+        ...legacyWorkspace,
+        id: `task:${task.id}`,
+        name: task.title,
+        path: cwd,
+        views,
+        activeViewId: view.id,
+      },
+      view,
+    };
+  }
   const leaves = panes.map((pane) => ({
     type: "pane" as const,
     id: pane.id,
@@ -319,6 +341,7 @@ export function TaskWorkspace(): JSX.Element {
   const [historyOpen, setHistoryOpen] = useState(false);
   const [transferOpen, setTransferOpen] = useState(false);
   const [cleanup, setCleanup] = useState<{ token: string; preview: unknown } | null>(null);
+  const [activeViewIds, setActiveViewIds] = useState<Record<string, string>>({});
   const [taskPaths, setTaskPaths] = useState<Record<string, string>>({});
   const projectTasks = catalog.tasks.filter((task) => task.projectId === local.activeProjectId);
   const task =
@@ -339,6 +362,15 @@ export function TaskWorkspace(): JSX.Element {
     );
   }, [catalog.panes, local.historicalTaskId, local.paneOrderByTask, task]);
   const cwd = task ? taskPaths[task.id] : undefined;
+  const legacyWorkspace = useMemo(
+    () =>
+      task
+        ? (useConfigStore
+            .getState()
+            .config?.workspaces.find((workspace) => task.id.includes(workspace.id)) ?? null)
+        : null,
+    [task],
+  );
   useEffect(() => {
     if (!task || local.historicalTaskId) return;
     let active = true;
@@ -351,8 +383,18 @@ export function TaskWorkspace(): JSX.Element {
     };
   }, [task, local.historicalTaskId]);
   const projection = useMemo(
-    () => (task ? taskRendererProjection(task, panes, cwd ?? "", local.focusedPaneId) : null),
-    [task, panes, cwd, local.focusedPaneId],
+    () =>
+      task
+        ? taskRendererProjection(
+            task,
+            panes,
+            cwd ?? "",
+            local.focusedPaneId,
+            legacyWorkspace,
+            activeViewIds[task.id],
+          )
+        : null,
+    [task, panes, cwd, local.focusedPaneId, legacyWorkspace, activeViewIds],
   );
   // Keep this object stable: Pi history hydration is keyed by this context.
   const taskExecution = useMemo(
@@ -375,7 +417,15 @@ export function TaskWorkspace(): JSX.Element {
       <TaskTabBar
         tasks={projectTasks}
         activeTaskId={local.activeTaskId}
+        views={(projection?.workspace.views ?? []).map((view) => ({
+          id: view.id,
+          title: view.title,
+        }))}
+        activeViewId={projection?.view.id ?? null}
         onSelect={(id) => selectTask(id)}
+        onSelectView={(id) =>
+          task && setActiveViewIds((current) => ({ ...current, [task.id]: id }))
+        }
         onCreate={() => setCreateOpen(true)}
         onHistory={() => setHistoryOpen(true)}
       />

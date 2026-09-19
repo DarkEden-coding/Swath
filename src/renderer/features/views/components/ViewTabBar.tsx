@@ -106,13 +106,19 @@ function tabTypeIcon(kind: PaneKind): JSX.Element {
 export function TaskTabBar({
   tasks,
   activeTaskId,
+  views,
+  activeViewId,
   onSelect,
+  onSelectView,
   onCreate,
   onHistory,
 }: {
   tasks: Array<{ id: string; title: string; lifecycle: "active" | "completed" }>;
   activeTaskId: string | null;
+  views: Array<{ id: string; title: string }>;
+  activeViewId: string | null;
   onSelect: (id: string) => void;
+  onSelectView: (id: string) => void;
   onCreate: () => void;
   onHistory: () => void;
 }): JSX.Element {
@@ -130,19 +136,32 @@ export function TaskTabBar({
       role="tablist"
       aria-label="Tasks in this project"
     >
-      {tasks
-        .filter((task) => task.lifecycle === "active")
-        .map((task) => (
-          <button
-            key={task.id}
-            role="tab"
-            aria-selected={task.id === activeTaskId}
-            onClick={() => onSelect(task.id)}
-            className={`max-w-52 shrink-0 truncate rounded px-3 py-1 text-sm ${task.id === activeTaskId ? "bg-swath-bg text-swath-text" : "text-swath-muted hover:bg-swath-bg"}`}
-          >
-            {task.title}
-          </button>
-        ))}
+      <select
+        aria-label="Task group"
+        value={activeTaskId ?? ""}
+        onChange={(event) => onSelect(event.target.value)}
+        className="max-w-44 shrink-0 rounded border border-swath-border bg-swath-bg px-2 py-1 text-sm text-swath-text"
+      >
+        {tasks
+          .filter((task) => task.lifecycle === "active")
+          .map((task) => (
+            <option key={task.id} value={task.id}>
+              {task.title}
+            </option>
+          ))}
+      </select>
+      <span className="mx-1 h-5 w-px shrink-0 bg-swath-border" aria-hidden />
+      {views.map((view) => (
+        <button
+          key={view.id}
+          role="tab"
+          aria-selected={view.id === activeViewId}
+          onClick={() => onSelectView(view.id)}
+          className={`max-w-52 shrink-0 truncate rounded px-3 py-1 text-sm ${view.id === activeViewId ? "bg-swath-bg text-swath-text" : "text-swath-muted hover:bg-swath-bg"}`}
+        >
+          {view.title}
+        </button>
+      ))}
       <button
         onClick={onCreate}
         className="ml-auto shrink-0 rounded px-2 py-1 text-swath-accent hover:bg-swath-bg"
