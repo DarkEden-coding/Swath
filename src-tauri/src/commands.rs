@@ -571,6 +571,13 @@ pub async fn network_promote(
             |row| row.get(0),
         )
         .map_err(|e| e.to_string())?;
+    let (target_node, target_endpoint): (i64, String) = conn
+        .query_row(
+            "SELECT node_id,endpoint FROM raft_node_members WHERE network_id=?1 AND device_id=?2",
+            params![network_id, device_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(|e| e.to_string())?;
     let mut ids: Vec<u64> = conn.prepare("SELECT r.node_id FROM raft_node_members r JOIN coordinator_members m ON m.network_id=r.network_id AND m.device_id=r.device_id WHERE r.network_id=?1 AND (m.voter=1 OR r.device_id=?2)").map_err(|e| e.to_string())?.query_map(params![network_id,device_id], |r| r.get::<_, i64>(0)).map_err(|e| e.to_string())?.collect::<Result<Vec<_>,_>>().map_err(|e| e.to_string())?.into_iter().map(|id| id as u64).collect();
     ids.sort_unstable();
     ids.dedup();
@@ -584,6 +591,14 @@ pub async fn network_promote(
     .map_err(|e| e.to_string())?
     .ok_or_else(|| "network_not_found".to_string())?;
     // add_learner waits for catch-up; commit the SQL voter projection only after Raft agrees.
+    service
+        .raft()
+        .add_learner(
+            target_node as u64,
+            openraft::BasicNode::new(target_endpoint),
+        )
+        .await
+        .map_err(|e| e.to_string())?;
     service
         .raft()
         .change_membership(ids)
