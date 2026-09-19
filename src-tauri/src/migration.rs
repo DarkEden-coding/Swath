@@ -615,15 +615,26 @@ where
                 return Err(anyhow!("mapped project does not exist in this network: {existing_project}"));
             }
         } else {
-            write(crate::network::raft::CatalogRequest::Project {
+            let response = write(crate::network::raft::CatalogRequest::Project {
                 operation_id: format!("migration:{}:project:{}", r.operation_id, m.project_key), expected_revision: 0,
                 payload: json!({"action":"create","projectId":project,"networkId":r.network_id,"name":name,"repositorySource":path,"defaultBranch":"main"}),
             }).await.map_err(|e| anyhow!("project import failed for {name}: {}", e.message))?;
+            if response.status != "committed" {
+                return Err(anyhow!("project import failed for {name}: {}", response.status));
+            }
         }
-        write(crate::network::raft::CatalogRequest::Task {
-            operation_id: format!("migration:{}:task:{}", r.operation_id, m.task_key), expected_revision: 1,
+        let project_revision: i64 = c.query_row(
+            "SELECT revision FROM projects WHERE id=?1 AND tombstoned_at IS NULL",
+            [&project],
+            |row| row.get(0),
+        ).optional()?.unwrap_or(1);
+        let response = write(crate::network::raft::CatalogRequest::Task {
+            operation_id: format!("migration:{}:task:{}", r.operation_id, m.task_key), expected_revision: project_revision,
             payload: json!({"action":"create","taskId":task,"projectId":project,"title":name,"deviceId":device,"baseCommit":"legacy","worktreePath":path}),
         }).await.map_err(|e| anyhow!("task import failed for {name}: {}", e.message))?;
+        if response.status != "committed" {
+            return Err(anyhow!("task import failed for {name}: {}", response.status));
+        }
         let mut task_revision = 1;
         for (pane_index, legacy_pane) in workspace_panes(w).into_iter().enumerate() {
             let kind = legacy_pane
@@ -655,7 +666,7 @@ where
                 .filter(|value| !value.is_empty())
                 .unwrap_or(&source_pane)
                 .to_owned();
-            write(crate::network::raft::CatalogRequest::Pane {
+            let response = write(crate::network::raft::CatalogRequest::Pane {
                 operation_id: format!("migration:{}:pane:{}", r.operation_id, source_pane),
                 expected_revision: task_revision,
                 payload: json!({
@@ -670,6 +681,9 @@ where
             })
             .await
             .map_err(|e| anyhow!("pane import failed for {name}/{source_pane}: {}", e.message))?;
+            if response.status != "committed" {
+                return Err(anyhow!("pane import failed for {name}/{source_pane}: {}", response.status));
+            }
             task_revision += 1;
             pane_count += 1;
             if let Some(path) = session_file {
