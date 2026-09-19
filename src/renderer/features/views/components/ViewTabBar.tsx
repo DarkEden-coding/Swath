@@ -4,7 +4,6 @@ import type { PaneKind, ViewHealth, Workspace } from "../../../../shared/types";
 import * as appActions from "../../../app/appActions";
 import {
   IconChevronsLeft,
-  IconChevronDown,
   IconClose,
   IconFolder,
   IconGitBranch,
@@ -131,7 +130,8 @@ export function TaskTabBar({
   onHistory: () => void;
 }): JSX.Element {
   const [titleBarTarget, setTitleBarTarget] = useState<HTMLElement | null>(null);
-  const [expandedTaskId, setExpandedTaskId] = useState<string | null>(null);
+  const [expandedTaskId, setExpandedTaskId] = useState<string | null>(activeTaskId);
+  const [paneMenuTaskId, setPaneMenuTaskId] = useState<string | null>(null);
   const activity = usePiActivityStore((state) => state.activity);
   const menuRef = useRef<HTMLDivElement>(null);
 
@@ -139,9 +139,12 @@ export function TaskTabBar({
     setTitleBarTarget(document.getElementById("swath-titlebar-tasks"));
   }, []);
   useEffect(() => {
+    if (activeTaskId) setExpandedTaskId(activeTaskId);
+  }, [activeTaskId]);
+  useEffect(() => {
     const close = (event: MouseEvent) => {
       if (menuRef.current && !menuRef.current.contains(event.target as Node))
-        setExpandedTaskId(null);
+        setPaneMenuTaskId(null);
     };
     document.addEventListener("mousedown", close);
     return () => document.removeEventListener("mousedown", close);
@@ -163,32 +166,23 @@ export function TaskTabBar({
               .filter((pane) => pane.kind === "piAgent")
               .map((pane) => pane.id);
             return (
-              <div key={task.id} className="relative flex h-full items-center">
+              <div key={task.id} className="relative flex h-full shrink-0 items-center">
                 <button
                   role="tab"
                   aria-selected={task.id === activeTaskId}
-                  onClick={() => onSelect(task.id)}
-                  className={`flex max-w-48 items-center gap-2 rounded-l px-3 py-1 text-sm ${task.id === activeTaskId ? "bg-swath-bg text-swath-text" : "text-swath-muted hover:bg-swath-bg"}`}
+                  aria-expanded={expandedTaskId === task.id}
+                  onClick={() => {
+                    onSelect(task.id);
+                    setExpandedTaskId(task.id);
+                    setPaneMenuTaskId(null);
+                  }}
+                  className={`flex max-w-48 items-center gap-2 rounded px-3 py-1 text-sm ${task.id === activeTaskId ? "bg-swath-bg text-swath-text" : "text-swath-muted hover:bg-swath-bg"}`}
                 >
                   {piIds.length ? <PiTabIndicator paneIds={piIds} /> : null}
                   <span className="truncate">{task.title}</span>
                 </button>
-                <button
-                  aria-label={`Expand ${task.title}`}
-                  aria-expanded={expandedTaskId === task.id}
-                  onClick={() => {
-                    onSelect(task.id);
-                    setExpandedTaskId((current) => (current === task.id ? null : task.id));
-                  }}
-                  className={`grid h-7 w-7 place-items-center rounded-r ${task.id === activeTaskId ? "bg-swath-bg text-swath-text" : "text-swath-muted hover:bg-swath-bg"}`}
-                >
-                  <IconChevronDown width={14} height={14} />
-                </button>
                 {expandedTaskId === task.id ? (
-                  <div className="absolute left-0 top-[calc(100%+4px)] z-[150] min-w-64 rounded-md border border-swath-border bg-swath-panel p-1 shadow-swath-float">
-                    <div className="px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-swath-muted-2">
-                      Tabs & panes
-                    </div>
+                  <div className="ml-1 flex h-full items-center gap-1 border-l border-swath-border pl-1">
                     {(task.id === activeTaskId
                       ? views
                       : task.panes.map((pane, index) => ({
@@ -203,36 +197,48 @@ export function TaskTabBar({
                           onClick={() => {
                             onSelect(task.id);
                             onSelectView(view.id);
-                            setExpandedTaskId(null);
                           }}
-                          className={`flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs ${task.id === activeTaskId && view.id === activeViewId ? "bg-swath-bg text-swath-text" : "text-swath-muted hover:bg-swath-bg"}`}
+                          className={`flex max-w-44 shrink-0 items-center gap-2 rounded px-2.5 py-1 text-left text-xs ${task.id === activeTaskId && view.id === activeViewId ? "bg-swath-accent/15 text-swath-text" : "text-swath-muted hover:bg-swath-bg"}`}
                         >
                           {pane?.kind === "piAgent" ? <PiTabIndicator paneIds={[pane.id]} /> : null}
                           <span className="truncate">{view.title}</span>
                         </button>
                       );
                     })}
-                    <div className="my-1 h-px bg-swath-border" />
-                    <div className="grid grid-cols-2 gap-1 p-1">
-                      {(
-                        [
-                          ["terminal", "Terminal"],
-                          ["piAgent", "Pi Agent"],
-                          ["gitManager", "Source Control"],
-                          ["fileBrowser", "Files"],
-                        ] as const
-                      ).map(([kind, label]) => (
-                        <button
-                          key={kind}
-                          onClick={() => {
-                            onCreatePane(task.id, kind);
-                            setExpandedTaskId(null);
-                          }}
-                          className="rounded border border-swath-border px-2 py-1 text-xs text-swath-muted hover:bg-swath-bg hover:text-swath-text"
-                        >
-                          + {label}
-                        </button>
-                      ))}
+                    <div className="relative flex h-full items-center">
+                      <button
+                        aria-label={`Add tab to ${task.title}`}
+                        aria-expanded={paneMenuTaskId === task.id}
+                        onClick={() =>
+                          setPaneMenuTaskId((current) => (current === task.id ? null : task.id))
+                        }
+                        className="grid size-7 shrink-0 place-items-center rounded text-base text-swath-accent hover:bg-swath-bg"
+                      >
+                        <IconPlus width={15} height={15} />
+                      </button>
+                      {paneMenuTaskId === task.id ? (
+                        <div className="absolute right-0 top-[calc(100%+4px)] z-[150] min-w-44 rounded-md border border-swath-border bg-swath-panel p-1 shadow-swath-float">
+                          {(
+                            [
+                              ["terminal", "Terminal"],
+                              ["piAgent", "Pi Agent"],
+                              ["gitManager", "Source Control"],
+                              ["fileBrowser", "Files"],
+                            ] as const
+                          ).map(([kind, label]) => (
+                            <button
+                              key={kind}
+                              onClick={() => {
+                                onCreatePane(task.id, kind);
+                                setPaneMenuTaskId(null);
+                              }}
+                              className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs text-swath-muted hover:bg-swath-bg hover:text-swath-text"
+                            >
+                              {tabTypeIcon(kind)} {label}
+                            </button>
+                          ))}
+                        </div>
+                      ) : null}
                     </div>
                   </div>
                 ) : null}
