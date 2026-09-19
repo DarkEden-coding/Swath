@@ -102,6 +102,9 @@ pub fn migrate(conn: &Connection) -> Result<()> {
            PRIMARY KEY(client_id)
          );",
     )?;
+    // Repair catalogs created before provisioning projected executor-local paths. Imported tasks
+    // and already-ready tasks both retain the authoritative path in task_provisioning.
+    conn.execute_batch("INSERT OR IGNORE INTO device_task_paths(task_id,device_id,path,revision) SELECT t.id,t.assigned_device_id,q.worktree_path,1 FROM tasks t JOIN task_provisioning q ON q.task_id=t.id WHERE q.worktree_path IS NOT NULL AND q.worktree_path != '';")?;
     Ok(())
 }
 

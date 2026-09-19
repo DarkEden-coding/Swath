@@ -718,6 +718,7 @@ fn task_mutation(
                 return Ok(invalid("invalid_request"));
             };
             if tx.execute("UPDATE task_provisioning SET state='ready',last_error=NULL,ready_at=strftime('%s','now') WHERE task_id=?1 AND state IN ('pending','failed')",params![id])?==0{return Ok(conflict())};
+            tx.execute("INSERT INTO device_task_paths(task_id,device_id,path,revision) SELECT t.id,t.assigned_device_id,q.worktree_path,1 FROM tasks t JOIN task_provisioning q ON q.task_id=t.id WHERE t.id=?1 ON CONFLICT(task_id,device_id) DO UPDATE SET path=excluded.path,revision=device_task_paths.revision+1", params![id])?;
             if tx.execute("INSERT INTO task_panes(id,task_id,kind,title,revision,created_at) VALUES(?1,?2,'piAgent','Pi',1,strftime('%s','now'))",params![pane,id])?==0{return Ok(conflict())};
             let n=tx.execute("UPDATE tasks SET pane_order=json_array(?1),revision=revision+1 WHERE id=?2 AND revision=?3 AND tombstoned_at IS NULL",params![pane,id,expected])?;
             Ok(if n == 0 {

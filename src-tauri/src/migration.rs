@@ -656,13 +656,13 @@ where
         let id = w.get("id").and_then(Value::as_str).unwrap_or("");
         let Some(m) = maps.get(id) else { continue };
         let path = w.get("path").and_then(Value::as_str).unwrap_or("");
-        let (identity, state) = git(path);
+        let (_identity, state) = git(path);
         let project = format!("legacy-project:{}:{}", r.operation_id, m.project_key);
         let task = format!("legacy-task:{}:{}", r.operation_id, m.task_key);
         let name = w.get("name").and_then(Value::as_str).unwrap_or("Untitled");
         write(crate::network::raft::CatalogRequest::Project {
             operation_id: format!("migration:{}:project:{}", r.operation_id, m.project_key), expected_revision: 0,
-            payload: json!({"action":"create","projectId":project,"networkId":r.network_id,"name":name,"repositorySource":identity,"defaultBranch":"main"}),
+            payload: json!({"action":"create","projectId":project,"networkId":r.network_id,"name":name,"repositorySource":path,"defaultBranch":"main"}),
         }).await.map_err(|e| anyhow!("project import failed for {name}: {}", e.message))?;
         write(crate::network::raft::CatalogRequest::Task {
             operation_id: format!("migration:{}:task:{}", r.operation_id, m.task_key), expected_revision: 1,

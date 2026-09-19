@@ -251,11 +251,18 @@ async fn create_task(data_dir: &Path, request: &Value) -> Result<Value, String> 
     let device_id = field(request, "deviceId")?;
     let conn = config::connection_at(&config::db_path_in(data_dir).map_err(|e| e.to_string())?)
         .map_err(|e| e.to_string())?;
-    let (source, branch): (String, String) = match conn.query_row("SELECT repository_source,default_branch FROM projects WHERE id=?1 AND tombstoned_at IS NULL", params![project_id], |r| Ok((r.get::<_, Option<String>>(0)?.unwrap_or_default(),r.get(1)?))) {
+    let (mut source, branch): (String, String) = match conn.query_row("SELECT repository_source,default_branch FROM projects WHERE id=?1 AND tombstoned_at IS NULL", params![project_id], |r| Ok((r.get::<_, Option<String>>(0)?.unwrap_or_default(),r.get(1)?))) {
         Ok(row) if !row.0.is_empty() => row,
         Ok(_) => return Ok(error("project_source_missing", "Project has no Git source; import it first")),
         Err(_) => return Ok(error("project_not_found", "Project does not exist")),
     };
+    // Early legacy imports stored a fingerprint (for example `git:.git`) instead of a usable
+    // source path. Their imported task still owns the original path, so recover it here.
+    if source.starts_with("git:") || source.starts_with("path:") {
+        if let Some(path) = conn.query_row("SELECT q.worktree_path FROM tasks t JOIN task_provisioning q ON q.task_id=t.id WHERE t.project_id=?1 AND q.worktree_path IS NOT NULL ORDER BY t.created_at LIMIT 1", [project_id], |row| row.get::<_, String>(0)).optional().map_err(|e| e.to_string())? {
+            if Path::new(&path).is_dir() { source = path; }
+        }
+    }
     let known = conn
         .query_row(
             "SELECT 1 FROM devices WHERE id=?1 AND tombstoned_at IS NULL",

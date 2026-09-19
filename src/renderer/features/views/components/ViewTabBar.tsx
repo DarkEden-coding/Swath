@@ -4,6 +4,7 @@ import type { PaneKind, ViewHealth, Workspace } from "../../../../shared/types";
 import * as appActions from "../../../app/appActions";
 import {
   IconChevronsLeft,
+  IconChevronDown,
   IconClose,
   IconFolder,
   IconGitBranch,
@@ -110,22 +111,40 @@ export function TaskTabBar({
   activeViewId,
   onSelect,
   onSelectView,
+  onCreatePane,
   onCreate,
   onHistory,
 }: {
-  tasks: Array<{ id: string; title: string; lifecycle: "active" | "completed" }>;
+  tasks: Array<{
+    id: string;
+    title: string;
+    lifecycle: "active" | "completed";
+    panes: Array<{ id: string; kind: string; title: string | null }>;
+  }>;
   activeTaskId: string | null;
   views: Array<{ id: string; title: string }>;
   activeViewId: string | null;
   onSelect: (id: string) => void;
   onSelectView: (id: string) => void;
+  onCreatePane: (taskId: string, kind: string) => void;
   onCreate: () => void;
   onHistory: () => void;
 }): JSX.Element {
   const [titleBarTarget, setTitleBarTarget] = useState<HTMLElement | null>(null);
+  const [expandedTaskId, setExpandedTaskId] = useState<string | null>(null);
+  const activity = usePiActivityStore((state) => state.activity);
+  const menuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     setTitleBarTarget(document.getElementById("swath-titlebar-tasks"));
+  }, []);
+  useEffect(() => {
+    const close = (event: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(event.target as Node))
+        setExpandedTaskId(null);
+    };
+    document.addEventListener("mousedown", close);
+    return () => document.removeEventListener("mousedown", close);
   }, []);
 
   if (!titleBarTarget) return <></>;
@@ -136,32 +155,91 @@ export function TaskTabBar({
       role="tablist"
       aria-label="Tasks in this project"
     >
-      <select
-        aria-label="Task group"
-        value={activeTaskId ?? ""}
-        onChange={(event) => onSelect(event.target.value)}
-        className="max-w-44 shrink-0 rounded border border-swath-border bg-swath-bg px-2 py-1 text-sm text-swath-text"
-      >
+      <div ref={menuRef} className="flex h-full items-center gap-1">
         {tasks
           .filter((task) => task.lifecycle === "active")
-          .map((task) => (
-            <option key={task.id} value={task.id}>
-              {task.title}
-            </option>
-          ))}
-      </select>
-      <span className="mx-1 h-5 w-px shrink-0 bg-swath-border" aria-hidden />
-      {views.map((view) => (
-        <button
-          key={view.id}
-          role="tab"
-          aria-selected={view.id === activeViewId}
-          onClick={() => onSelectView(view.id)}
-          className={`max-w-52 shrink-0 truncate rounded px-3 py-1 text-sm ${view.id === activeViewId ? "bg-swath-bg text-swath-text" : "text-swath-muted hover:bg-swath-bg"}`}
-        >
-          {view.title}
-        </button>
-      ))}
+          .map((task) => {
+            const piIds = task.panes
+              .filter((pane) => pane.kind === "piAgent")
+              .map((pane) => pane.id);
+            return (
+              <div key={task.id} className="relative flex h-full items-center">
+                <button
+                  role="tab"
+                  aria-selected={task.id === activeTaskId}
+                  onClick={() => onSelect(task.id)}
+                  className={`flex max-w-48 items-center gap-2 rounded-l px-3 py-1 text-sm ${task.id === activeTaskId ? "bg-swath-bg text-swath-text" : "text-swath-muted hover:bg-swath-bg"}`}
+                >
+                  {piIds.length ? <PiTabIndicator paneIds={piIds} /> : null}
+                  <span className="truncate">{task.title}</span>
+                </button>
+                <button
+                  aria-label={`Expand ${task.title}`}
+                  aria-expanded={expandedTaskId === task.id}
+                  onClick={() => {
+                    onSelect(task.id);
+                    setExpandedTaskId((current) => (current === task.id ? null : task.id));
+                  }}
+                  className={`grid h-7 w-7 place-items-center rounded-r ${task.id === activeTaskId ? "bg-swath-bg text-swath-text" : "text-swath-muted hover:bg-swath-bg"}`}
+                >
+                  <IconChevronDown width={14} height={14} />
+                </button>
+                {expandedTaskId === task.id ? (
+                  <div className="absolute left-0 top-[calc(100%+4px)] z-[150] min-w-64 rounded-md border border-swath-border bg-swath-panel p-1 shadow-swath-float">
+                    <div className="px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-swath-muted-2">
+                      Tabs & panes
+                    </div>
+                    {(task.id === activeTaskId
+                      ? views
+                      : task.panes.map((pane, index) => ({
+                          id: `task-view:${pane.id}`,
+                          title: pane.title ?? `${pane.kind} ${index + 1}`,
+                        }))
+                    ).map((view) => {
+                      const pane = task.panes.find((item) => view.id.endsWith(item.id));
+                      return (
+                        <button
+                          key={view.id}
+                          onClick={() => {
+                            onSelect(task.id);
+                            onSelectView(view.id);
+                            setExpandedTaskId(null);
+                          }}
+                          className={`flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs ${task.id === activeTaskId && view.id === activeViewId ? "bg-swath-bg text-swath-text" : "text-swath-muted hover:bg-swath-bg"}`}
+                        >
+                          {pane?.kind === "piAgent" ? <PiTabIndicator paneIds={[pane.id]} /> : null}
+                          <span className="truncate">{view.title}</span>
+                        </button>
+                      );
+                    })}
+                    <div className="my-1 h-px bg-swath-border" />
+                    <div className="grid grid-cols-2 gap-1 p-1">
+                      {(
+                        [
+                          ["terminal", "Terminal"],
+                          ["piAgent", "Pi Agent"],
+                          ["gitManager", "Source Control"],
+                          ["fileBrowser", "Files"],
+                        ] as const
+                      ).map(([kind, label]) => (
+                        <button
+                          key={kind}
+                          onClick={() => {
+                            onCreatePane(task.id, kind);
+                            setExpandedTaskId(null);
+                          }}
+                          className="rounded border border-swath-border px-2 py-1 text-xs text-swath-muted hover:bg-swath-bg hover:text-swath-text"
+                        >
+                          + {label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+            );
+          })}
+      </div>
       <button
         onClick={onCreate}
         className="ml-auto shrink-0 rounded px-2 py-1 text-swath-accent hover:bg-swath-bg"

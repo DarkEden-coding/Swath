@@ -17,7 +17,7 @@ describe("taskRendererProjection", () => {
     });
   });
 
-  it("keeps a restored local pane order and focus without a worktree", () => {
+  it("keeps panes as separate tabs and restores the focused tab", () => {
     const { workspace, view } = taskRendererProjection(
       { id: "done", title: "Done" },
       [
@@ -29,11 +29,8 @@ describe("taskRendererProjection", () => {
     );
     expect(workspace.path).toBe("");
     expect(view.activePaneId).toBe("pi-1");
-    expect(view.layout).toMatchObject({
-      type: "split",
-      first: { id: "pi-2", metadata: { piSessionFile: "session-2" } },
-      second: { id: "pi-1", metadata: { piSessionFile: "session-1" } },
-    });
+    expect(workspace.views).toHaveLength(2);
+    expect(view.layout).toMatchObject({ id: "pi-1", metadata: { piSessionFile: "session-1" } });
   });
 
   it("restores legacy views as tabs inside one task and preserves split layouts", () => {

@@ -4,6 +4,8 @@ import { useTaskStore } from "../../state/taskStore";
 import { useConfigStore } from "../../state/configStore";
 import { LayoutRenderer } from "../panes/components/LayoutRenderer";
 import { TaskTabBar } from "../views/components/ViewTabBar";
+import { collectPanes } from "../../domain/layout/layoutTree";
+import { setViewedPanes } from "../tabTypes/piAgent/piActivity";
 
 /** Minimal legacy shape required by registered pane renderers; task ownership stays separate. */
 export function taskRendererProjection(
@@ -20,7 +22,29 @@ export function taskRendererProjection(
       if (node.type === "pane") return { ...node, id: paneIds.get(node.id) ?? node.id };
       return { ...node, first: remap(node.first), second: remap(node.second) };
     };
-    const views = legacyWorkspace.views.map((view) => ({ ...view, layout: remap(view.layout) }));
+    const restored = legacyWorkspace.views.map((view) => ({ ...view, layout: remap(view.layout) }));
+    const restoredPaneIds = new Set(
+      restored.flatMap((view) => collectPanes(view.layout).map((p) => p.id)),
+    );
+    const added = panes
+      .filter((pane) => !restoredPaneIds.has(pane.id))
+      .map((pane, index): WorkspaceView => ({
+        id: `task-view:${pane.id}`,
+        type: "workspace-view",
+        title:
+          pane.title ??
+          `${pane.kind === "piAgent" ? "Pi Agent" : pane.kind === "gitManager" ? "Source Control" : pane.kind === "fileBrowser" ? "Files" : "Terminal"} ${restored.length + index + 1}`,
+        layout: {
+          type: "pane",
+          id: pane.id,
+          kind: pane.kind as PaneKind,
+          title: pane.title ?? undefined,
+          cwd,
+          ...(pane.sessionId ? { metadata: { piSessionFile: pane.sessionId } } : {}),
+        },
+        activePaneId: pane.id,
+      }));
+    const views = [...restored, ...added];
     const view = views.find((item) => item.id === activeViewId) ?? views[0]!;
     return {
       workspace: {
@@ -42,31 +66,34 @@ export function taskRendererProjection(
     cwd,
     ...(pane.sessionId ? { metadata: { piSessionFile: pane.sessionId } } : {}),
   }));
-  const layout = leaves.slice(1).reduce<LayoutNode>(
-    (first, second, index) => ({
-      type: "split",
-      id: `${task.id}:split:${index}`,
-      direction: "vertical",
-      ratio: 0.5,
-      first,
-      second,
-    }),
-    leaves[0] ?? { type: "pane", id: `${task.id}:empty`, kind: "terminal", cwd },
-  );
-  const view: WorkspaceView = {
-    id: `task:${task.id}`,
+  const views: WorkspaceView[] = leaves.map((pane, index) => ({
+    id: `task-view:${pane.id}`,
     type: "workspace-view",
-    title: task.title,
-    layout,
-    activePaneId:
-      leaves.find((pane) => pane.id === focusedPaneId)?.id ?? leaves[0]?.id ?? `${task.id}:empty`,
-  };
+    title:
+      panes[index]?.title ??
+      `${pane.kind === "piAgent" ? "Pi Agent" : pane.kind === "gitManager" ? "Source Control" : pane.kind === "fileBrowser" ? "Files" : "Terminal"} ${index + 1}`,
+    layout: pane,
+    activePaneId: pane.id,
+  }));
+  if (!views.length) {
+    const empty = { type: "pane" as const, id: `${task.id}:empty`, kind: "terminal" as const, cwd };
+    views.push({
+      id: `task-view:${empty.id}`,
+      type: "workspace-view",
+      title: "Terminal 1",
+      layout: empty,
+      activePaneId: empty.id,
+    });
+  }
+  const view =
+    views.find((item) => item.id === activeViewId || item.activePaneId === focusedPaneId) ??
+    views[0]!;
   return {
     workspace: {
       id: `task:${task.id}`,
       name: task.title,
       path: cwd,
-      views: [view],
+      views,
       activeViewId: view.id,
       createdAt: 0,
       updatedAt: 0,
@@ -113,12 +140,18 @@ export function CreateTaskDialog({ onClose }: { onClose: () => void }): JSX.Elem
             })
             .then((reply) => {
               if (!rpcOk(reply)) {
-                setError("Unable to create task");
+                const detail =
+                  reply && typeof reply === "object" && "message" in reply
+                    ? String((reply as { message?: unknown }).message ?? "")
+                    : "";
+                setError(detail || "Unable to create task");
                 return;
               }
               return refresh().then(onClose);
             })
-            .catch(() => setError("Unable to create task"));
+            .catch((reason) =>
+              setError(reason instanceof Error ? reason.message : "Unable to create task"),
+            );
         }}
       >
         <h2 className="mb-3 text-sm font-semibold text-swath-text">Create task</h2>
@@ -396,6 +429,15 @@ export function TaskWorkspace(): JSX.Element {
         : null,
     [task, panes, cwd, local.focusedPaneId, legacyWorkspace, activeViewIds],
   );
+  useEffect(() => {
+    setViewedPanes(
+      projection
+        ? collectPanes(projection.view.layout)
+            .filter((pane) => pane.kind === "piAgent")
+            .map((pane) => pane.id)
+        : [],
+    );
+  }, [projection]);
   // Keep this object stable: Pi history hydration is keyed by this context.
   const taskExecution = useMemo(
     () =>
@@ -415,7 +457,10 @@ export function TaskWorkspace(): JSX.Element {
   return (
     <div className="grid h-full min-h-0 grid-rows-[1fr] bg-swath-bg">
       <TaskTabBar
-        tasks={projectTasks}
+        tasks={projectTasks.map((item) => ({
+          ...item,
+          panes: catalog.panes.filter((pane) => pane.taskId === item.id),
+        }))}
         activeTaskId={local.activeTaskId}
         views={(projection?.workspace.views ?? []).map((view) => ({
           id: view.id,
@@ -425,6 +470,15 @@ export function TaskWorkspace(): JSX.Element {
         onSelect={(id) => selectTask(id)}
         onSelectView={(id) =>
           task && setActiveViewIds((current) => ({ ...current, [task.id]: id }))
+        }
+        onCreatePane={(taskId, kind) =>
+          void window.swath.tasks.rpc({ op: "createPane", taskId, kind }).then(async (reply) => {
+            if (!rpcOk(reply)) return;
+            await refresh();
+            const paneId = (reply as { paneId?: string }).paneId;
+            if (paneId)
+              setActiveViewIds((current) => ({ ...current, [taskId]: `task-view:${paneId}` }));
+          })
         }
         onCreate={() => setCreateOpen(true)}
         onHistory={() => setHistoryOpen(true)}
