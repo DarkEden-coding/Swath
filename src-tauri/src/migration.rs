@@ -492,12 +492,23 @@ pub fn preview(c: &Connection, id: &str) -> Result<Preview> {
             pi_sessions: sessions,
         })
     }
+    let mut seen_project_keys = HashMap::<String, usize>::new();
     let suggested_mappings = workspaces
         .iter()
-        .map(|w| Mapping {
-            workspace_id: w.id.clone(),
-            project_key: w.repository_identity.clone(),
-            task_key: w.id.clone(),
+        .map(|w| {
+            let occurrence = seen_project_keys
+                .entry(w.repository_identity.clone())
+                .and_modify(|count| *count += 1)
+                .or_insert(1);
+            Mapping {
+                workspace_id: w.id.clone(),
+                project_key: if *occurrence == 1 {
+                    w.repository_identity.clone()
+                } else {
+                    format!("{}#{}", w.repository_identity, w.id)
+                },
+                task_key: w.id.clone(),
+            }
         })
         .collect();
     Ok(Preview {
@@ -591,6 +602,15 @@ where
         params![r.network_id],
         |x| x.get(0),
     )?;
+    let fence_operation = format!("migration:{}", r.operation_id);
+    let fence_revision = c
+        .query_row(
+            "SELECT CAST(json_extract(request_hash,'$[1]') AS INTEGER) FROM operation_dedup WHERE operation_id=?1",
+            [&fence_operation],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()?
+        .unwrap_or(revision);
     c.execute("INSERT INTO legacy_import_operations(operation_id,network_id,source_hash,state) VALUES(?1,?2,?3,'importing') ON CONFLICT(operation_id) DO UPDATE SET state='importing',updated_at=strftime('%s','now')", params![r.operation_id,r.network_id,hash])?;
 
     let mut records: Vec<Value> = raw.get("workspaces").and_then(Value::as_array).into_iter().flatten()
@@ -607,7 +627,9 @@ where
         let prior: Option<String> = c.query_row("SELECT original_json FROM legacy_import_records WHERE stable_key=?1 ORDER BY operation_id LIMIT 1", [key], |row| row.get(0)).optional().unwrap_or(None);
         let Some(prior) = prior else { return true };
         let prior_original = serde_json::from_str::<Value>(&prior).ok().and_then(|v| v.get("original").cloned()).map(|v| v.to_string()).unwrap_or(prior);
-        if prior_original == incoming { return false; }
+        // Keep identical records in the consensus request so a retry produces the exact same
+        // operation hash. The catalog projection itself already inserts them idempotently.
+        if prior_original == incoming { return true; }
         let conflict_id = format!("legacy:{}", key);
         let revision_hash = fingerprint(&json!({"original":prior_original,"incoming":incoming}));
         let _ = c.execute("INSERT OR IGNORE INTO legacy_import_conflicts(stable_key,original_json,incoming_json,revision_hash) VALUES(?1,?2,?3,?4)", params![conflict_id,prior_original,incoming,revision_hash]);
@@ -615,12 +637,12 @@ where
     });
     // This is the migration's consensus fence: no catalog projection is changed before it commits.
     write(crate::network::raft::CatalogRequest::Migration {
-        operation_id: format!("migration:{}", r.operation_id),
-        expected_revision: revision,
+        operation_id: fence_operation,
+        expected_revision: fence_revision,
         payload: json!({"networkId":r.network_id,"batchId":r.operation_id,"records":records}),
     })
     .await
-    .map_err(|e| anyhow!(e.message))?;
+    .map_err(|e| anyhow!("migration catalog fence failed: {}", e.message))?;
 
     let mut n = 0;
     let mut pane_count = 0;
@@ -641,11 +663,11 @@ where
         write(crate::network::raft::CatalogRequest::Project {
             operation_id: format!("migration:{}:project:{}", r.operation_id, m.project_key), expected_revision: 0,
             payload: json!({"action":"create","projectId":project,"networkId":r.network_id,"name":name,"repositorySource":identity,"defaultBranch":"main"}),
-        }).await.map_err(|e| anyhow!(e.message))?;
+        }).await.map_err(|e| anyhow!("project import failed for {name}: {}", e.message))?;
         write(crate::network::raft::CatalogRequest::Task {
             operation_id: format!("migration:{}:task:{}", r.operation_id, m.task_key), expected_revision: 1,
             payload: json!({"action":"create","taskId":task,"projectId":project,"title":name,"deviceId":device,"baseCommit":"legacy","worktreePath":path}),
-        }).await.map_err(|e| anyhow!(e.message))?;
+        }).await.map_err(|e| anyhow!("task import failed for {name}: {}", e.message))?;
         let mut task_revision = 1;
         for (pane_index, legacy_pane) in workspace_panes(w).into_iter().enumerate() {
             let kind = legacy_pane
@@ -691,7 +713,7 @@ where
                 }),
             })
             .await
-            .map_err(|e| anyhow!(e.message))?;
+            .map_err(|e| anyhow!("pane import failed for {name}/{source_pane}: {}", e.message))?;
             task_revision += 1;
             pane_count += 1;
             if let Some(path) = session_file {
@@ -754,6 +776,27 @@ mod tests {
         let migration = status(&c).unwrap();
         assert!(migration.needs_migration);
         assert_eq!(migration.state, "exported");
+    }
+
+    #[test]
+    fn preview_disambiguates_repeated_repository_identities() {
+        let c = database();
+        c.execute(
+            "UPDATE app_config SET json=?1 WHERE id=1",
+            [json!({"workspaces":[
+                {"id":"first","name":"First","path":"/missing","views":[]},
+                {"id":"second","name":"Second","path":"/missing","views":[]}
+            ]})
+            .to_string()],
+        )
+        .unwrap();
+
+        let migration = preview(&c, "op").unwrap();
+        assert_eq!(migration.suggested_mappings[0].project_key, "path:/missing");
+        assert_eq!(
+            migration.suggested_mappings[1].project_key,
+            "path:/missing#second"
+        );
     }
     fn proposal() -> Proposal {
         Proposal {

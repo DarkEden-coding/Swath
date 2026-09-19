@@ -135,7 +135,13 @@ export function NetworkStartupGate({
       });
       onReady(snapshot);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Migration could not be confirmed");
+      setError(
+        cause instanceof Error
+          ? cause.message
+          : typeof cause === "string"
+            ? cause
+            : "Migration could not be confirmed",
+      );
     } finally {
       setBusy(false);
     }

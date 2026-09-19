@@ -234,12 +234,6 @@ export function createHybridSwath(local: SwathApi): SwathApi {
     return id ? (clients.get(id) ?? null) : null;
   }
 
-  // Migration has no task path to encode a connection id; in a browser the enrolled connector
-  // is the serving host, never the in-memory browser fixture.
-  function servingHost(): RemoteClient | null {
-    return clients.values().next().value ?? null;
-  }
-
   function event<T>(
     channel: EventChannel,
     localSubscribe: (callback: T) => () => void,
@@ -317,25 +311,9 @@ export function createHybridSwath(local: SwathApi): SwathApi {
     sync: local.sync,
     network: local.network,
     catalog: local.catalog,
-    migration: {
-      status: () => servingHost()?.call("migration.status") ?? local.migration.status(),
-      preview: (operationId) =>
-        servingHost()?.call("migration.preview", { operationId }) ??
-        local.migration.preview(operationId),
-      confirm: (request) =>
-        servingHost()?.call("migration.confirm", { request }) ?? local.migration.confirm(request),
-      export: () => servingHost()?.call("migration.export") ?? local.migration.export(),
-      conflicts: () => servingHost()?.call("migration.conflicts") ?? local.migration.conflicts(),
-      ensureResolutionJob: (conflictId) =>
-        servingHost()?.call("migration.ensureResolutionJob", { conflictId }) ??
-        local.migration.ensureResolutionJob(conflictId),
-      submitProposal: (proposal) =>
-        servingHost()?.call("migration.submitProposal", { proposal }) ??
-        local.migration.submitProposal(proposal),
-      approveProposal: (approval) =>
-        servingHost()?.call("migration.approveProposal", { approval }) ??
-        local.migration.approveProposal(approval),
-    },
+    // A native installation always migrates its own local legacy database. Configured remote
+    // connections are available for task routing, but must not capture startup migration calls.
+    migration: local.migration,
     remote: {
       connect: async (url, token) => {
         const normalized = normalizeUrl(url);
