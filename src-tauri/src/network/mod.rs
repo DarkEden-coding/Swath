@@ -256,13 +256,16 @@ pub fn catalog_snapshot(conn: &Connection, network_id: &str) -> Result<serde_jso
         params![network_id], |row| row.get::<_, String>(0),
     ).optional().map_err(|e| e.to_string())?.ok_or_else(|| "network_not_found".to_string())?
         .parse().map_err(|e: serde_json::Error| e.to_string())?;
-    let mut statement = conn.prepare("SELECT json_object('id',id,'networkId',network_id,'displayName',display_name,'hostname',hostname,'platform',platform,'enrollmentId',enrollment_id,'revision',revision) FROM devices WHERE network_id=?1 AND tombstoned_at IS NULL").map_err(|e| e.to_string())?;
-    let devices = statement
-        .query_map(params![network_id], |row| row.get::<_, String>(0))
-        .map_err(|e| e.to_string())?
-        .filter_map(std::result::Result::ok)
-        .filter_map(|value| serde_json::from_str(&value).ok())
-        .collect::<Vec<serde_json::Value>>();
+    let devices = {
+        let mut statement = conn.prepare("SELECT json_object('id',id,'networkId',network_id,'displayName',display_name,'hostname',hostname,'platform',platform,'enrollmentId',enrollment_id,'revision',revision) FROM devices WHERE network_id=?1 AND tombstoned_at IS NULL").map_err(|e| e.to_string())?;
+        let devices = statement
+            .query_map(params![network_id], |row| row.get::<_, String>(0))
+            .map_err(|e| e.to_string())?
+            .filter_map(std::result::Result::ok)
+            .filter_map(|value| serde_json::from_str(&value).ok())
+            .collect::<Vec<serde_json::Value>>();
+        devices
+    };
     let members = membership(conn, network_id).map_err(|e| e.to_string())?;
     Ok(serde_json::json!({"network":network,"devices":devices,"members":members}))
 }

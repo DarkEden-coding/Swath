@@ -3,7 +3,9 @@
 export function isTauriRuntime(
   scope: Window | undefined = typeof window === "undefined" ? undefined : window,
 ): boolean {
-  return Boolean(scope && "__TAURI_INTERNALS__" in scope);
+  return Boolean(
+    scope && ("__TAURI_INTERNALS__" in scope || scope.location?.protocol === "tauri:"),
+  );
 }
 
 type NavigatorLike = Pick<Navigator, "platform" | "userAgent">;

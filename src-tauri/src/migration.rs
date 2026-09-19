@@ -101,7 +101,6 @@ pub fn migrate(c: &Connection) -> Result<()> {
     Ok(())
 }
 pub fn status(c: &Connection) -> Result<Status> {
-    migrate(c)?;
     let raw = source(c)?;
     if raw
         .get("workspaces")
@@ -126,7 +125,7 @@ pub fn status(c: &Connection) -> Result<Status> {
         )
         .optional()?;
     Ok(Status {
-        needs_migration: exported.is_none(),
+        needs_migration: true,
         state: if exported.is_some() {
             "exported"
         } else {
@@ -138,7 +137,6 @@ pub fn status(c: &Connection) -> Result<Status> {
 }
 
 pub fn export(c: &Connection) -> Result<Value> {
-    migrate(c)?;
     let raw = source(c)?;
     c.execute("INSERT INTO migration_audit(operation_id,action,detail_json) VALUES('legacy-v2-import','backup_exported',?1)", params![json!({"sourceFingerprint": fingerprint(&raw)}).to_string()])?;
     Ok(json!({"filename":"swath-legacy-backup.json","content":serde_json::to_string_pretty(&raw)?}))
@@ -147,7 +145,6 @@ pub fn export(c: &Connection) -> Result<Value> {
 const CONFLICT_MAX_BYTES: usize = 64 * 1024;
 
 pub fn conflicts(c: &Connection) -> Result<Vec<Conflict>> {
-    migrate(c)?;
     let mut q = c.prepare("SELECT stable_key,original_json,incoming_json,revision_hash,state,resolution_task_id,proposal_json FROM legacy_import_conflicts ORDER BY stable_key")?;
     let rows = q.query_map([], |r| {
         Ok(Conflict {
@@ -395,7 +392,7 @@ fn collect(v: &Value, s: &mut Vec<String>, u: &mut Vec<Value>) -> usize {
                     s.push(x.into())
                 }
             }
-            if !matches!(k, "terminal" | "piAgent" | "browser" | "editor") {
+            if !matches!(k, "terminal" | "piAgent" | "gitManager" | "fileBrowser") {
                 u.push(v.clone())
             };
             1
@@ -407,8 +404,31 @@ fn collect(v: &Value, s: &mut Vec<String>, u: &mut Vec<Value>) -> usize {
         _ => 0,
     }
 }
+
+fn pane_leaves<'a>(value: &'a Value, panes: &mut Vec<&'a Value>) {
+    match value.get("type").and_then(Value::as_str) {
+        Some("pane") => panes.push(value),
+        Some("split") => {
+            pane_leaves(value.get("first").unwrap_or(&Value::Null), panes);
+            pane_leaves(value.get("second").unwrap_or(&Value::Null), panes);
+        }
+        _ => {}
+    }
+}
+
+fn workspace_panes(workspace: &Value) -> Vec<&Value> {
+    let mut panes = Vec::new();
+    for view in workspace
+        .get("views")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        pane_leaves(view.get("layout").unwrap_or(&Value::Null), &mut panes);
+    }
+    panes
+}
 pub fn preview(c: &Connection, id: &str) -> Result<Preview> {
-    migrate(c)?;
     let raw = source(c)?;
     let source_fingerprint = fingerprint(&raw);
     // Preserve an immutable local copy before the user can confirm anything.
@@ -492,23 +512,39 @@ pub fn preview(c: &Connection, id: &str) -> Result<Preview> {
 }
 /// A confirmed mapping is the user's consent to initialize a non-Git source; no source is deleted or pushed.
 pub async fn confirm(
+    data_dir: &Path,
     c: &mut Connection,
     catalog: &crate::network::raft::CatalogService,
     r: ImportRequest,
 ) -> Result<Value> {
-    confirm_with(c, r, |request| catalog.client_write(request)).await
+    confirm_with(
+        c,
+        r,
+        |request| catalog.client_write(request),
+        |task, pane, generation, path| {
+            if !path.is_file() {
+                return Ok(false);
+            }
+            crate::pi_session_store::import_jsonl(data_dir, task, pane, generation, path)
+                .map_err(anyhow::Error::msg)?;
+            Ok(true)
+        },
+    )
+    .await
 }
 
-pub(crate) async fn confirm_with<F, Fut>(
+pub(crate) async fn confirm_with<F, Fut, I>(
     c: &mut Connection,
     r: ImportRequest,
     mut write: F,
+    mut import_session: I,
 ) -> Result<Value>
 where
     F: FnMut(crate::network::raft::CatalogRequest) -> Fut,
     Fut: std::future::Future<
         Output = Result<crate::network::raft::CatalogResponse, crate::network::raft::CatalogError>,
     >,
+    I: FnMut(&str, &str, i64, &Path) -> Result<bool>,
 {
     if r.operation_id.trim().is_empty() {
         return Err(anyhow!("operationId is required"));
@@ -542,13 +578,6 @@ where
         .iter()
         .map(|x| (x.workspace_id.as_str(), x))
         .collect();
-    for group in p.groups.values() {
-        if group.len() > 1 && group.iter().any(|id| !maps.contains_key(id.as_str())) {
-            return Err(anyhow!(
-                "multi-repository group requires explicit mapping for every member"
-            ));
-        }
-    }
     let device: String = c
         .query_row(
             "SELECT d.id FROM devices d LEFT JOIN raft_node_members r ON r.network_id=d.network_id AND r.device_id=d.id LEFT JOIN catalog_nodes c ON c.network_id=d.network_id AND c.node_id=r.node_id WHERE d.network_id=?1 AND d.tombstoned_at IS NULL AND (d.enrollment_id='local-device' OR c.node_id IS NOT NULL) ORDER BY CASE WHEN d.enrollment_id='local-device' THEN 0 ELSE 1 END LIMIT 1",
@@ -594,6 +623,8 @@ where
     .map_err(|e| anyhow!(e.message))?;
 
     let mut n = 0;
+    let mut pane_count = 0;
+    let mut session_count = 0;
     for w in raw
         .get("workspaces")
         .and_then(Value::as_array)
@@ -615,6 +646,60 @@ where
             operation_id: format!("migration:{}:task:{}", r.operation_id, m.task_key), expected_revision: 1,
             payload: json!({"action":"create","taskId":task,"projectId":project,"title":name,"deviceId":device,"baseCommit":"legacy","worktreePath":path}),
         }).await.map_err(|e| anyhow!(e.message))?;
+        let mut task_revision = 1;
+        for (pane_index, legacy_pane) in workspace_panes(w).into_iter().enumerate() {
+            let kind = legacy_pane
+                .get("kind")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            if !matches!(kind, "terminal" | "piAgent" | "gitManager" | "fileBrowser") {
+                continue;
+            }
+            let source_pane = legacy_pane
+                .get("id")
+                .and_then(Value::as_str)
+                .filter(|id| !id.is_empty())
+                .map(str::to_owned)
+                .unwrap_or_else(|| format!("{id}:{pane_index}"));
+            let pane = format!("legacy-pane:{}:{}", r.operation_id, source_pane);
+            let metadata = legacy_pane
+                .get("metadata")
+                .cloned()
+                .unwrap_or_else(|| json!({}));
+            let session_file = metadata
+                .get("piSessionFile")
+                .and_then(Value::as_str)
+                .filter(|path| !path.is_empty())
+                .map(str::to_owned);
+            let session_id = metadata
+                .get("sessionId")
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+                .unwrap_or(&source_pane)
+                .to_owned();
+            write(crate::network::raft::CatalogRequest::Pane {
+                operation_id: format!("migration:{}:pane:{}", r.operation_id, source_pane),
+                expected_revision: task_revision,
+                payload: json!({
+                    "action":"create",
+                    "paneId":pane,
+                    "taskId":task,
+                    "kind":kind,
+                    "title":legacy_pane.get("title").and_then(Value::as_str),
+                    "sessionId":(kind == "piAgent").then_some(session_id),
+                    "metadata":metadata,
+                }),
+            })
+            .await
+            .map_err(|e| anyhow!(e.message))?;
+            task_revision += 1;
+            pane_count += 1;
+            if let Some(path) = session_file {
+                if import_session(&task, &pane, 1, Path::new(&path))? {
+                    session_count += 1;
+                }
+            }
+        }
         if state == "non-git" {
             crate::git::prepare_project_source(path).map_err(|e| anyhow!(e))?;
         }
@@ -623,7 +708,7 @@ where
     for (i, item) in p.unsupported.iter().enumerate() {
         c.execute("INSERT OR IGNORE INTO legacy_import_unsupported(operation_id,stable_key,original_json,reason) VALUES(?1,?2,?3,'unsupported pane retained')",params![r.operation_id,format!("pane:{i}"),item.to_string()])?;
     }
-    let result = json!({"operationId":r.operation_id,"state":"complete","imported":n,"unsupported":p.unsupported.len()});
+    let result = json!({"operationId":r.operation_id,"state":"complete","imported":n,"panes":pane_count,"piSessions":session_count,"unsupported":p.unsupported.len()});
     let tx = c.transaction()?;
     tx.execute("UPDATE legacy_import_operations SET state='complete',result_json=?2,updated_at=strftime('%s','now') WHERE operation_id=?1",params![r.operation_id,result.to_string()])?;
     tx.execute("INSERT INTO migration_audit(operation_id,action,detail_json)VALUES(?1,'import_confirmed',?2)",params![r.operation_id,result.to_string()])?;
@@ -640,6 +725,7 @@ mod tests {
         let c = Connection::open_in_memory().unwrap();
         crate::network::migrate(&c).unwrap();
         crate::task_store::migrate(&c).unwrap();
+        migrate(&c).unwrap();
         c.execute_batch("CREATE TABLE app_config(id INTEGER PRIMARY KEY,json TEXT NOT NULL); INSERT INTO networks(id,name,schema_version,revision,created_at) VALUES('n','N',2,1,0); INSERT INTO devices(id,network_id,display_name,hostname,platform,enrollment_id,revision,created_at) VALUES('d','n','D','d','test','local-device',1,0); INSERT INTO app_config(id,json) VALUES(1,'{\"workspaces\":[{\"id\":\"w\",\"name\":\"W\",\"path\":\"/missing\",\"views\":[]}]}');").unwrap();
         c
     }
@@ -659,6 +745,15 @@ mod tests {
     fn conflict(c: &Connection) {
         migrate(c).unwrap();
         c.execute("INSERT INTO legacy_import_conflicts(stable_key,original_json,incoming_json,revision_hash) VALUES('c','{\"a\":1}','{\"a\":2}','r')", []).unwrap();
+    }
+
+    #[test]
+    fn exporting_backup_does_not_skip_required_import() {
+        let c = database();
+        export(&c).unwrap();
+        let migration = status(&c).unwrap();
+        assert!(migration.needs_migration);
+        assert_eq!(migration.state, "exported");
     }
     fn proposal() -> Proposal {
         Proposal {
@@ -845,6 +940,67 @@ mod tests {
 
     #[tokio::test]
     #[allow(clippy::await_holding_lock)]
+    async fn import_preserves_supported_panes_and_pi_session_files() {
+        let mut c = database();
+        let legacy = json!({"workspaces":[{
+            "id":"w","name":"W","path":"/missing","views":[{"layout":{
+                "type":"split","first":{"type":"pane","id":"terminal","kind":"terminal","metadata":{"cwd":"/missing"}},
+                "second":{"type":"pane","id":"agent","kind":"piAgent","title":"Chat","metadata":{"piSessionFile":"/tmp/chat.jsonl"}}
+            }}]
+        }]});
+        c.execute(
+            "UPDATE app_config SET json=?1 WHERE id=1",
+            [legacy.to_string()],
+        )
+        .unwrap();
+        let mut import_request = request();
+        import_request.source_fingerprint = fingerprint(&source(&c).unwrap());
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let writer = {
+            let calls = calls.clone();
+            move |request| {
+                let calls = calls.clone();
+                async move {
+                    calls.lock().unwrap().push(request);
+                    Ok(committed())
+                }
+            }
+        };
+        let imports = Arc::new(Mutex::new(Vec::new()));
+        let importer = {
+            let imports = imports.clone();
+            move |task: &str, pane: &str, generation, path: &Path| {
+                imports.lock().unwrap().push((
+                    task.to_owned(),
+                    pane.to_owned(),
+                    generation,
+                    path.to_owned(),
+                ));
+                Ok(true)
+            }
+        };
+
+        let result = confirm_with(&mut c, import_request, writer, importer)
+            .await
+            .unwrap();
+        let recorded = calls.lock().unwrap();
+        let pane_kinds: Vec<_> = recorded
+            .iter()
+            .filter_map(|request| match request {
+                crate::network::raft::CatalogRequest::Pane { payload, .. } => {
+                    payload.get("kind").and_then(Value::as_str)
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(pane_kinds, vec!["terminal", "piAgent"]);
+        assert_eq!(imports.lock().unwrap().len(), 1);
+        assert_eq!(result["panes"], 2);
+        assert_eq!(result["piSessions"], 1);
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
     async fn replay_uses_stable_operation_ids() {
         let mut c = database();
         let calls = Arc::new(Mutex::new(Vec::new()));
@@ -859,7 +1015,9 @@ mod tests {
                 })
             }
         };
-        confirm_with(&mut c, request(), writer).await.unwrap();
+        confirm_with(&mut c, request(), writer, |_, _, _, _| Ok(false))
+            .await
+            .unwrap();
         let recorded = calls.lock().unwrap();
         assert!(
             matches!(&recorded[0], crate::network::raft::CatalogRequest::Migration { operation_id, .. } if operation_id == "migration:op")
@@ -874,7 +1032,9 @@ mod tests {
         drop(recorded);
         let writer =
             |r: crate::network::raft::CatalogRequest| async move { panic!("replay wrote {r:?}") };
-        confirm_with(&mut c, request(), writer).await.unwrap();
+        confirm_with(&mut c, request(), writer, |_, _, _, _| Ok(false))
+            .await
+            .unwrap();
         assert_eq!(calls_after_first, 3);
     }
 
@@ -885,10 +1045,15 @@ mod tests {
             code: "quorum_unavailable".into(),
             message: "quorum".into(),
         };
-        assert!(confirm_with(&mut c, request(), |_| {
-            let err = err.clone();
-            async move { Err(err) }
-        })
+        assert!(confirm_with(
+            &mut c,
+            request(),
+            |_| {
+                let err = err.clone();
+                async move { Err(err) }
+            },
+            |_, _, _, _| Ok(false)
+        )
         .await
         .is_err());
         assert_eq!(

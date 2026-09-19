@@ -359,7 +359,17 @@ pub fn network_current(state: State<'_, AppState>) -> CommandResult<Option<serde
         )
         .optional()
         .map_err(|e| e.to_string())?;
-    id.map(|id| catalog_snapshot_at(&conn, &id)).transpose()
+    let Some(id) = id else { return Ok(None) };
+    let mut snapshot = catalog_snapshot_at(&conn, &id)?;
+    let status = migration::status(&conn).map_err(|e| e.to_string())?;
+    if status.needs_migration {
+        let operation_id = status
+            .operation_id
+            .unwrap_or_else(|| "legacy-v2-import".into());
+        let preview = migration::preview(&conn, &operation_id).map_err(|e| e.to_string())?;
+        snapshot["legacyMigration"] = serde_json::to_value(preview).map_err(|e| e.to_string())?;
+    }
+    Ok(Some(snapshot))
 }
 
 #[tauri::command]
@@ -626,10 +636,8 @@ pub fn catalog_snapshot(
 
 #[tauri::command]
 pub fn migration_status(state: State<'_, AppState>) -> CommandResult<serde_json::Value> {
-    serde_json::to_value(
-        migration::status(&network_connection(&state)?).map_err(|e| e.to_string())?,
-    )
-    .map_err(|e| e.to_string())
+    let status = migration::status(&network_connection(&state)?).map_err(|e| e.to_string())?;
+    serde_json::to_value(status).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -716,8 +724,8 @@ pub fn migration_preview(
     operation_id: String,
 ) -> CommandResult<serde_json::Value> {
     let conn = network_connection(&state)?;
-    serde_json::to_value(migration::preview(&conn, &operation_id).map_err(|e| e.to_string())?)
-        .map_err(|e| e.to_string())
+    let preview = migration::preview(&conn, &operation_id).map_err(|e| e.to_string())?;
+    serde_json::to_value(preview).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -735,7 +743,7 @@ pub async fn migration_confirm(
     .map_err(|e| e.to_string())?
     .ok_or_else(|| "network_not_found".to_string())?;
     let mut conn = network_connection(&state)?;
-    migration::confirm(&mut conn, &catalog, request)
+    migration::confirm(state.core.data_dir(), &mut conn, &catalog, request)
         .await
         .map_err(|e| e.to_string())
 }

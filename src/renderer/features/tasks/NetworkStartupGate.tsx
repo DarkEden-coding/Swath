@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type {
   CatalogSnapshot,
   MigrationConflict,
@@ -34,31 +34,37 @@ export function NetworkStartupGate({
   const [migration, setMigration] = useState<MigrationPreview | null>(null);
   const [mappings, setMappings] = useState<MigrationPreview["suggestedMappings"]>([]);
   const [conflicts, setConflicts] = useState<MigrationConflict[]>([]);
+  const checking = useRef(false);
 
   const check = useCallback(async (): Promise<CatalogSnapshot | null> => {
-    setError(null);
+    if (checking.current) return null;
+    checking.current = true;
+    setError("Checking current network…");
     try {
       const current = await window.swath.network.current();
       setSnapshot(current);
       if (current) {
-        const unresolved = (await window.swath.migration.conflicts()).filter(
-          (item) => item.state !== "resolved",
-        );
-        setConflicts(unresolved);
-        const status = await window.swath.migration.status();
-        if (status.needsMigration) {
-          const preview = await window.swath.migration.preview(
-            status.operationId ?? "legacy-v2-import",
-          );
+        const preview = (current as CatalogSnapshot & { legacyMigration?: MigrationPreview })
+          .legacyMigration;
+        if (preview) {
           setMigration(preview);
           setMappings(preview.suggestedMappings);
-        } else onReady(current);
+        } else {
+          const unresolved = (await window.swath.migration.conflicts()).filter(
+            (item) => item.state !== "resolved",
+          );
+          setConflicts(unresolved);
+          if (!unresolved.length) onReady(current);
+        }
       }
+      setError(null);
       return current;
     } catch (cause) {
       setSnapshot(null);
       setError(cause instanceof Error ? cause.message : "Could not check network setup");
       return null;
+    } finally {
+      checking.current = false;
     }
   }, [onReady]);
   useEffect(() => {
@@ -76,7 +82,8 @@ export function NetworkStartupGate({
     setBusy(true);
     setError(null);
     try {
-      onReady(await window.swath.network.initialize(name.trim() || "Swath"));
+      await window.swath.network.initialize(name.trim() || "Swath");
+      await check();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not initialize network");
     } finally {
@@ -114,7 +121,6 @@ export function NetworkStartupGate({
     link.download = backup.filename;
     link.click();
     URL.revokeObjectURL(link.href);
-    if (snapshot) onReady(snapshot);
   };
   const confirmMigration = async (): Promise<void> => {
     if (!snapshot || !migration) return;
@@ -176,64 +182,183 @@ export function NetworkStartupGate({
       />
     );
   if (snapshot && migration)
-    return (
-      <main className="grid h-full place-items-center bg-swath-bg p-6">
-        <section className="w-full max-w-2xl rounded-lg border border-swath-border bg-swath-panel p-6 shadow-swath">
-          <h1 className="text-lg font-semibold text-swath-text">Import legacy workspaces</h1>
-          <p className="mt-2 text-sm text-swath-muted">
-            Review the immutable source fingerprint <code>{migration.sourceFingerprint}</code>.
-            Backup: {migration.backupPath}
-          </p>
-          <div className="mt-4 space-y-3">
-            {migration.workspaces.map((workspace, index) => (
-              <div
-                key={workspace.id}
-                className="rounded border border-swath-border p-3 text-sm text-swath-text"
-              >
-                <div>
-                  {workspace.name} — {workspace.git}; {workspace.panes} panes;{" "}
-                  {workspace.piSessions.length} Pi sessions
+    return (() => {
+      const totalPanes = migration.workspaces.reduce((sum, item) => sum + item.panes, 0);
+      const totalSessions = migration.workspaces.reduce(
+        (sum, item) => sum + item.piSessions.length,
+        0,
+      );
+      const includedWorkspaceIds = new Set(mappings.map((mapping) => mapping.workspaceId));
+      const includedCount = includedWorkspaceIds.size;
+      return (
+        <main className="grid h-full min-h-0 place-items-center overflow-hidden bg-swath-bg p-5">
+          <section className="grid h-[min(820px,calc(100vh-2.5rem))] w-full max-w-5xl grid-rows-[auto_auto_minmax(0,1fr)_auto] overflow-hidden rounded-xl border border-swath-border bg-swath-panel shadow-swath">
+            <header className="border-b border-swath-border/70 px-6 py-5">
+              <h1 className="text-xl font-semibold tracking-tight text-swath-text">
+                Import legacy workspaces
+              </h1>
+              <p className="mt-1 text-sm text-swath-muted">
+                Review each workspace and adjust its target mapping before importing.
+              </p>
+              <div className="mt-4 grid gap-3 text-xs sm:grid-cols-2">
+                <div className="rounded-lg border border-swath-border bg-swath-bg/60 px-3 py-2.5">
+                  <div className="font-medium uppercase tracking-wider text-swath-muted">
+                    Source fingerprint
+                  </div>
+                  <code className="mt-1 block truncate text-sm text-swath-text">
+                    {migration.sourceFingerprint}
+                  </code>
                 </div>
-                <div className="text-xs text-swath-muted">{workspace.repositoryIdentity}</div>
-                <input
-                  aria-label={`${workspace.name} project mapping`}
-                  value={mappings[index]?.projectKey ?? ""}
-                  onChange={(event) =>
-                    setMappings((current) =>
-                      current.map((mapping, i) =>
-                        i === index ? { ...mapping, projectKey: event.target.value } : mapping,
-                      ),
-                    )
-                  }
-                  className="mt-2 w-full rounded border border-swath-border bg-swath-bg p-1"
-                />
+                <div className="rounded-lg border border-swath-border bg-swath-bg/60 px-3 py-2.5">
+                  <div className="font-medium uppercase tracking-wider text-swath-muted">
+                    Backup destination
+                  </div>
+                  <code
+                    className="mt-1 block truncate text-sm text-swath-text"
+                    title={migration.backupPath}
+                  >
+                    {migration.backupPath}
+                  </code>
+                </div>
               </div>
-            ))}
-          </div>
-          <div className="mt-4 flex gap-2">
-            <button
-              disabled={busy}
-              onClick={() => void confirmMigration()}
-              className="rounded bg-swath-accent px-3 py-2 text-sm text-white"
+            </header>
+
+            <div className="grid grid-cols-3 gap-3 border-b border-swath-border/70 px-6 py-3">
+              {[
+                [`${includedCount}/${migration.workspaces.length}`, "Included workspaces"],
+                [totalPanes, "Total panes"],
+                [totalSessions, "Pi sessions"],
+              ].map(([value, label]) => (
+                <div
+                  key={label}
+                  className="rounded-lg border border-swath-border bg-swath-bg/40 px-4 py-2.5"
+                >
+                  <div className="text-lg font-semibold text-swath-text">{value}</div>
+                  <div className="text-xs text-swath-muted">{label}</div>
+                </div>
+              ))}
+            </div>
+
+            <div
+              className="min-h-0 overflow-y-auto px-6 py-4 [scrollbar-gutter:stable]"
+              aria-label="Workspaces to import"
+              tabIndex={0}
             >
-              Approve import
-            </button>
-            <button
-              disabled={busy}
-              onClick={() => void exportBackup()}
-              className="rounded px-3 py-2 text-sm text-swath-muted underline"
-            >
-              Export backup instead
-            </button>
-          </div>
-          {error ? (
-            <p role="alert" className="mt-3 text-xs text-swath-danger">
-              {error}
-            </p>
-          ) : null}
-        </section>
-      </main>
-    );
+              <div className="mb-3 flex items-center justify-between gap-4">
+                <h2 className="text-sm font-semibold text-swath-text">
+                  Workspaces ({migration.workspaces.length})
+                </h2>
+                <span className="text-xs text-swath-muted">Scroll to review all mappings</span>
+              </div>
+              <div className="space-y-2">
+                {migration.workspaces.map((workspace) => {
+                  const included = includedWorkspaceIds.has(workspace.id);
+                  const mapping = mappings.find((item) => item.workspaceId === workspace.id);
+                  return (
+                    <article
+                      key={workspace.id}
+                      className={`grid gap-3 rounded-lg border p-3 text-sm transition-all md:grid-cols-[minmax(0,1fr)_minmax(260px,0.9fr)_auto] md:items-center ${included ? "border-swath-border bg-swath-bg/25 text-swath-text hover:border-swath-muted/60" : "border-swath-border/60 bg-swath-bg/10 text-swath-muted opacity-70"}`}
+                    >
+                      <div className="min-w-0">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <h3 className="truncate font-medium">{workspace.name}</h3>
+                          <span
+                            className={`rounded-full border px-2 py-0.5 text-[11px] font-medium ${workspace.git === "git" ? "border-swath-accent/40 bg-swath-accent/10 text-swath-accent" : "border-swath-border bg-swath-panel text-swath-muted"}`}
+                          >
+                            {workspace.git === "git" ? "Git" : workspace.git}
+                          </span>
+                        </div>
+                        <div className="mt-1 flex flex-wrap gap-x-3 text-xs text-swath-muted">
+                          <span>
+                            {workspace.panes} {workspace.panes === 1 ? "pane" : "panes"}
+                          </span>
+                          <span>
+                            {workspace.piSessions.length} Pi{" "}
+                            {workspace.piSessions.length === 1 ? "session" : "sessions"}
+                          </span>
+                        </div>
+                        <div
+                          className="mt-1 truncate text-xs text-swath-muted"
+                          title={workspace.repositoryIdentity}
+                        >
+                          Source: {workspace.repositoryIdentity}
+                        </div>
+                      </div>
+                      <label className="min-w-0 text-xs font-medium text-swath-muted">
+                        Import to
+                        <input
+                          aria-label={`${workspace.name} project mapping`}
+                          disabled={!included}
+                          value={mapping?.projectKey ?? ""}
+                          onChange={(event) =>
+                            setMappings((current) =>
+                              current.map((item) =>
+                                item.workspaceId === workspace.id
+                                  ? { ...item, projectKey: event.target.value }
+                                  : item,
+                              ),
+                            )
+                          }
+                          className="mt-1.5 w-full rounded-md border border-swath-border bg-swath-bg px-2.5 py-2 text-sm text-swath-text outline-none transition focus:border-swath-accent focus:ring-1 focus:ring-swath-accent/30 disabled:cursor-not-allowed disabled:opacity-50"
+                        />
+                      </label>
+                      <button
+                        type="button"
+                        aria-pressed={!included}
+                        onClick={() =>
+                          setMappings((current) => {
+                            if (included) {
+                              return current.filter((item) => item.workspaceId !== workspace.id);
+                            }
+                            const suggested = migration.suggestedMappings.find(
+                              (item) => item.workspaceId === workspace.id,
+                            );
+                            return suggested ? [...current, suggested] : current;
+                          })
+                        }
+                        className={`rounded-md border px-3 py-2 text-sm font-medium transition ${included ? "border-swath-border text-swath-muted hover:border-swath-danger/60 hover:bg-swath-danger/10 hover:text-swath-danger" : "border-swath-accent/50 bg-swath-accent/10 text-swath-accent hover:bg-swath-accent/20"}`}
+                      >
+                        {included ? "Exclude" : "Include"}
+                      </button>
+                    </article>
+                  );
+                })}
+              </div>
+            </div>
+
+            <footer className="flex items-center justify-between gap-4 border-t border-swath-border bg-swath-panel px-6 py-4">
+              <div className="min-w-0">
+                {error ? (
+                  <p role="alert" className="truncate text-xs text-swath-danger">
+                    {error}
+                  </p>
+                ) : (
+                  <p className="text-xs text-swath-muted">
+                    Your legacy source remains unchanged after import.
+                  </p>
+                )}
+              </div>
+              <div className="flex shrink-0 items-center gap-2">
+                <button
+                  disabled={busy}
+                  onClick={() => void exportBackup()}
+                  className="rounded-md border border-swath-border px-3 py-2 text-sm text-swath-muted transition hover:bg-swath-bg hover:text-swath-text disabled:opacity-50"
+                >
+                  Export backup
+                </button>
+                <button
+                  disabled={busy || includedCount === 0}
+                  onClick={() => void confirmMigration()}
+                  className="rounded-md bg-swath-accent px-4 py-2 text-sm font-medium text-white shadow-sm transition hover:brightness-110 disabled:opacity-50"
+                >
+                  {busy ? "Importing…" : `Approve ${includedCount} workspaces`}
+                </button>
+              </div>
+            </footer>
+          </section>
+        </main>
+      );
+    })();
   return (
     <main className="grid h-full place-items-center bg-swath-bg p-6">
       <section className="w-full max-w-lg rounded-lg border border-swath-border bg-swath-panel p-6 shadow-swath">

@@ -1910,6 +1910,7 @@ async fn dispatch_local(
             let raft = open_catalog_raft(&ctx.core, &ctx.token, &ctx.connector_endpoint)
                 .await?
                 .ok_or_else(|| "quorum_unavailable".to_string())?;
+            let data_dir = ctx.core.data_dir().to_owned();
             let mut conn = config::connection_at(
                 &config::db_path_in(ctx.core.data_dir()).map_err(|e| e.to_string())?,
             )
@@ -1921,18 +1922,30 @@ async fn dispatch_local(
                     .ok_or_else(|| "request is required".to_string())?,
             )
             .map_err(|e| e.to_string())?;
-            migration::confirm_with(&mut conn, request, move |request| {
-                let raft = raft.clone();
-                async move {
-                    raft.client_write(request)
-                        .await
-                        .map(|response| response.data)
-                        .map_err(|error| crate::network::raft::CatalogError {
-                            code: "catalog_unavailable".into(),
-                            message: error.to_string(),
-                        })
-                }
-            })
+            migration::confirm_with(
+                &mut conn,
+                request,
+                move |request| {
+                    let raft = raft.clone();
+                    async move {
+                        raft.client_write(request)
+                            .await
+                            .map(|response| response.data)
+                            .map_err(|error| crate::network::raft::CatalogError {
+                                code: "catalog_unavailable".into(),
+                                message: error.to_string(),
+                            })
+                    }
+                },
+                move |task, pane, generation, path| {
+                    if !path.is_file() {
+                        return Ok(false);
+                    }
+                    crate::pi_session_store::import_jsonl(&data_dir, task, pane, generation, path)
+                        .map_err(anyhow::Error::msg)?;
+                    Ok(true)
+                },
+            )
             .await
             .map_err(|e| e.to_string())
         }
