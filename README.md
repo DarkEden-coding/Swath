@@ -45,6 +45,21 @@ Split panes keep related terminal sessions visible side by side without leaving 
 - Optional confirmation before closing panes.
 - SQLite-backed local config storage.
 
+## Headless executor
+
+Run a connector without a display server:
+
+```sh
+cd src-tauri
+cargo build --no-default-features --bin swath-headless
+SWATH_CONNECTOR_TOKEN='at-least-16-characters' SWATH_DATA_DIR=/var/lib/swath \
+  cargo run --no-default-features --bin swath-headless
+```
+
+CI can verify the package-free Linux target with `cargo build --no-default-features --bin swath-headless`.
+
+Optional `SWATH_CONNECTOR_BIND`, `SWATH_CONNECTOR_PORT`, and `SWATH_CONNECTOR_TAILSCALE_HTTPS=1` configure the connector. The process holds an exclusive lock on `SWATH_DATA_DIR`; a desktop instance using that directory fails rather than starting duplicate shells or Pi processes. Stop the service to terminate its executor children; disconnecting a connector client does not stop them.
+
 ## Tech Stack
 
 - Tauri 2

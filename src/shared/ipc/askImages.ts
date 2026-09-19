@@ -11,6 +11,9 @@ export interface AskImagesRequest {
   cwd: string;
   /** The other folders of the project group, which are as loadable as `cwd` itself. */
   roots?: readonly string[];
+  taskId?: string;
+  paneId?: string;
+  executionGeneration?: number;
 }
 
 /** A successfully decoded image, ready to drop into an `<img src>`. */
@@ -50,7 +53,16 @@ export function parseAskImagesRequest(raw: unknown): AskImagesRequest | null {
   if (!Array.isArray(raw.paths)) return null;
   const paths = raw.paths.filter((entry): entry is string => typeof entry === "string");
   if (paths.length !== raw.paths.length) return null;
-  return { paths, cwd: cwd.trim() };
+  const taskId = stringField(raw, "taskId")?.trim();
+  const paneId = stringField(raw, "paneId")?.trim();
+  const executionGeneration = raw.executionGeneration;
+  return {
+    paths,
+    cwd: cwd.trim(),
+    ...(taskId ? { taskId } : {}),
+    ...(paneId ? { paneId } : {}),
+    ...(typeof executionGeneration === "number" ? { executionGeneration } : {}),
+  };
 }
 
 /** Parses a host response, dropping entries that match neither the loaded nor failed shape. */

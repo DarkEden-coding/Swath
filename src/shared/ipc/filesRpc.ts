@@ -2,11 +2,16 @@
  * Renderer → host file-tree requests. Every `path` is `/`-separated and relative
  * to `cwd`; the empty string is the workspace root.
  */
+export type FilesExecutionTarget = {
+  taskId?: string;
+  executionGeneration?: number;
+  paneId?: string;
+};
 export type FilesRpcRequest =
-  | { op: "list"; cwd: string; path: string }
-  | { op: "readText"; cwd: string; path: string }
-  | { op: "rename"; cwd: string; from: string; to: string }
-  | { op: "trash"; cwd: string; path: string };
+  | (FilesExecutionTarget & { op: "list"; cwd: string; path: string })
+  | (FilesExecutionTarget & { op: "readText"; cwd: string; path: string })
+  | (FilesExecutionTarget & { op: "rename"; cwd: string; from: string; to: string })
+  | (FilesExecutionTarget & { op: "trash"; cwd: string; path: string });
 
 /** One directory entry as returned by `list`. */
 export interface FilesEntry {
@@ -36,16 +41,26 @@ export function parseFilesRpcRequest(raw: unknown): FilesRpcRequest | null {
   if (!isRecord(raw)) return null;
   const cwd = stringField(raw, "cwd")?.trim();
   if (!cwd) return null;
+  const taskId = stringField(raw, "taskId")?.trim();
+  const paneId = stringField(raw, "paneId")?.trim();
+  const executionGeneration = raw.executionGeneration;
+  const target: FilesExecutionTarget = {
+    ...(taskId ? { taskId } : {}),
+    ...(paneId ? { paneId } : {}),
+    ...(typeof executionGeneration === "number" && Number.isInteger(executionGeneration)
+      ? { executionGeneration }
+      : {}),
+  };
   if (raw.op === "list" || raw.op === "readText" || raw.op === "trash") {
     const path = stringField(raw, "path");
     if (path === null) return null;
-    return { op: raw.op, cwd, path: path.trim() };
+    return { op: raw.op, cwd, path: path.trim(), ...target };
   }
   if (raw.op === "rename") {
     const from = stringField(raw, "from")?.trim();
     const to = stringField(raw, "to")?.trim();
     if (!from || !to) return null;
-    return { op: "rename", cwd, from, to };
+    return { op: "rename", cwd, from, to, ...target };
   }
   return null;
 }

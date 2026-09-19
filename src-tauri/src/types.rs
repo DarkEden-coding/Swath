@@ -2,8 +2,23 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 pub const TERMINAL_REPLAY_MAX_BYTES: usize = 512 * 1024;
-pub const TERMINAL_REPLAY_DETACHED_MAX_BYTES: usize = 64 * 1024;
 pub const GIT_RUN_MAX_BUFFER_BYTES: usize = 1024 * 1024;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalInterfaceState {
+    pub interface_id: String,
+    pub active_project_id: Option<String>,
+    pub active_task_id: Option<String>,
+    #[serde(default)]
+    pub historical_task_id: Option<String>,
+    pub focused_pane_id: Option<String>,
+    #[serde(default)]
+    pub task_layouts: HashMap<String, serde_json::Value>,
+    #[serde(default)]
+    pub drafts: HashMap<String, String>,
+    pub revision: i64,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -198,6 +213,13 @@ pub struct ConfirmDialogRequest {
 #[serde(rename_all = "camelCase")]
 pub struct TerminalSessionStartRequest {
     pub session_id: String,
+    /// Executor authority; cwd is resolved from `device_task_paths` and ignored from the client.
+    #[serde(default)]
+    pub task_id: Option<String>,
+    #[serde(default)]
+    pub pane_id: Option<String>,
+    #[serde(default)]
+    pub execution_generation: Option<i64>,
     pub cwd: String,
     pub cols: u16,
     pub rows: u16,
@@ -221,6 +243,14 @@ pub struct PtyResizeRequest {
 #[serde(rename_all = "camelCase")]
 pub struct TerminalSessionAttachRequest {
     pub session_id: String,
+    #[serde(default)]
+    pub task_id: Option<String>,
+    #[serde(default)]
+    pub pane_id: Option<String>,
+    #[serde(default)]
+    pub execution_generation: Option<i64>,
+    #[serde(default)]
+    pub viewer_id: Option<String>,
     pub cwd: String,
     pub cols: u16,
     pub rows: u16,
@@ -238,6 +268,9 @@ impl From<TerminalSessionAttachRequest> for TerminalSessionStartRequest {
     fn from(value: TerminalSessionAttachRequest) -> Self {
         Self {
             session_id: value.session_id,
+            task_id: value.task_id,
+            pane_id: value.pane_id,
+            execution_generation: value.execution_generation,
             cwd: value.cwd,
             cols: value.cols,
             rows: value.rows,

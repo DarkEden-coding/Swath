@@ -3,6 +3,10 @@ import type { ShellProfile } from "./settings";
 
 export interface TerminalSessionStartRequest {
   sessionId: string;
+  /** Required for task execution. The executor resolves cwd from its task path record. */
+  taskId?: string;
+  paneId?: string;
+  executionGeneration?: number;
   cwd: string;
   cols: number;
   rows: number;

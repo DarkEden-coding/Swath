@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type DragEvent } from "react";
+import { useCallback, useEffect, useMemo, useState, type DragEvent } from "react";
 import { isLoadedAskImage, parseAskImagesResponse, type FilesEntry } from "../../../../shared/ipc";
 import * as appActions from "../../../app/appActions";
 import { findPane } from "../../../domain/layout/layoutTree";
@@ -39,11 +39,26 @@ type Preview =
  * Workspace-rooted file tree with rename, drag-to-move, and trash. All paths are
  * relative to the pane cwd and containment is enforced host-side.
  */
-export function FileBrowserPane({ workspace, view, pane }: PaneComponentProps): JSX.Element {
+export function FileBrowserPane({
+  workspace,
+  view,
+  pane,
+  taskExecution,
+}: PaneComponentProps): JSX.Element {
   const activePaneId = useUiStore((state) => state.activePaneId);
   const paneId = pane.id;
   const paneMeta = findPane(view.layout, paneId);
-  const cwd = (paneMeta?.cwd ?? workspace.path).trim() || workspace.path.trim();
+  const cwd =
+    taskExecution?.cwd ?? ((paneMeta?.cwd ?? workspace.path).trim() || workspace.path.trim());
+  const target = useMemo(
+    () =>
+      taskExecution && {
+        taskId: taskExecution.taskId,
+        paneId,
+        executionGeneration: taskExecution.executionGeneration,
+      },
+    [paneId, taskExecution],
+  );
   const headerTitle = paneMeta?.title ?? paneMeta?.metadata?.title ?? "Files";
   const isActive = activePaneId === paneId || view.activePaneId === paneId;
 
@@ -64,7 +79,7 @@ export function FileBrowserPane({ workspace, view, pane }: PaneComponentProps): 
       const results = await Promise.all(
         dirs.map(async (dir) => {
           try {
-            return [dir, await filesClient.list(cwd, dir)] as const;
+            return [dir, await filesClient.list(cwd, dir, target)] as const;
           } catch (loadError) {
             if (dir === ROOT) throw loadError;
             return [dir, null] as const;
@@ -80,7 +95,7 @@ export function FileBrowserPane({ workspace, view, pane }: PaneComponentProps): 
         return next;
       });
     },
-    [cwd],
+    [cwd, target],
   );
 
   /** Reloads every directory currently visible in the tree. */
@@ -126,12 +141,12 @@ export function FileBrowserPane({ workspace, view, pane }: PaneComponentProps): 
     const name = value.trim();
     if (!isValidName(name) || name === baseName(path)) return;
     const dir = parentPath(path);
-    await mutate(() => filesClient.rename(cwd, path, joinPath(dir, name)), [dir]);
+    await mutate(() => filesClient.rename(cwd, path, joinPath(dir, name), target), [dir]);
   };
 
   const moveEntry = async (source: string, targetDir: string): Promise<void> => {
     await mutate(
-      () => filesClient.rename(cwd, source, joinPath(targetDir, baseName(source))),
+      () => filesClient.rename(cwd, source, joinPath(targetDir, baseName(source)), target),
       [parentPath(source), targetDir],
     );
   };
@@ -143,7 +158,7 @@ export function FileBrowserPane({ workspace, view, pane }: PaneComponentProps): 
       confirmLabel: "Move to Trash",
     });
     if (!confirmed) return;
-    await mutate(() => filesClient.trash(cwd, path), [parentPath(path)]);
+    await mutate(() => filesClient.trash(cwd, path, target), [parentPath(path)]);
   };
 
   /** Opens directories and previews supported files in this pane. */
@@ -156,7 +171,7 @@ export function FileBrowserPane({ workspace, view, pane }: PaneComponentProps): 
 
     setPreview({ status: "loading", path: entry.path });
     const load = isImagePath(entry.path)
-      ? window.swath.askImages.load({ cwd, paths: [entry.path] }).then((raw) => {
+      ? window.swath.askImages.load({ cwd, paths: [entry.path], ...target }).then((raw) => {
           const image = parseAskImagesResponse(raw)?.[0];
           if (!image || !isLoadedAskImage(image)) {
             throw new Error(image?.error || "Unable to load image");
@@ -164,7 +179,7 @@ export function FileBrowserPane({ workspace, view, pane }: PaneComponentProps): 
           return { status: "image", path: entry.path, dataUrl: image.dataUrl } as const;
         })
       : filesClient
-          .readText(cwd, entry.path)
+          .readText(cwd, entry.path, target)
           .then((text) => ({ status: "markdown", path: entry.path, text }) as const);
     void load
       .then((result) => setPreview((current) => (current?.path === entry.path ? result : current)))

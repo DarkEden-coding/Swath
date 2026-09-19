@@ -68,7 +68,8 @@ fn resolve_existing(root: &Path, relative: &str) -> Result<PathBuf, String> {
     let joined = checked_components(relative)?
         .iter()
         .fold(root.to_path_buf(), |acc, part| acc.join(part));
-    let meta = fs::symlink_metadata(&joined).map_err(|err| format!("Unable to read path: {err}"))?;
+    let meta =
+        fs::symlink_metadata(&joined).map_err(|err| format!("Unable to read path: {err}"))?;
     if meta.file_type().is_symlink() {
         return Err("Symlinked entries are not supported".into());
     }
@@ -162,7 +163,8 @@ fn read_text(request: &Value) -> FilesResult {
     if meta.len() > TEXT_MAX_BYTES {
         return Err("File exceeds 2 MiB preview limit".into());
     }
-    let text = fs::read_to_string(path).map_err(|err| format!("Unable to read UTF-8 file: {err}"))?;
+    let text =
+        fs::read_to_string(path).map_err(|err| format!("Unable to read UTF-8 file: {err}"))?;
     Ok(json!({ "ok": true, "text": text }))
 }
 
@@ -220,7 +222,8 @@ mod tests {
         fs::create_dir_all(dir.join("src")).unwrap();
         fs::write(dir.join("a.txt"), b"a").unwrap();
 
-        let response = rpc(json!({ "op": "list", "cwd": dir.to_string_lossy(), "path": "" })).unwrap();
+        let response =
+            rpc(json!({ "op": "list", "cwd": dir.to_string_lossy(), "path": "" })).unwrap();
         let entries = response["entries"].as_array().unwrap();
         assert_eq!(entries[0]["name"], "src");
         assert_eq!(entries[0]["isDir"], true);
@@ -248,8 +251,8 @@ mod tests {
         let dir = temp_dir("trav");
         fs::write(dir.join("a.txt"), b"a").unwrap();
 
-        let err = rpc(json!({ "op": "list", "cwd": dir.to_string_lossy(), "path": ".." }))
-            .unwrap_err();
+        let err =
+            rpc(json!({ "op": "list", "cwd": dir.to_string_lossy(), "path": ".." })).unwrap_err();
         assert!(err.contains("escapes"), "{err}");
 
         let err = rpc(json!({
@@ -312,8 +315,8 @@ mod tests {
     #[test]
     fn refuses_to_mutate_the_root() {
         let dir = temp_dir("root");
-        let err = rpc(json!({ "op": "trash", "cwd": dir.to_string_lossy(), "path": "" }))
-            .unwrap_err();
+        let err =
+            rpc(json!({ "op": "trash", "cwd": dir.to_string_lossy(), "path": "" })).unwrap_err();
         assert!(err.contains("workspace root"), "{err}");
         assert!(dir.is_dir());
         let _ = fs::remove_dir_all(dir);
@@ -326,7 +329,8 @@ mod tests {
         fs::write(dir.join("real.txt"), b"r").unwrap();
         std::os::unix::fs::symlink(dir.join("real.txt"), dir.join("link.txt")).unwrap();
 
-        let response = rpc(json!({ "op": "list", "cwd": dir.to_string_lossy(), "path": "" })).unwrap();
+        let response =
+            rpc(json!({ "op": "list", "cwd": dir.to_string_lossy(), "path": "" })).unwrap();
         let names: Vec<&str> = response["entries"]
             .as_array()
             .unwrap()

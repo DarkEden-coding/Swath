@@ -98,7 +98,13 @@ function fitDimensions(fit: FitAddon): { cols: number; rows: number } | null {
   return { cols: Math.max(2, cols), rows: Math.max(1, rows) };
 }
 
-export function TerminalPane({ workspace, view, pane, settings }: PaneComponentProps): JSX.Element {
+export function TerminalPane({
+  workspace,
+  view,
+  pane,
+  settings,
+  taskExecution,
+}: PaneComponentProps): JSX.Element {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
@@ -128,7 +134,7 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
 
   const isActive = activePaneId === paneId || view.activePaneId === paneId;
 
-  const paneCwd = paneMeta?.cwd ?? paneMeta?.metadata?.cwd ?? workspace.path;
+  const paneCwd = taskExecution?.cwd ?? paneMeta?.cwd ?? paneMeta?.metadata?.cwd ?? workspace.path;
   const paneEnv = paneMeta?.env ?? normalizeEnv(paneMeta?.metadata?.env);
   // `withConfig` structurally clones the whole config, so pane env/shell objects
   // get a fresh identity on every commit. Key the session effect on their content
@@ -221,6 +227,13 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
       sessionReady = terminalClient
         .create({
           sessionId: paneId,
+          ...(taskExecution
+            ? {
+                taskId: taskExecution.taskId,
+                paneId,
+                executionGeneration: taskExecution.executionGeneration,
+              }
+            : {}),
           cwd: currentCwd,
           cols: terminal.cols,
           rows: terminal.rows,
@@ -411,7 +424,16 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
       fitRef.current = null;
       searchRef.current = null;
     };
-  }, [isActive, paneId, paneCwd, paneEnvKey, paneShellProfileKey, view.id, workspace.id]);
+  }, [
+    isActive,
+    paneId,
+    paneCwd,
+    paneEnvKey,
+    paneShellProfileKey,
+    taskExecution,
+    view.id,
+    workspace.id,
+  ]);
 
   useEffect(() => {
     const terminal = termRef.current;

@@ -126,6 +126,26 @@ export function closeAddProject(): void {
   useUiStore.getState().closeAddProject();
 }
 
+/** Task catalog mutations are backend-owned; selection and layout stay in the interface store. */
+export async function completeTask(taskId: string): Promise<void> {
+  await window.swath.tasks.rpc({ op: "completeTask", taskId });
+}
+
+export async function createTask(
+  projectId: string,
+  title: string,
+  deviceId: string,
+  baseCommit?: string,
+): Promise<unknown> {
+  return window.swath.tasks.rpc({
+    op: "createTask",
+    projectId,
+    title,
+    deviceId,
+    ...(baseCommit ? { baseCommit } : {}),
+  });
+}
+
 /** Authenticates and saves a remote device for the Add Project workflow. */
 export async function connectRemote(url: string, token: string): Promise<void> {
   const handshake = await window.swath.remote.connect(url.trim(), token);

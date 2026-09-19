@@ -44,6 +44,15 @@ const config = (workspaces: Workspace[]): AppConfig => ({
 });
 
 describe("sanitizeConfig", () => {
+  it("rejects unsupported config versions instead of resetting them", () => {
+    const input = { ...config([]), version: 3 } as unknown as AppConfig;
+    expect(() => sanitizeConfig(input)).toThrow("Cannot open config version 3");
+  });
+
+  it("rejects corrupt required local state", () => {
+    const input = { version: 2, workspaces: null, settings: null } as unknown as AppConfig;
+    expect(() => sanitizeConfig(input)).toThrow("required local state is corrupt");
+  });
   it("leaves a supported configuration untouched", () => {
     const input = config([
       workspace([

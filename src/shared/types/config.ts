@@ -1,5 +1,6 @@
 import type { AppSettings } from "./settings";
 import type { Workspace } from "./workspace";
+import type { PaneId, ProjectId, TaskId } from "./projects";
 
 export interface RemoteConnection {
   id: string;
@@ -19,6 +20,18 @@ export interface AppConfig {
   activeWorkspaceId: string | null;
   settings: AppSettings;
   remoteConnections?: RemoteConnection[];
+}
+
+/** Interface-local state. It is deliberately absent from the shared catalog. */
+export interface LocalInterfaceState {
+  interfaceId: string;
+  activeProjectId: ProjectId | null;
+  activeTaskId: TaskId | null;
+  focusedPaneId: PaneId | null;
+  /** Per-task split geometry serialized by the local interface. */
+  taskLayouts: Record<TaskId, unknown>;
+  drafts: Record<PaneId, string>;
+  revision: number;
 }
 
 export interface FolderSelectResult {

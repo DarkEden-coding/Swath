@@ -1,4 +1,4 @@
-export const REMOTE_PROTOCOL_VERSION = 1 as const;
+export const REMOTE_PROTOCOL_VERSION = 2 as const;
 
 export type RemoteMethod =
   | "config.load"
@@ -16,18 +16,45 @@ export type RemoteMethod =
   | "files.rpc"
   | "askImages.load"
   | "pi.rpc"
-  | "directories.list";
+  | "sync.snapshot"
+  | "sync.changes"
+  | "sync.ack"
+  | "sync.conflicts"
+  | "task.rpc"
+  | "directories.list"
+  | "network.current"
+  | "network.initialize"
+  | "network.discover"
+  | "network.requestJoin"
+  | "network.joinStatus"
+  | "network.approveJoin"
+  | "network.membership"
+  | "network.promote"
+  | "network.health"
+  | "catalog.snapshot"
+  | "catalog.mutate"
+  | "migration.status"
+  | "migration.preview"
+  | "migration.confirm"
+  | "migration.export"
+  | "migration.conflicts"
+  | "migration.ensureResolutionJob"
+  | "migration.submitProposal"
+  | "migration.approveProposal"
+  | "event.subscribe"
+  | "event.ack";
 
 export interface RemoteRequest {
   type: "request";
-  id: number;
+  /** Globally unique across reconnecting clients. */
+  id: string;
   method: RemoteMethod;
   params?: unknown;
 }
 
 export interface RemoteResponse {
   type: "response";
-  id: number;
+  id: string;
   result?: unknown;
   error?: string;
 }
@@ -36,6 +63,8 @@ export interface RemoteEvent {
   type: "event";
   channel: "terminal:data" | "terminal:exit" | "git:data" | "pi:event";
   payload: unknown;
+  /** Durable browser-event cursor when this event was replayed after reconnect. */
+  cursor?: number;
 }
 
 export type RemoteMessage = RemoteRequest | RemoteResponse | RemoteEvent;

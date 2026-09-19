@@ -25,7 +25,8 @@ const TOKEN_PATTERN = /\[(?:Image \d+|Pasted \d+: \d+ chars)]/g;
 /** The highest `[Pasted N: …]` number already in the draft, so numbering never collides. */
 function nextPasteNumber(pastes: readonly AttachedPaste[]): number {
   return pastes.reduce(
-    (highest, paste) => Math.max(highest, Number(/\[Pasted (\d+):/.exec(paste.placeholder)?.[1] ?? 0)),
+    (highest, paste) =>
+      Math.max(highest, Number(/\[Pasted (\d+):/.exec(paste.placeholder)?.[1] ?? 0)),
     0,
   );
 }
@@ -62,7 +63,8 @@ export function tokenSpanBefore(
     const start = match.index;
     const end = start + match[0].length;
     if (start < caret && caret <= end) {
-      const padded = start > 0 && text[start - 1] === " " && (end === text.length || text[end] === " ");
+      const padded =
+        start > 0 && text[start - 1] === " " && (end === text.length || text[end] === " ");
       return { start: padded ? start - 1 : start, end, token: match[0] };
     }
   }

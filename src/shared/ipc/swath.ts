@@ -9,10 +9,28 @@ import type {
   TerminalSessionStartRequest,
   TerminalSessionStatus,
 } from "../types";
+import type {
+  CatalogMutationRequest,
+  CatalogMutationResult,
+  CatalogSnapshot,
+  NetworkDiscovery,
+  NetworkHealth,
+  NetworkMember,
+} from "../types/network";
+import type {
+  MigrationConflict,
+  MigrationConflictApproval,
+  MigrationConflictProposal,
+  MigrationImportRequest,
+  MigrationPreview,
+  MigrationStatus,
+} from "../types/migration";
 import type { FilesRpcRequest } from "./filesRpc";
 import type { GitRpcRequest } from "./gitRpc";
 import type { AskImagesRequest } from "./askImages";
 import type { PiRpcRequest } from "./piRpc";
+import type { TaskRpcRequest } from "./taskRpc";
+import type { PiIncoming } from "./piRpc";
 
 /** Rust command identifiers used by the renderer's Tauri transport. */
 export const TauriCommands = {
@@ -37,9 +55,35 @@ export const TauriCommands = {
   askImagesLoad: "ask_images_load",
   filesRpc: "files_rpc",
   piRpc: "pi_rpc",
+  taskRpc: "task_rpc",
+  syncSnapshot: "sync_snapshot",
+  syncChanges: "sync_changes",
+  syncAck: "sync_ack",
+  syncConflicts: "sync_conflicts",
   remoteServerStart: "remote_server_start",
   remoteServerStop: "remote_server_stop",
   remoteServerStatus: "remote_server_status",
+  networkInitialize: "network_initialize",
+  networkCurrent: "network_current",
+  networkDiscover: "network_discover",
+  networkRequestJoin: "network_request_join",
+  networkJoinStatus: "network_join_status",
+  networkApproveJoin: "network_approve_join",
+  networkMembership: "network_membership",
+  networkPromote: "network_promote",
+  networkHealth: "network_health",
+  catalogSnapshot: "catalog_snapshot",
+  catalogMutate: "catalog_mutate",
+  migrationPreview: "migration_preview",
+  migrationStatus: "migration_status",
+  migrationConfirm: "migration_confirm",
+  migrationExport: "migration_export",
+  migrationConflicts: "migration_conflicts",
+  migrationEnsureResolutionJob: "migration_ensure_resolution_job",
+  migrationSubmitProposal: "migration_submit_proposal",
+  migrationApproveProposal: "migration_approve_proposal",
+  localStateLoad: "local_state_load",
+  localStateSave: "local_state_save",
 } as const;
 
 export interface RemoteServerOptions {
@@ -48,6 +92,8 @@ export interface RemoteServerOptions {
   token: string;
   /** Publishes the loopback connector through Tailscale Serve on HTTPS port 443. */
   tailscaleHttps?: boolean;
+  /** Exact browser origins permitted to use cookie-authenticated connector APIs. */
+  allowedOrigins?: string[];
 }
 
 export interface RemoteServerStatus {
@@ -61,11 +107,30 @@ export interface RemoteServerStatus {
 }
 
 export interface RemoteHandshake {
-  protocol: 1;
+  protocol: 2;
   machineId: string;
   name: string;
   platform: string;
   config: AppConfig;
+}
+
+export interface SyncRecord {
+  taskId: string;
+  paneId: string;
+  executionGeneration: number;
+  sessionId: string;
+  sourceId: string;
+  sequence: number;
+  stableId: string;
+  event: PiIncoming;
+}
+
+export interface SyncReply {
+  status?: "synced";
+  code?: "cursor_expired";
+  networkId: string;
+  cursor: string | null;
+  records: SyncRecord[];
 }
 
 export interface RemoteFolderListing {
@@ -114,12 +179,57 @@ export interface SwathApi {
   files: {
     rpc(request: FilesRpcRequest): Promise<unknown>;
   };
+  tasks: { rpc(request: TaskRpcRequest): Promise<unknown> };
   pi: {
     rpc(request: PiRpcRequest): Promise<unknown>;
     /** Subscribes to stdout lines and exit notices for every pi pane. */
     onEvent(
       callback: (paneId: string, line: string | undefined, exited: boolean) => void,
     ): () => void;
+  };
+  sync: {
+    snapshot(networkId: string): Promise<SyncReply>;
+    changes(networkId: string, cursor: string | null): Promise<SyncReply>;
+    ack(networkId: string, cursor: string | null): Promise<{ ok: boolean; cursor: string | null }>;
+    conflicts(
+      networkId: string,
+    ): Promise<{ conflicts: Array<{ stableId: string; original: unknown; divergent: unknown }> }>;
+  };
+  network: {
+    /** Returns the selected local network without creating one. */
+    current(): Promise<CatalogSnapshot | null>;
+    initialize(name: string): Promise<CatalogSnapshot>;
+    discover(): Promise<NetworkDiscovery[]>;
+    requestJoin(
+      networkId: string,
+      endpoint: string,
+      enrollmentSecret: string,
+    ): Promise<{ enrollmentId: string; state: "pending" }>;
+    joinStatus(enrollmentId: string): Promise<{ state: string; networkId?: string }>;
+    approveJoin(networkId: string, enrollmentId: string): Promise<void>;
+    membership(networkId: string): Promise<NetworkMember[]>;
+    promote(networkId: string, deviceId: string): Promise<void>;
+    health(networkId: string): Promise<NetworkHealth>;
+  };
+  catalog: {
+    snapshot(networkId: string): Promise<CatalogSnapshot>;
+    mutate(request: CatalogMutationRequest): Promise<CatalogMutationResult>;
+  };
+  migration: {
+    status(): Promise<MigrationStatus>;
+    preview(operationId: string): Promise<MigrationPreview>;
+    confirm(request: MigrationImportRequest): Promise<unknown>;
+    /** Source JSON only; the renderer chooses a download destination. */
+    export(): Promise<{ filename: string; content: string }>;
+    conflicts(): Promise<MigrationConflict[]>;
+    ensureResolutionJob(conflictId: string): Promise<unknown>;
+    submitProposal(proposal: MigrationConflictProposal): Promise<unknown>;
+    approveProposal(approval: MigrationConflictApproval): Promise<unknown>;
+  };
+  /** Per-interface state is local-only; browser implementations use IndexedDB, never localStorage. */
+  localState: {
+    load(networkId: string): Promise<{ revision: number; state: unknown } | null>;
+    save(networkId: string, state: unknown, revision: number): Promise<number>;
   };
   remote: {
     connect(url: string, token: string): Promise<RemoteHandshake>;

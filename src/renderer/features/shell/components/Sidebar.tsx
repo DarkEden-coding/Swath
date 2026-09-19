@@ -9,6 +9,8 @@ import {
 import type { Workspace } from "../../../../shared/types";
 import * as appActions from "../../../app/appActions";
 import { useConfigStore } from "../../../state/configStore";
+import { useTaskStore } from "../../../state/taskStore";
+import { TaskProjectSidebar } from "../../tasks/TaskProjectSidebar";
 import appIcon from "../../../assets/app-icon-64.png";
 import { IconChevronDown, IconChevronsRight, IconFolder, IconPlus, IconSparkle } from "../icons";
 import { displayWorkspacePath } from "../../../../shared/ipc/remote";
@@ -38,6 +40,7 @@ function WorkspaceDropIndicator(): JSX.Element {
 
 export function Sidebar({ onToggleCollapse }: SidebarProps): JSX.Element {
   const config = useConfigStore((state) => state.config)!;
+  const taskLoaded = useTaskStore((state) => state.loaded);
   const itemRefs = useRef<Array<HTMLDivElement | null>>([]);
 
   // Collapsed groups hide their members, so the sidebar renders a subset of `config.workspaces`.
@@ -78,6 +81,23 @@ export function Sidebar({ onToggleCollapse }: SidebarProps): JSX.Element {
 
   const agentActivity = usePiActivityStore((state) => state.activity);
   const acknowledgePanes = usePiActivityStore((state) => state.acknowledgePanes);
+
+  if (taskLoaded) {
+    return (
+      <aside className="z-[2] flex h-full min-h-0 min-w-0 flex-col border-r border-swath-border bg-swath-panel">
+        <TaskProjectSidebar />
+        <footer className="border-t border-swath-border p-3">
+          <button
+            type="button"
+            className="w-full rounded-md border border-swath-accent px-2.5 py-2 text-[13px] font-semibold text-swath-accent-strong"
+            onClick={appActions.openAddProject}
+          >
+            Add Project
+          </button>
+        </footer>
+      </aside>
+    );
+  }
 
   return (
     <aside className="z-[2] flex h-full min-h-0 min-w-0 flex-col border-r border-swath-border bg-swath-panel">

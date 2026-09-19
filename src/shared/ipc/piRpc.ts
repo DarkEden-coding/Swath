@@ -8,18 +8,33 @@
  */
 
 /** Renderer → host process-control requests. */
+export interface PiExecutionTarget {
+  /** Durable task executor authority. Client cwd/session paths are never authoritative. */
+  taskId?: string;
+  paneId: string;
+  executionGeneration?: number;
+  /** Stable dedupe key for a prompt; generate with `crypto.randomUUID()`. */
+  operationId?: string;
+}
+
+/** Task-scoped Pi control. `spawn` is retained as an alias for idempotent `ensure`; only
+ * `restart` is destructive. */
 export type PiRpcRequest =
-  | { op: "spawn"; paneId: string; cwd: string; args?: string[] }
-  | { op: "send"; paneId: string; line: string }
-  | { op: "kill"; paneId: string }
-  | { op: "stderr"; paneId: string }
-  /**
-   * Bounded file walk for `@file` completion: `cwd` yields relative paths, and the other folders
-   * of a project group yield absolute ones, which is what a mention needs to reach outside `cwd`.
-   */
-  | { op: "files"; paneId: string; cwd: string; paths?: readonly string[] }
-  /** Lists the pi session files in `dir`, for `/resume`. */
-  | { op: "sessions"; paneId: string; dir: string };
+  | (PiExecutionTarget & { op: "spawn" | "ensure"; cwd?: string; args?: string[] })
+  | (PiExecutionTarget & { op: "send"; line: string })
+  | (PiExecutionTarget & { op: "kill" | "restart" | "stderr" })
+  | (PiExecutionTarget & { op: "files"; cwd?: string; paths?: readonly string[] })
+  | (PiExecutionTarget & { op: "sessions"; dir?: string })
+  /** Read durable, executor-authored records. This never starts Pi. */
+  | (PiExecutionTarget & { op: "history"; cursor?: number });
+
+/** A durable Pi record. `status: cursor_expired` requires a snapshot request without a cursor. */
+export interface PiHistoryReply {
+  status: "synced" | "cursor_expired";
+  networkId: string;
+  cursor: number;
+  records: Array<{ id: string; sourceId?: string; sequence: number; event: PiIncoming }>;
+}
 
 /** One entry of the `sessions` reply. */
 export interface PiSessionInfo {

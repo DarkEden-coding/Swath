@@ -6,7 +6,7 @@
  * subtree reads it.
  */
 
-import { useCallback, useEffect, useMemo, useReducer, useRef } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import {
   parsePiLine,
   agentTabRequestFrom,
@@ -14,6 +14,7 @@ import {
   type PiCommandMessage,
   type PiImageContent,
   type PiThinkingLevel,
+  type PiExecutionTarget,
 } from "../../../../shared/ipc/piRpc";
 import {
   dismissDialog,
@@ -25,6 +26,13 @@ import {
 import { reportError } from "../../../lib/errorLog";
 import { piPaneCache, resumedSessions, spawnedPanes, mountPiPaneEventCache } from "./piPaneCache";
 import { reportStreaming } from "./piActivity";
+import {
+  applyPiHistory,
+  loadPiHistory,
+  savePiHistory,
+  type CachedPiHistory,
+  type PiHistoryStatus,
+} from "./piHistoryCache";
 
 type Action =
   | { type: "line"; line: string }
@@ -32,6 +40,7 @@ type Action =
   | { type: "error"; message: string }
   | { type: "dismissDialog"; id: string }
   | { type: "dismissNotice"; id: string }
+  | { type: "hydrate"; state: PiPaneState }
   | { type: "reset" };
 
 function reducer(state: PiPaneState, action: Action): PiPaneState {
@@ -48,6 +57,8 @@ function reducer(state: PiPaneState, action: Action): PiPaneState {
       return dismissDialog(state, action.id);
     case "dismissNotice":
       return dismissNotice(state, action.id);
+    case "hydrate":
+      return action.state;
     case "reset":
       return initialPiPaneState();
     default:
@@ -57,6 +68,7 @@ function reducer(state: PiPaneState, action: Action): PiPaneState {
 
 export interface PiAgentController {
   state: PiPaneState;
+  history: { status: PiHistoryStatus; cursor: string | null; conflicts: unknown[] };
   send: (command: PiCommandMessage) => void;
   /** Sends a user prompt, queueing as a follow-up when the agent is mid-run. */
   prompt: (message: string, images?: PiImageContent[]) => void;
@@ -136,8 +148,29 @@ export function usePiAgent(
   initialSessionFile?: string,
   initialStart?: PiAgentTabRequest,
   onAgentTabRequest?: (request: PiAgentTabRequest) => void,
+  taskExecution?: Omit<PiExecutionTarget, "paneId"> & { networkId?: string; readOnly?: boolean },
 ): PiAgentController {
   useEffect(() => mountPiPaneEventCache(paneId), [paneId]);
+  const target = useMemo(
+    () => ({
+      paneId,
+      ...(taskExecution
+        ? {
+            taskId: taskExecution.taskId,
+            networkId: taskExecution.networkId,
+            executionGeneration: taskExecution.executionGeneration,
+            readOnly: taskExecution.readOnly,
+          }
+        : {}),
+    }),
+    [
+      paneId,
+      taskExecution?.executionGeneration,
+      taskExecution?.networkId,
+      taskExecution?.readOnly,
+      taskExecution?.taskId,
+    ],
+  );
 
   // Read at spawn time only: a group gaining a folder must not restart a running conversation.
   const groupPathsRef = useRef(groupPaths);
@@ -151,6 +184,16 @@ export function usePiAgent(
     (id) => piPaneCache.get(id)?.state ?? initialPiPaneState(),
   );
   const needsInitialPromptRef = useRef(Boolean(initialStart));
+  const [history, setHistory] = useState<{
+    status: PiHistoryStatus;
+    cursor: string | null;
+    conflicts: unknown[];
+  }>({
+    status: "unavailable",
+    cursor: null,
+    conflicts: [],
+  });
+  const [historyReady, setHistoryReady] = useState(!taskExecution?.taskId);
 
   // Republish every render so a remount (tab switch) restores the transcript synchronously.
   useEffect(() => {
@@ -161,13 +204,14 @@ export function usePiAgent(
 
   const send = useCallback(
     (command: PiCommandMessage) => {
+      if (taskExecution?.readOnly) return;
       void window.swath.pi
-        .rpc({ op: "send", paneId, line: JSON.stringify(command) })
+        .rpc({ op: "send", ...target, line: JSON.stringify(command) })
         .catch((error: unknown) => {
           dispatch({ type: "error", message: String(error) });
         });
     },
-    [paneId],
+    [target, taskExecution?.readOnly],
   );
 
   /** The startup handshake for a freshly spawned child. */
@@ -205,14 +249,13 @@ export function usePiAgent(
   }, [requestFullState, send]);
 
   const spawn = useCallback(() => {
-    if (!cwd) return;
+    if (taskExecution?.readOnly || !cwd) return;
     // The process outlives an unmount: reattach and pull anything missed while hidden.
     if (spawnedPanes.has(paneId)) {
       requestResync();
       return;
     }
     spawnedPanes.add(paneId);
-    dispatch({ type: "reset" });
     // Reopen the session this pane last reported. Legacy panes have no stored file, so continue
     // the newest session for their project once and persist the exact file from pi's state.
     const sessionFile = resumedSessions.get(paneId) ?? initialSessionFile;
@@ -232,7 +275,7 @@ export function usePiAgent(
     void window.swath.pi
       .rpc({
         op: "spawn",
-        paneId,
+        ...target,
         cwd,
         args: [...sessionArgs, ...startupArgs, ...groupPathArgs(cwd, groupPathsRef.current)],
       })
@@ -255,13 +298,24 @@ export function usePiAgent(
         spawnedPanes.delete(paneId);
         dispatch({ type: "error", message: String(error) });
       });
-  }, [paneId, cwd, initialSessionFile, initialStart, requestFullState, requestResync, send]);
+  }, [
+    cwd,
+    initialSessionFile,
+    initialStart,
+    paneId,
+    requestFullState,
+    requestResync,
+    send,
+    target,
+    taskExecution?.readOnly,
+  ]);
 
   /** Explicit user restart: tear the child down first, then spawn a fresh one. */
   const restart = useCallback(() => {
+    if (taskExecution?.readOnly) return;
     spawnedPanes.delete(paneId);
-    void window.swath.pi.rpc({ op: "kill", paneId }).finally(spawn);
-  }, [paneId, spawn]);
+    void window.swath.pi.rpc({ op: "kill", ...target }).finally(spawn);
+  }, [paneId, spawn, target, taskExecution?.readOnly]);
 
   // Kept in a ref so the subscription is created once per pane rather than on every render.
   const sendRef = useRef(send);
@@ -336,15 +390,81 @@ export function usePiAgent(
     return unsubscribe;
   }, [paneId]);
 
+  // Load durable records before touching the executor. This is deliberately a read-only history
+  // RPC: completed/offline task inspection must never ensure or spawn Pi.
+  useEffect(() => {
+    if (!taskExecution?.taskId) return;
+    let active = true;
+    setHistoryReady(false);
+    const scope = {
+      networkId: taskExecution.networkId ?? "",
+      taskId: taskExecution.taskId,
+      paneId,
+      sessionId: initialSessionFile ?? "default",
+      executionGeneration: taskExecution.executionGeneration ?? 0,
+    };
+    const hydrate = (cached: CachedPiHistory): void => {
+      let restored = initialPiPaneState();
+      for (const record of cached.records) restored = reducePiEvent(restored, record.event);
+      dispatch({ type: "hydrate", state: restored });
+    };
+    void (async () => {
+      let cached: CachedPiHistory | null = null;
+      try {
+        // Render the local partition first; the network request only catches it up afterwards.
+        if (scope.networkId) cached = await loadPiHistory(scope);
+        if (cached && active) {
+          hydrate(cached);
+          setHistory({ status: "local", cursor: cached.cursor, conflicts: [] });
+        }
+        // Replication is independent of Pi process control: completed/offline inspection never
+        // routes through `pi.rpc(history)`, which could otherwise ensure a child.
+        let reply = await window.swath.sync.changes(scope.networkId, cached?.cursor ?? null);
+        if (reply.code === "cursor_expired")
+          reply = await window.swath.sync.snapshot(scope.networkId);
+        const replyScope = { ...scope, networkId: reply.networkId };
+        if (!cached && scope.networkId !== reply.networkId)
+          cached = await loadPiHistory(replyScope);
+        const next = applyPiHistory(cached, reply, replyScope);
+        await savePiHistory({ ...next, status: "pending" });
+        if (active) {
+          hydrate(next);
+          setHistory({ status: "pending", cursor: next.cursor, conflicts: [] });
+        }
+        const ack = await window.swath.sync.ack(reply.networkId, next.cursor);
+        if (!ack.ok) return;
+        const conflicts = await window.swath.sync.conflicts(reply.networkId);
+        await savePiHistory(next);
+        if (active)
+          setHistory({ status: next.status, cursor: next.cursor, conflicts: conflicts.conflicts });
+      } catch {
+        if (cached && active) setHistory({ status: "local", cursor: cached.cursor, conflicts: [] });
+        else if (active) setHistory({ status: "unavailable", cursor: null, conflicts: [] });
+      } finally {
+        if (active) setHistoryReady(true);
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, [
+    initialSessionFile,
+    paneId,
+    taskExecution?.networkId,
+    taskExecution?.executionGeneration,
+    taskExecution?.taskId,
+  ]);
+
   // No teardown on unmount: the pane is unmounted on every tab switch, and killing pi there is
   // what forced the reload. `piAgentTabType.closePane` disposes the pane for real.
   useEffect(() => {
-    spawn();
-  }, [spawn]);
+    if (historyReady && !taskExecution?.readOnly) spawn();
+  }, [historyReady, spawn, taskExecution?.readOnly]);
 
   return useMemo<PiAgentController>(
     () => ({
       state,
+      history,
       send,
       prompt: (message: string, images?: PiImageContent[]) => {
         if (!message.trim() && !images?.length) return;
@@ -397,6 +517,6 @@ export function usePiAgent(
       },
       dismissNotice: (id) => dispatch({ type: "dismissNotice", id }),
     }),
-    [state, send, restart, paneId],
+    [state, history, send, restart, paneId],
   );
 }

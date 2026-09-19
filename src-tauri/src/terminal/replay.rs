@@ -19,11 +19,6 @@ impl ReplayBuffer {
         }
     }
 
-    pub(super) fn set_limit(&mut self, max_bytes: usize) {
-        self.max_bytes = max_bytes;
-        self.trim_to_max();
-    }
-
     pub(super) fn push(&mut self, chunk: &str) {
         let safe = self.sanitizer.push(chunk);
         if safe.is_empty() {
@@ -68,8 +63,9 @@ struct ReplayGraphicsSanitizer {
     stripped_bytes: usize,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum Mode {
+    #[default]
     Normal,
     Esc,
     OscClassify,
@@ -88,12 +84,6 @@ enum Mode {
         /// Mode to resume when the ESC was not ST.
         resume: Resume,
     },
-}
-
-impl Default for Mode {
-    fn default() -> Self {
-        Self::Normal
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

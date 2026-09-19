@@ -2,6 +2,7 @@ import type { SwathApi, RemoteHandshake, RemoteServerStatus } from "../../shared
 import type { RemoteConnection } from "../../shared/types";
 import type { RemoteEvent, RemoteMethod, RemoteResponse } from "../../shared/ipc/remote";
 import { parseRemotePath } from "../../shared/ipc/remote";
+import { browserLocalState, loadBrowserEventCursor, saveBrowserEventCursor } from "./localState";
 
 type Status = "connected" | "connecting" | "offline";
 type EventChannel = RemoteEvent["channel"];
@@ -27,10 +28,14 @@ function authProtocol(token: string): string {
 
 class RemoteClient {
   private socket: WebSocket | null = null;
+  private readonly clientId = crypto.randomUUID();
   private nextId = 1;
   private retry: number | null = null;
+  // The gateway retains task events; reconnecting never relies on renderer ownership maps.
+  private durableCursor = 0;
+  private cursorLoaded = false;
   private pending = new Map<
-    number,
+    string,
     { resolve: (value: unknown) => void; reject: (error: Error) => void }
   >();
   private eventListeners = new Set<(event: RemoteEvent) => void>();
@@ -68,9 +73,13 @@ class RemoteClient {
       return;
     }
     this.setStatus("connecting");
+    if (!this.cursorLoaded) {
+      this.durableCursor = await loadBrowserEventCursor(this.connection.id);
+      this.cursorLoaded = true;
+    }
     const protocols = this.connection.token
-      ? ["swath-v1", authProtocol(this.connection.token)]
-      : ["swath-v1"];
+      ? ["swath-v2", authProtocol(this.connection.token)]
+      : ["swath-v2"];
     const socket = new WebSocket(socketUrl(this.connection.url), protocols);
     this.socket = socket;
     socket.addEventListener("message", (event) => this.receive(String(event.data)));
@@ -81,6 +90,7 @@ class RemoteClient {
         () => {
           this.setStatus("connected");
           resolve();
+          void this.restoreEventSubscription();
         },
         { once: true },
       );
@@ -114,6 +124,22 @@ class RemoteClient {
     }
   }
 
+  private async restoreEventSubscription(): Promise<void> {
+    try {
+      const replay = await this.call<{
+        status: "replayed" | "cursor_expired";
+        attachments?: Array<Record<string, unknown>>;
+      }>("event.subscribe", { cursor: this.durableCursor });
+      if (replay.status === "cursor_expired") {
+        this.durableCursor = 0;
+        await saveBrowserEventCursor(this.connection.id, 0);
+        await this.call("event.subscribe", { cursor: null, attachments: replay.attachments ?? [] });
+      }
+    } catch {
+      // The socket reconnect loop retries the durable subscription.
+    }
+  }
+
   private receive(raw: string): void {
     let message: RemoteResponse | RemoteEvent;
     try {
@@ -122,6 +148,14 @@ class RemoteClient {
       return;
     }
     if (message.type === "event") {
+      if (typeof message.cursor === "number" && message.cursor > this.durableCursor) {
+        this.durableCursor = message.cursor;
+        void saveBrowserEventCursor(this.connection.id, message.cursor);
+        // Ack is monotonic and idempotent; a lost ack only causes a safe replay.
+        void this.call("event.ack", { clientId: this.clientId, cursor: message.cursor }).catch(
+          () => undefined,
+        );
+      }
       this.eventListeners.forEach((listener) => listener(message));
       return;
     }
@@ -134,7 +168,7 @@ class RemoteClient {
 
   async call<T>(method: RemoteMethod, params?: unknown): Promise<T> {
     await this.open();
-    const id = this.nextId++;
+    const id = `${this.clientId}:${this.nextId++}`;
     return await new Promise<T>((resolve, reject) => {
       this.pending.set(id, { resolve: (value) => resolve(value as T), reject });
       this.socket!.send(JSON.stringify({ type: "request", id, method, params }));
@@ -157,6 +191,10 @@ function unroute<T>(value: T): T {
   return value;
 }
 
+function taskScoped(value: unknown): boolean {
+  return !!value && typeof value === "object" && "taskId" in value;
+}
+
 function connectionFrom(value: unknown): string | null {
   if (typeof value === "string") return parseRemotePath(value)?.connectionId ?? null;
   if (Array.isArray(value)) {
@@ -176,8 +214,6 @@ function connectionFrom(value: unknown): string | null {
 /** Adds low-overhead remote routing to the native bridge without changing feature panes. */
 export function createHybridSwath(local: SwathApi): SwathApi {
   const clients = new Map<string, RemoteClient>();
-  const terminalOwners = new Map<string, string>();
-  const piOwners = new Map<string, string>();
   const statusListeners = new Set<(id: string, status: Status) => void>();
   const eventListeners = new Map<EventChannel, Set<(payload: any) => void>>();
 
@@ -196,6 +232,12 @@ export function createHybridSwath(local: SwathApi): SwathApi {
   function remoteFor(value: unknown): RemoteClient | null {
     const id = connectionFrom(value);
     return id ? (clients.get(id) ?? null) : null;
+  }
+
+  // Migration has no task path to encode a connection id; in a browser the enrolled connector
+  // is the serving host, never the in-memory browser fixture.
+  function servingHost(): RemoteClient | null {
+    return clients.values().next().value ?? null;
   }
 
   function event<T>(
@@ -230,48 +272,17 @@ export function createHybridSwath(local: SwathApi): SwathApi {
     ...local,
     config: local.config,
     terminal: {
-      create: async (request) => {
-        const remote = remoteFor(request.cwd);
-        if (!remote) return local.terminal.create(request);
-        terminalOwners.set(request.sessionId, remote.connection.id);
-        await remote.call("terminal.create", unroute(request));
-      },
-      write: async (sessionId, data) => {
-        const remote = clients.get(terminalOwners.get(sessionId) ?? "");
-        return remote
-          ? void (await remote.call("terminal.write", { sessionId, data }))
-          : local.terminal.write(sessionId, data);
-      },
-      resize: (request) => {
-        const remote = clients.get(terminalOwners.get(request.sessionId) ?? "");
-        remote ? void remote.call("terminal.resize", request) : local.terminal.resize(request);
-      },
-      kill: (sessionId) => {
-        const remote = clients.get(terminalOwners.get(sessionId) ?? "");
-        remote ? void remote.call("terminal.kill", { sessionId }) : local.terminal.kill(sessionId);
-        terminalOwners.delete(sessionId);
-      },
-      attach: async (request) => {
-        const remote = remoteFor(request.cwd);
-        if (!remote) return local.terminal.attach(request);
-        terminalOwners.set(request.sessionId, remote.connection.id);
-        return remote.call("terminal.attach", unroute(request));
-      },
-      restart: async (sessionId) =>
-        clients.get(terminalOwners.get(sessionId) ?? "")?.call("terminal.restart", { sessionId }) ??
-        local.terminal.restart(sessionId),
-      replay: async (sessionId) =>
-        clients.get(terminalOwners.get(sessionId) ?? "")?.call("terminal.replay", { sessionId }) ??
-        local.terminal.replay(sessionId),
-      setStreaming: (sessionId, enabled) => {
-        const remote = clients.get(terminalOwners.get(sessionId) ?? "");
-        remote
-          ? void remote.call("terminal.setStreaming", { sessionId, enabled })
-          : local.terminal.setStreaming(sessionId, enabled);
-      },
-      isBusy: async (sessionId) =>
-        clients.get(terminalOwners.get(sessionId) ?? "")?.call("terminal.isBusy", { sessionId }) ??
-        local.terminal.isBusy(sessionId),
+      // The connector resolves task ownership from the durable catalog. Renderer caches are
+      // deliberately not authority: they disappear on refresh and can become stale on transfer.
+      create: (request) => local.terminal.create(request),
+      write: (sessionId, data) => local.terminal.write(sessionId, data),
+      resize: (request) => local.terminal.resize(request),
+      kill: (sessionId) => local.terminal.kill(sessionId),
+      attach: (request) => local.terminal.attach(request),
+      restart: (sessionId) => local.terminal.restart(sessionId),
+      replay: (sessionId) => local.terminal.replay(sessionId),
+      setStreaming: (sessionId, enabled) => local.terminal.setStreaming(sessionId, enabled),
+      isBusy: (sessionId) => local.terminal.isBusy(sessionId),
       onData: event("terminal:data", local.terminal.onData, (p) => [p.sessionId, p.data]),
       onExit: event("terminal:exit", local.terminal.onExit, (p) => [
         p.sessionId,
@@ -279,31 +290,51 @@ export function createHybridSwath(local: SwathApi): SwathApi {
       ]),
     },
     git: {
-      rpc: async (request) =>
-        remoteFor(request)?.call("git.rpc", unroute(request)) ?? local.git.rpc(request),
+      rpc: async (request) => {
+        if (taskScoped(request)) return local.git.rpc(request);
+        return remoteFor(request)?.call("git.rpc", unroute(request)) ?? local.git.rpc(request);
+      },
       onData: event("git:data", local.git.onData, (p) => [p.runId, p.data]),
     },
     files: {
-      rpc: async (request) =>
-        remoteFor(request)?.call("files.rpc", unroute(request)) ?? local.files.rpc(request),
+      rpc: async (request) => {
+        if (taskScoped(request)) return local.files.rpc(request);
+        return remoteFor(request)?.call("files.rpc", unroute(request)) ?? local.files.rpc(request);
+      },
     },
     askImages: {
       load: async (request) =>
-        remoteFor(request)?.call("askImages.load", unroute(request)) ??
-        local.askImages.load(request),
+        taskScoped(request)
+          ? local.askImages.load(request)
+          : (remoteFor(request)?.call("askImages.load", unroute(request)) ??
+            local.askImages.load(request)),
     },
+    tasks: { rpc: (request) => local.tasks.rpc(request) },
     pi: {
-      rpc: async (request) => {
-        const owner =
-          request.op === "spawn" || request.op === "files"
-            ? remoteFor(request)
-            : (clients.get(piOwners.get(request.paneId) ?? "") ?? null);
-        if (!owner) return local.pi.rpc(request);
-        if (request.op === "spawn") piOwners.set(request.paneId, owner.connection.id);
-        if (request.op === "kill") piOwners.delete(request.paneId);
-        return owner.call("pi.rpc", unroute(request));
-      },
+      rpc: (request) => local.pi.rpc(request),
       onEvent: event("pi:event", local.pi.onEvent, (p) => [p.paneId, p.line, p.exit === true]),
+    },
+    sync: local.sync,
+    network: local.network,
+    catalog: local.catalog,
+    migration: {
+      status: () => servingHost()?.call("migration.status") ?? local.migration.status(),
+      preview: (operationId) =>
+        servingHost()?.call("migration.preview", { operationId }) ??
+        local.migration.preview(operationId),
+      confirm: (request) =>
+        servingHost()?.call("migration.confirm", { request }) ?? local.migration.confirm(request),
+      export: () => servingHost()?.call("migration.export") ?? local.migration.export(),
+      conflicts: () => servingHost()?.call("migration.conflicts") ?? local.migration.conflicts(),
+      ensureResolutionJob: (conflictId) =>
+        servingHost()?.call("migration.ensureResolutionJob", { conflictId }) ??
+        local.migration.ensureResolutionJob(conflictId),
+      submitProposal: (proposal) =>
+        servingHost()?.call("migration.submitProposal", { proposal }) ??
+        local.migration.submitProposal(proposal),
+      approveProposal: (approval) =>
+        servingHost()?.call("migration.approveProposal", { approval }) ??
+        local.migration.approveProposal(approval),
     },
     remote: {
       connect: async (url, token) => {
@@ -318,8 +349,10 @@ export function createHybridSwath(local: SwathApi): SwathApi {
               : `Connector returned ${response.status}`,
           );
         const handshake = (await response.json()) as RemoteHandshake;
-        if (handshake.protocol !== 1)
-          throw new Error(`Unsupported remote protocol ${handshake.protocol}`);
+        if (handshake.protocol !== 2)
+          throw new Error(
+            `Incompatible remote protocol ${handshake.protocol}; this client requires v2`,
+          );
         const id = handshake.machineId;
         await client({ id, url: normalized, token }).open();
         return handshake;
@@ -416,6 +449,7 @@ export function createRemoteWebSwath(): SwathApi {
     },
     askImages: { load: (r) => client.call("askImages.load", r) },
     files: { rpc: (r) => client.call("files.rpc", r) },
+    tasks: { rpc: (r) => client.call("task.rpc", r) },
     pi: {
       rpc: (r) => client.call("pi.rpc", r),
       onEvent: (cb) =>
@@ -426,6 +460,41 @@ export function createRemoteWebSwath(): SwathApi {
           }
         }),
     },
+    sync: {
+      snapshot: (networkId) => client.call("sync.snapshot", { networkId }),
+      changes: (networkId, cursor) => client.call("sync.changes", { networkId, cursor }),
+      ack: (networkId, cursor) => client.call("sync.ack", { networkId, cursor }),
+      conflicts: (networkId) => client.call("sync.conflicts", { networkId }),
+    },
+    network: {
+      current: () => client.call("network.current"),
+      initialize: (name) => client.call("network.initialize", { name }),
+      discover: () => client.call("network.discover"),
+      requestJoin: (networkId, endpoint, enrollmentSecret) =>
+        client.call("network.requestJoin", { networkId, endpoint, enrollmentSecret }),
+      joinStatus: (enrollmentId) => client.call("network.joinStatus", { enrollmentId }),
+      approveJoin: (networkId, enrollmentId) =>
+        client.call("network.approveJoin", { networkId, enrollmentId }),
+      membership: (networkId) => client.call("network.membership", { networkId }),
+      promote: (networkId, deviceId) => client.call("network.promote", { networkId, deviceId }),
+      health: (networkId) => client.call("network.health", { networkId }),
+    },
+    catalog: {
+      snapshot: (networkId) => client.call("catalog.snapshot", { networkId }),
+      mutate: (request) => client.call("catalog.mutate", request),
+    },
+    migration: {
+      status: () => client.call("migration.status"),
+      preview: (operationId) => client.call("migration.preview", { operationId }),
+      confirm: (request) => client.call("migration.confirm", { request }),
+      export: () => client.call("migration.export"),
+      conflicts: () => client.call("migration.conflicts"),
+      ensureResolutionJob: (conflictId) =>
+        client.call("migration.ensureResolutionJob", { conflictId }),
+      submitProposal: (proposal) => client.call("migration.submitProposal", { proposal }),
+      approveProposal: (approval) => client.call("migration.approveProposal", { approval }),
+    },
+    localState: browserLocalState(id),
     remote: {
       connect: async () => {
         throw new Error("Already connected to this host");

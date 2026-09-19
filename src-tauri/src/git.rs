@@ -1,4 +1,6 @@
-use crate::types::{GitDataEvent, GIT_RUN_MAX_BUFFER_BYTES};
+#[cfg(feature = "desktop")]
+use crate::types::GitDataEvent;
+use crate::types::GIT_RUN_MAX_BUFFER_BYTES;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
@@ -6,6 +8,7 @@ use std::io::Read;
 use std::path::{Component, Path};
 use std::process::{Command, Stdio};
 use std::thread;
+#[cfg(feature = "desktop")]
 use tauri::{AppHandle, Emitter};
 
 #[cfg(windows)]
@@ -17,6 +20,7 @@ use std::time::{Duration, Instant};
 
 const RS: char = '\x1f';
 const GIT_TIMEOUT: Duration = Duration::from_secs(300);
+#[cfg(feature = "desktop")]
 const GIT_DATA_EVENT: &str = "git:data";
 
 type GitResult<T> = Result<T, Box<dyn Error + Send + Sync>>;
@@ -27,25 +31,31 @@ struct RunGitResult {
     stderr: String,
 }
 
-/// Optional live-output sink for a single git RPC run.
+/// Optional live-output sink for a single desktop Git RPC run.
+#[derive(Clone)]
 struct StreamTarget {
+    #[cfg(feature = "desktop")]
     app: AppHandle,
+    #[cfg(feature = "desktop")]
     run_id: String,
 }
 
 impl StreamTarget {
+    #[cfg(feature = "desktop")]
     fn emit(&self, data: &str) {
-        if data.is_empty() {
-            return;
+        if !data.is_empty() {
+            let _ = self.app.emit(
+                GIT_DATA_EVENT,
+                GitDataEvent {
+                    run_id: self.run_id.clone(),
+                    data: data.to_string(),
+                },
+            );
         }
-        let _ = self.app.emit(
-            GIT_DATA_EVENT,
-            GitDataEvent {
-                run_id: self.run_id.clone(),
-                data: data.to_string(),
-            },
-        );
     }
+
+    #[cfg(not(feature = "desktop"))]
+    fn emit(&self, _data: &str) {}
 }
 
 /// Drains a child-process stream while retaining at most the configured limit.
@@ -115,24 +125,14 @@ fn run_git(cwd: &str, args: &[&str], stream: Option<&StreamTarget>) -> RunGitRes
         }
     };
 
-    let stdout_handle = child.stdout.take().map(|stdout| {
-        read_capped(
-            stdout,
-            stream.map(|s| StreamTarget {
-                app: s.app.clone(),
-                run_id: s.run_id.clone(),
-            }),
-        )
-    });
-    let stderr_handle = child.stderr.take().map(|stderr| {
-        read_capped(
-            stderr,
-            stream.map(|s| StreamTarget {
-                app: s.app.clone(),
-                run_id: s.run_id.clone(),
-            }),
-        )
-    });
+    let stdout_handle = child
+        .stdout
+        .take()
+        .map(|stdout| read_capped(stdout, stream.cloned()));
+    let stderr_handle = child
+        .stderr
+        .take()
+        .map(|stderr| read_capped(stderr, stream.cloned()));
     let start = Instant::now();
     let mut timed_out = false;
     let exit_code = loop {
@@ -189,6 +189,7 @@ fn paths_field(v: &Value) -> Option<Vec<String>> {
         .collect()
 }
 
+#[cfg(feature = "desktop")]
 fn stream_from_request(app: &AppHandle, request: &Value) -> Option<StreamTarget> {
     let run_id = str_field(request, "runId")?.trim();
     if run_id.is_empty() {
@@ -526,6 +527,64 @@ fn list_branches(cwd: &str) -> Value {
 }
 
 /// Dispatches a JSON Git request and returns its JSON response.
+///
+/// Headless connector builds execute the same bounded Git operations; clients retain the
+/// final result when a live stream is unavailable.
+pub fn rpc_headless(
+    _events: &std::sync::Arc<dyn crate::events::EventPublisher>,
+    request: Value,
+) -> GitResult<Value> {
+    // Headless executors run the same bounded commands. Streaming is best-effort; the final
+    // result remains authoritative when a serving connector reconnects.
+    let op = str_field(&request, "op").unwrap_or("");
+    let cwd = str_field(&request, "cwd").unwrap_or("").trim();
+    if cwd.is_empty() {
+        return Ok(json!({"ok":false,"exitCode":1,"stdout":"","stderr":"Invalid git request"}));
+    }
+    Ok(match op {
+        "getStatus" => get_status(cwd),
+        "stagePaths" => {
+            let paths = paths_field(&request).unwrap_or_default();
+            let mut args = vec!["add", "--"];
+            args.extend(paths.iter().map(String::as_str));
+            run_json(cwd, &args, None)
+        }
+        "unstagePaths" => {
+            let paths = paths_field(&request).unwrap_or_default();
+            let mut args = vec!["restore", "--staged", "--"];
+            args.extend(paths.iter().map(String::as_str));
+            run_json(cwd, &args, None)
+        }
+        "discardPaths" => discard_paths(cwd, &paths_field(&request).unwrap_or_default()),
+        "commit" => run_json(
+            cwd,
+            &["commit", "-m", str_field(&request, "message").unwrap_or("")],
+            None,
+        ),
+        "pull" => run_json(cwd, &["pull", "--progress"], None),
+        "push" => run_json(cwd, &["push", "--progress"], None),
+        "fetch" => run_json(cwd, &["fetch", "--quiet"], None),
+        "getLog" => get_log(cwd),
+        "getCommitDiff" => get_commit_diff(cwd, str_field(&request, "hash").unwrap_or("")),
+        "getWorkingDiff" => get_working_diff(
+            cwd,
+            str_field(&request, "path").unwrap_or(""),
+            request
+                .get("staged")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+        ),
+        "listBranches" => list_branches(cwd),
+        "checkoutBranch" => run_json(
+            cwd,
+            &["switch", str_field(&request, "branch").unwrap_or("").trim()],
+            None,
+        ),
+        _ => json!({"exitCode":1,"stdout":"","stderr":"Unknown git operation"}),
+    })
+}
+
+#[cfg(feature = "desktop")]
 pub fn rpc(app: &AppHandle, request: Value) -> GitResult<Value> {
     let op = str_field(&request, "op").unwrap_or("");
     let cwd = str_field(&request, "cwd").unwrap_or("").trim();
@@ -608,4 +667,261 @@ pub fn rpc(app: &AppHandle, request: Value) -> GitResult<Value> {
         ),
         _ => json!({ "exitCode": 1, "stdout": "", "stderr": "Unknown git operation" }),
     })
+}
+/// Ensures a legacy folder has an initial Git history and returns its canonical common Git dir.
+/// Dirty Git sources are rejected before task forking, leaving index, worktree, renames and
+/// untracked files untouched; this is the quiesce policy rather than an unsafe partial snapshot.
+pub fn prepare_project_source(path: &str) -> Result<String, String> {
+    let root = std::fs::canonicalize(path).map_err(|e| format!("source_path_invalid: {e}"))?;
+    if !root.is_dir() {
+        return Err("source_path_invalid: source is not a directory".into());
+    }
+    let cwd = root.to_string_lossy();
+    if run_git(&cwd, &["rev-parse", "--git-dir"], None).exit_code != 0 {
+        let init = run_git(&cwd, &["init", "-b", "main"], None);
+        if init.exit_code != 0 {
+            return Err(format!("legacy_import_init_failed: {}", init.stderr.trim()));
+        }
+        let add = run_git(&cwd, &["add", "-A"], None);
+        if add.exit_code != 0 {
+            return Err(format!("legacy_import_add_failed: {}", add.stderr.trim()));
+        }
+        if run_git(&cwd, &["diff", "--cached", "--quiet"], None).exit_code != 0 {
+            let commit = run_git(
+                &cwd,
+                &[
+                    "-c",
+                    "user.name=Swath",
+                    "-c",
+                    "user.email=swath@local",
+                    "commit",
+                    "-m",
+                    "Initial import",
+                ],
+                None,
+            );
+            if commit.exit_code != 0 {
+                return Err(format!(
+                    "legacy_import_commit_failed: {}",
+                    commit.stderr.trim()
+                ));
+            }
+        }
+    }
+    let status = run_git(
+        &cwd,
+        &["status", "--porcelain=v1", "--untracked-files=all"],
+        None,
+    );
+    if status.exit_code != 0 {
+        return Err(format!("git_preflight_failed: {}", status.stderr.trim()));
+    }
+    if !status.stdout.is_empty() {
+        return Err("dirty_source: commit or stash changes before forking; staged, unstaged, deleted, renamed, and untracked files were preserved unchanged".into());
+    }
+    if run_git(&cwd, &["rev-parse", "--verify", "HEAD^{commit}"], None).exit_code != 0 {
+        return Err("unborn_repository: create an initial commit before creating a task".into());
+    }
+    let common = run_git(
+        &cwd,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+        None,
+    );
+    if common.exit_code != 0 {
+        return Err(format!("git_preflight_failed: {}", common.stderr.trim()));
+    }
+    let source = std::fs::canonicalize(common.stdout.trim())
+        .map_err(|e| format!("git_preflight_failed: {e}"))?;
+    preflight_tree(&cwd)?;
+    Ok(source.to_string_lossy().into_owned())
+}
+
+/// Returns the checked-out branch name, or `HEAD` for a deliberately detached source.
+pub fn default_branch(source: &str) -> Result<String, String> {
+    let r = run_git(source, &["symbolic-ref", "--short", "-q", "HEAD"], None);
+    if r.exit_code == 0 && !r.stdout.trim().is_empty() {
+        Ok(r.stdout.trim().into())
+    } else {
+        Ok("HEAD".into())
+    }
+}
+
+/// Resolves a ref to its immutable full commit receipt.
+pub fn resolve_ref(source: &str, reference: &str) -> Result<String, String> {
+    let r = run_git(
+        source,
+        &["rev-parse", "--verify", &format!("{reference}^{{commit}}")],
+        None,
+    );
+    if r.exit_code == 0 {
+        Ok(r.stdout.trim().into())
+    } else {
+        Err(format!("base_commit_unavailable: {}", r.stderr.trim()))
+    }
+}
+
+/// Writes a complete Git bundle for authenticated transfer to another configured replica.
+pub fn create_bundle(source: &str, destination: &Path) -> Result<(), String> {
+    let result = run_git(
+        source,
+        &["bundle", "create", &destination.to_string_lossy(), "--all"],
+        None,
+    );
+    if result.exit_code == 0 {
+        Ok(())
+    } else {
+        Err(format!("bundle_create_failed: {}", result.stderr.trim()))
+    }
+}
+
+/// Creates or updates a project-private bare object store without publishing remote refs.
+pub fn ensure_project_replica(source: &str, replica: &Path) -> Result<(), String> {
+    if !replica.exists() {
+        if let Some(parent) = replica.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        let r = run_git(
+            ".",
+            &["clone", "--bare", source, &replica.to_string_lossy()],
+            None,
+        );
+        if r.exit_code != 0 {
+            return Err(format!("replica_clone_failed: {}", r.stderr.trim()));
+        }
+    }
+    let r = run_git(
+        &replica.to_string_lossy(),
+        &["fetch", "--no-tags", source, "+refs/*:refs/swath/source/*"],
+        None,
+    );
+    if r.exit_code != 0 {
+        return Err(format!("replica_fetch_failed: {}", r.stderr.trim()));
+    }
+    Ok(())
+}
+
+/// Advances a private replica ref only when it still points at `expected`.
+/// This is the Git compare-and-swap primitive used by task publication paths.
+pub fn compare_and_swap_ref(
+    replica: &Path,
+    reference: &str,
+    next: &str,
+    expected: &str,
+) -> Result<bool, String> {
+    let r = run_git(
+        &replica.to_string_lossy(),
+        &["update-ref", reference, next, expected],
+        None,
+    );
+    if r.exit_code == 0 {
+        Ok(true)
+    } else if r.stderr.contains("is at") || r.stderr.contains("expected") {
+        Ok(false)
+    } else {
+        Err(format!("ref_update_failed: {}", r.stderr.trim()))
+    }
+}
+
+/// Fetches the exact receipt into the private replica and creates an isolated task branch/worktree.
+pub fn provision_worktree(
+    source: &str,
+    replica: &Path,
+    worktree: &Path,
+    base: &str,
+) -> Result<(), String> {
+    let source_is_replica = Path::new(source) == replica;
+    if !source_is_replica {
+        ensure_project_replica(source, replica)?;
+    }
+    let repo = replica.to_string_lossy();
+    if !source_is_replica {
+        let fetch = run_git(&repo, &["fetch", "--no-tags", source, base], None);
+        if fetch.exit_code != 0 {
+            return Err(format!("base_fetch_failed: {}", fetch.stderr.trim()));
+        }
+    }
+    if run_git(
+        &repo,
+        &["cat-file", "-e", &format!("{base}^{{commit}}")],
+        None,
+    )
+    .exit_code
+        != 0
+    {
+        return Err(
+            "base_commit_unavailable: verified replica does not contain the requested commit"
+                .into(),
+        );
+    }
+    if worktree.exists() {
+        let existing = run_git(&repo, &["worktree", "list", "--porcelain"], None);
+        if existing
+            .stdout
+            .contains(&format!("worktree {}", worktree.display()))
+        {
+            return Ok(());
+        }
+        return Err("worktree_path_exists: remove the incomplete worktree before retrying".into());
+    }
+    let task_name = worktree
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| "worktree_path_invalid: task directory has no portable name".to_string())?;
+    let task_ref = format!("refs/heads/swath/tasks/{task_name}");
+    let zero = "0000000000000000000000000000000000000000";
+    if !compare_and_swap_ref(replica, &task_ref, base, zero)? {
+        let existing = run_git(&repo, &["rev-parse", &task_ref], None);
+        if existing.exit_code != 0 || existing.stdout.trim() != base {
+            return Err("task_ref_conflict: task branch already points to another commit".into());
+        }
+    }
+    let r = run_git(
+        &repo,
+        &["worktree", "add", &worktree.to_string_lossy(), &task_ref],
+        None,
+    );
+    if r.exit_code != 0 {
+        return Err(format!("worktree_add_failed: {}", r.stderr.trim()));
+    }
+    Ok(())
+}
+
+fn preflight_tree(cwd: &str) -> Result<(), String> {
+    let modules = run_git(cwd, &["ls-files", "--stage", ".gitmodules"], None);
+    if modules.exit_code == 0 && !modules.stdout.trim().is_empty() {
+        return Err(
+            "submodules_unsupported: initialize or vendor submodules before task provisioning"
+                .into(),
+        );
+    }
+    let attrs = run_git(cwd, &["check-attr", "filter", "--", "."], None);
+    if attrs.stdout.contains("filter: lfs")
+        && run_git(cwd, &["lfs", "version"], None).exit_code != 0
+    {
+        return Err("lfs_unavailable: install Git LFS before task provisioning".into());
+    }
+    let paths = run_git(cwd, &["ls-tree", "-r", "--name-only", "HEAD"], None);
+    if paths.exit_code != 0 {
+        return Err(format!("tree_preflight_failed: {}", paths.stderr.trim()));
+    }
+    let mut folded = HashSet::new();
+    for path in paths.stdout.lines() {
+        let key = path.to_lowercase();
+        if !folded.insert(key) {
+            return Err(format!(
+                "case_collision: {path}; rename colliding paths before cross-platform provisioning"
+            ));
+        }
+        if path.split('/').any(|part| {
+            part.is_empty()
+                || part.ends_with('.')
+                || part.ends_with(' ')
+                || part
+                    .chars()
+                    .any(|c| matches!(c, '<' | '>' | ':' | '"' | '\\' | '|' | '?' | '*'))
+        }) {
+            return Err(format!("windows_incompatible_path: {path}"));
+        }
+    }
+    Ok(())
 }

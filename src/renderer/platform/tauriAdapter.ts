@@ -8,6 +8,7 @@ import type { FilesRpcRequest } from "../../shared/ipc/filesRpc";
 import type { GitRpcRequest } from "../../shared/ipc/gitRpc";
 import type { AskImagesRequest } from "../../shared/ipc/askImages";
 import type { PiHostEvent, PiRpcRequest } from "../../shared/ipc/piRpc";
+import type { TaskRpcRequest } from "../../shared/ipc/taskRpc";
 import { detectHostPlatform } from "./runtime";
 
 /** Creates the renderer API backed by Tauri commands and events. */
@@ -122,6 +123,7 @@ export function createTauriSwath(): SwathApi {
     files: {
       rpc: (request: FilesRpcRequest) => invoke(TauriCommands.filesRpc, { request }),
     },
+    tasks: { rpc: (request: TaskRpcRequest) => invoke(TauriCommands.taskRpc, { request }) },
     pi: {
       rpc: (request: PiRpcRequest) => invoke(TauriCommands.piRpc, { request }),
       onEvent: (callback) => {
@@ -138,6 +140,75 @@ export function createTauriSwath(): SwathApi {
           disposed = true;
           unsubscribe?.();
         };
+      },
+    },
+    sync: {
+      snapshot: (networkId) => invoke(TauriCommands.syncSnapshot, { networkId }),
+      changes: (networkId, cursor) => invoke(TauriCommands.syncChanges, { networkId, cursor }),
+      ack: (networkId, cursor) => invoke(TauriCommands.syncAck, { networkId, cursor }),
+      conflicts: (networkId) => invoke(TauriCommands.syncConflicts, { networkId }),
+    },
+    network: {
+      current: () => invoke(TauriCommands.networkCurrent),
+      initialize: (name) => invoke(TauriCommands.networkInitialize, { name }),
+      discover: () => invoke(TauriCommands.networkDiscover),
+      requestJoin: (networkId, endpoint, enrollmentSecret) =>
+        invoke(TauriCommands.networkRequestJoin, { networkId, endpoint, enrollmentSecret }),
+      joinStatus: (enrollmentId) => invoke(TauriCommands.networkJoinStatus, { enrollmentId }),
+      approveJoin: (networkId, enrollmentId) =>
+        invoke(TauriCommands.networkApproveJoin, { networkId, enrollmentId }),
+      membership: (networkId) => invoke(TauriCommands.networkMembership, { networkId }),
+      promote: (networkId, deviceId) =>
+        invoke(TauriCommands.networkPromote, { networkId, deviceId }),
+      health: (networkId) => invoke(TauriCommands.networkHealth, { networkId }),
+    },
+    catalog: {
+      snapshot: (networkId) => invoke(TauriCommands.catalogSnapshot, { networkId }),
+      mutate: (request) => invoke(TauriCommands.catalogMutate, { request }),
+    },
+    migration: {
+      status: () => invoke(TauriCommands.migrationStatus),
+      preview: (operationId) => invoke(TauriCommands.migrationPreview, { operationId }),
+      confirm: (request) => invoke(TauriCommands.migrationConfirm, { request }),
+      export: () => invoke(TauriCommands.migrationExport),
+      conflicts: () => invoke(TauriCommands.migrationConflicts),
+      ensureResolutionJob: (conflictId) =>
+        invoke(TauriCommands.migrationEnsureResolutionJob, { conflictId }),
+      submitProposal: (proposal) => invoke(TauriCommands.migrationSubmitProposal, { proposal }),
+      approveProposal: (approval) => invoke(TauriCommands.migrationApproveProposal, { approval }),
+    },
+    localState: {
+      load: async (networkId) => {
+        const saved = (await invoke(TauriCommands.localStateLoad, {
+          interfaceId: `task:${networkId}`,
+        })) as { revision: number } | null;
+        return saved
+          ? {
+              revision: saved.revision,
+              state: {
+                ...saved,
+                historicalTaskId: (saved as any).historicalTaskId ?? null,
+                paneOrderByTask: (saved as any).taskLayouts ?? {},
+              },
+            }
+          : null;
+      },
+      save: async (networkId, state, revision) => {
+        const local = state as Record<string, unknown>;
+        await invoke(TauriCommands.localStateSave, {
+          expectedRevision: revision - 1,
+          localState: {
+            interfaceId: `task:${networkId}`,
+            activeProjectId: local.activeProjectId ?? null,
+            activeTaskId: local.activeTaskId ?? null,
+            historicalTaskId: local.historicalTaskId ?? null,
+            focusedPaneId: local.focusedPaneId ?? null,
+            taskLayouts: local.paneOrderByTask ?? {},
+            drafts: local.drafts ?? {},
+            revision,
+          },
+        });
+        return revision;
       },
     },
     remote: {

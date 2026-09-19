@@ -12,6 +12,7 @@ import { findPane } from "../../../domain/layout/layoutTree";
 import { AnsiText } from "../../../lib/ansi";
 import { useUiStore } from "../../../state/uiStore";
 import { useConfigStore } from "../../../state/configStore";
+import { useTaskStore } from "../../../state/taskStore";
 import { groupPathsFor } from "../../../domain/workspaces/groupActions";
 import { PiRootsProvider } from "./PiRootsContext";
 import { PaneFrame } from "../../panes/components/PaneFrame";
@@ -79,11 +80,18 @@ function NoticeRow({ notice, onDismiss }: { notice: PiNotice; onDismiss: (id: st
   );
 }
 
-export function PiAgentPane({ workspace, view, pane }: PaneComponentProps): JSX.Element {
+export function PiAgentPane({
+  workspace,
+  view,
+  pane,
+  taskExecution,
+}: PaneComponentProps): JSX.Element {
   const activePaneId = useUiStore((state) => state.activePaneId);
   const paneId = pane.id;
   const paneMeta = findPane(view.layout, paneId);
-  const cwd = (paneMeta?.cwd ?? paneMeta?.metadata?.cwd ?? workspace.path).trim() || workspace.path;
+  const cwd =
+    taskExecution?.cwd ??
+    ((paneMeta?.cwd ?? paneMeta?.metadata?.cwd ?? workspace.path).trim() || workspace.path);
   const isActive = activePaneId === paneId || view.activePaneId === paneId;
 
   // On a group's shared surface the agent gets every folder in the group; a project pane stays
@@ -121,8 +129,22 @@ export function PiAgentPane({ workspace, view, pane }: PaneComponentProps): JSX.
         model: request.model,
         thinkingLevel: request.reasoningLevel,
       }),
+    taskExecution && {
+      taskId: taskExecution.taskId,
+      networkId: taskExecution.networkId,
+      executionGeneration: taskExecution.executionGeneration,
+      readOnly: taskExecution.readOnly,
+    },
   );
   const { state } = agent;
+  const historyLabel =
+    agent.history.status === "synced"
+      ? `Synchronized through cursor ${agent.history.cursor ?? "start"}`
+      : agent.history.status === "local"
+        ? "Saved locally — replication pending"
+        : agent.history.status === "pending"
+          ? "Sync pending acknowledgement"
+          : "History unavailable";
   const sessionFile = state.state?.sessionFile;
   useEffect(() => {
     if (sessionFile && sessionFile !== paneMeta?.metadata?.piSessionFile) {
@@ -131,7 +153,10 @@ export function PiAgentPane({ workspace, view, pane }: PaneComponentProps): JSX.
   }, [paneId, paneMeta?.metadata?.piSessionFile, sessionFile, view.id, workspace.id]);
 
   // Draft and attachments are cached alongside the transcript so a tab switch does not lose them.
-  const [draft, setDraft] = useState(() => piPaneCache.get(paneId)?.draft ?? "");
+  const persistedDraft = useTaskStore((store) => store.local.drafts?.[paneId]);
+  const saveDraft = useTaskStore((store) => store.setDraft);
+  const setFocusedPane = useTaskStore((store) => store.setFocusedPane);
+  const [draft, setDraft] = useState(() => piPaneCache.get(paneId)?.draft ?? persistedDraft ?? "");
   const [images, setImages] = useState<AttachedImage[]>(
     () => piPaneCache.get(paneId)?.images ?? [],
   );
@@ -141,7 +166,8 @@ export function PiAgentPane({ workspace, view, pane }: PaneComponentProps): JSX.
   useEffect(() => {
     const entry = piPaneCache.get(paneId);
     if (entry) piPaneCache.set(paneId, { ...entry, draft, images, pastes });
-  }, [paneId, draft, images, pastes]);
+    if (taskExecution?.taskId) saveDraft(paneId, draft);
+  }, [paneId, draft, images, pastes, saveDraft, taskExecution?.taskId]);
   const [appliedEditorText, setAppliedEditorText] = useState<string | undefined>(undefined);
   const [treeOpen, setTreeOpen] = useState(false);
   const [resumeOpen, setResumeOpen] = useState(false);
@@ -351,7 +377,10 @@ export function PiAgentPane({ workspace, view, pane }: PaneComponentProps): JSX.
         active={isActive}
         title={state.title ?? state.state?.sessionName ?? "pi"}
         statusClass={state.exited ? "exited" : state.isStreaming ? "running" : "dormant"}
-        onActivate={() => appActions.setActivePane(workspace.id, view.id, paneId)}
+        onActivate={() => {
+          appActions.setActivePane(workspace.id, view.id, paneId);
+          if (taskExecution?.taskId) setFocusedPane(paneId);
+        }}
         onSplitRight={(kind) =>
           appActions.splitPane(workspace.id, view.id, paneId, "vertical", kind)
         }
@@ -362,6 +391,17 @@ export function PiAgentPane({ workspace, view, pane }: PaneComponentProps): JSX.
       >
         <div className="pi-agent relative flex h-full min-h-0 overflow-hidden">
           <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+            <div className="shrink-0 border-b border-[var(--pi-border-muted)] px-3 py-1 text-[11px] text-[var(--pi-muted)]">
+              {historyLabel}
+              {agent.history.conflicts.length > 0 ? (
+                <details className="mt-1">
+                  <summary>{agent.history.conflicts.length} replication conflict(s)</summary>
+                  <pre className="max-h-24 overflow-auto">
+                    {JSON.stringify(agent.history.conflicts, null, 2)}
+                  </pre>
+                </details>
+              ) : null}
+            </div>
             {state.notices.length > 0 ? (
               <div className="shrink-0 border-b border-[var(--pi-border-muted)]">
                 {state.notices.slice(-3).map((notice) => (

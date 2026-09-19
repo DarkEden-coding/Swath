@@ -1,4 +1,11 @@
-import { Suspense, lazy, useEffect, type PointerEvent as ReactPointerEvent } from "react";
+import {
+  Suspense,
+  lazy,
+  useCallback,
+  useEffect,
+  useState,
+  type PointerEvent as ReactPointerEvent,
+} from "react";
 import * as appActions from "./app/appActions";
 import { commandFromKeyboardEvent, runAppCommand } from "./app/commandRegistry";
 import { useAppBootstrap } from "./app/useAppBootstrap";
@@ -12,6 +19,8 @@ import { AddProjectModal } from "./features/remote/AddProjectModal";
 import { piPaneIdsOfWorkspace, setViewedPanes } from "./features/tabTypes/piAgent/piActivity";
 import { useConfigStore } from "./state/configStore";
 import { useUiStore } from "./state/uiStore";
+import { useTaskStore } from "./state/taskStore";
+import { NetworkStartupGate } from "./features/tasks/NetworkStartupGate";
 
 const TerminalWorkspace = lazy(() =>
   import("./features/shell/components/TerminalWorkspace").then((module) => ({
@@ -50,6 +59,12 @@ export function App(): JSX.Element {
   };
 
   useAppBootstrap();
+  const refreshTasks = useTaskStore((state) => state.refresh);
+  const [networkReady, setNetworkReady] = useState(false);
+  const handleNetworkReady = useCallback(() => {
+    setNetworkReady(true);
+    void refreshTasks();
+  }, [refreshTasks]);
 
   const activeWorkspace =
     config?.workspaces.find((workspace) => workspace.id === config.activeWorkspaceId) ?? null;
@@ -121,6 +136,10 @@ export function App(): JSX.Element {
         <div className={bootScreenClass}>Loading…</div>
       </div>
     );
+  }
+
+  if (!networkReady) {
+    return <NetworkStartupGate onReady={handleNetworkReady} />;
   }
 
   const gridTemplateColumns = sidebarCollapsed

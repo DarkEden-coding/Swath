@@ -424,8 +424,7 @@ export function Composer({
         onKeyDown={(event) => {
           // Image markers and paste blocks are one object: they delete whole and the arrows step
           // over them, the same way mentions do below.
-          const collapsed =
-            event.currentTarget.selectionStart === event.currentTarget.selectionEnd;
+          const collapsed = event.currentTarget.selectionStart === event.currentTarget.selectionEnd;
           if (collapsed && (event.key === "ArrowLeft" || event.key === "ArrowRight")) {
             const caret = event.currentTarget.selectionStart ?? 0;
             const span =
@@ -434,10 +433,7 @@ export function Composer({
                 : tokenSpanAfter(value, caret);
             // One press crosses the whole token: from anywhere at/after its start going left,
             // or anywhere at/before its end going right.
-            if (
-              span &&
-              (event.key === "ArrowLeft" ? caret > span.start : caret < span.end)
-            ) {
+            if (span && (event.key === "ArrowLeft" ? caret > span.start : caret < span.end)) {
               const target = event.key === "ArrowLeft" ? span.start : span.end;
               event.preventDefault();
               setCaret(target);

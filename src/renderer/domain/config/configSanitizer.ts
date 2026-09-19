@@ -67,6 +67,16 @@ function sanitizeWorkspace(workspace: Workspace, removed: string[]): Workspace {
 
 /** Returns a configuration containing only pane kinds this build can render. */
 export function sanitizeConfig(config: AppConfig): SanitizeConfigResult {
+  if (config.version !== 2) {
+    throw new Error(
+      `Cannot open config version ${String(config.version)}; restore or upgrade with a compatible Swath version.`,
+    );
+  }
+  if (!Array.isArray(config.workspaces) || !config.settings) {
+    throw new Error(
+      "Cannot open config: required local state is corrupt. Restore the preserved v2 backup.",
+    );
+  }
   const removedKinds: string[] = [];
   const workspaces = config.workspaces.map((workspace) =>
     sanitizeWorkspace(workspace, removedKinds),

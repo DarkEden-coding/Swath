@@ -14,7 +14,9 @@ describe("renderer content security policy", () => {
   it("allows the cross-origin transports used by remote connectors", () => {
     const root = resolve(import.meta.dirname, "../../..");
     const html = readFileSync(resolve(root, "index.html"), "utf8");
-    const htmlPolicy = html.match(/http-equiv="Content-Security-Policy"[\s\S]*?content="([^"]+)"/)?.[1];
+    const htmlPolicy = html.match(
+      /http-equiv="Content-Security-Policy"[\s\S]*?content="([^"]+)"/,
+    )?.[1];
     const tauri = JSON.parse(readFileSync(resolve(root, "src-tauri/tauri.conf.json"), "utf8"));
 
     expect(htmlPolicy).toBeDefined();

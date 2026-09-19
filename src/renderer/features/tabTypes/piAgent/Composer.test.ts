@@ -23,11 +23,7 @@ describe("image placeholders", () => {
     const removed = tokenSpanBefore(first.text, first.text.length);
     expect(removed?.token).toBe("[Image 2]");
     // Reusing the number just freed is safe; nothing references it any more.
-    const second = attachImages(
-      "[Image 1]",
-      first.images.slice(0, 1),
-      [png("c")],
-    );
+    const second = attachImages("[Image 1]", first.images.slice(0, 1), [png("c")]);
     expect(second.text).toBe("[Image 1] [Image 2]");
     expect(second.images.map((image) => image.data)).toEqual(["a", "c"]);
   });

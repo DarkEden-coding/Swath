@@ -1,3 +1,23 @@
+/// Terminates a process tree where the platform exposes a native system command.
+pub(crate) fn kill_process_tree(pid: u32) {
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    {
+        let pid = pid.to_string();
+        let _ = std::process::Command::new("pkill")
+            .args(["-TERM", "-P", &pid])
+            .status();
+        let _ = std::process::Command::new("kill")
+            .args(["-TERM", &pid])
+            .status();
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let _ = std::process::Command::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .status();
+    }
+}
+
 /// Reports whether the shell process currently has a child process.
 pub(super) fn has_child_processes(pid: u32) -> bool {
     #[cfg(any(target_os = "macos", target_os = "linux"))]

@@ -1,32 +1,36 @@
-mod process;
+pub(crate) mod process;
 mod replay;
 
-use crate::types::{
-    PtyResizeRequest, TerminalDataEvent, TerminalExitEventPayload, TerminalSessionAttachRequest,
-    TerminalSessionStartRequest, TerminalSessionStatus, TERMINAL_REPLAY_DETACHED_MAX_BYTES,
-    TERMINAL_REPLAY_MAX_BYTES,
+use crate::{
+    config,
+    events::{value, EventPublisher},
+    types::{
+        PtyResizeRequest, TerminalDataEvent, TerminalExitEventPayload,
+        TerminalSessionAttachRequest, TerminalSessionStartRequest, TerminalSessionStatus,
+        TERMINAL_REPLAY_MAX_BYTES,
+    },
 };
 use anyhow::{anyhow, Result};
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
-use process::has_child_processes;
+use process::{has_child_processes, kill_process_tree};
 use replay::{ReplayBuffer, Utf8StreamDecoder};
+use rusqlite::{params, OptionalExtension};
 use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc, Mutex,
 };
 use std::thread;
 use std::time::Duration;
-use tauri::{AppHandle, Emitter, Window};
 
 const DATA_EVENT: &str = "terminal:data";
 const EXIT_EVENT: &str = "terminal:exit";
 
 /// Owns and coordinates all PTY-backed terminal sessions.
 pub struct TerminalManager {
-    app: AppHandle,
+    events: Arc<dyn EventPublisher>,
     sessions: Mutex<HashMap<String, Arc<TerminalSession>>>,
 }
 
@@ -38,15 +42,14 @@ struct TerminalSession {
     master: Mutex<Box<dyn MasterPty + Send>>,
     child: Mutex<Box<dyn Child + Send + Sync>>,
     replay: Mutex<ReplayBuffer>,
-    stream_to_ui: AtomicBool,
     running: AtomicBool,
 }
 
 impl TerminalManager {
-    /// Creates a terminal manager that emits session events through `app`.
-    pub fn new(app: AppHandle) -> Self {
+    /// Creates a terminal manager that emits through the runtime event publisher.
+    pub fn new(events: Arc<dyn EventPublisher>) -> Self {
         Self {
-            app,
+            events,
             sessions: Mutex::new(HashMap::new()),
         }
     }
@@ -62,24 +65,71 @@ impl TerminalManager {
             }
             Err(err) => {
                 // Make startup failures visible in the terminal pane, matching Electron behavior.
-                let _ = self.app.emit(
+                self.events.publish(
                     DATA_EVENT,
-                    TerminalDataEvent {
+                    value(TerminalDataEvent {
                         session_id: session_id.clone(),
                         data: format!("\r\nFailed to start terminal: {err}\r\n"),
-                    },
+                    }),
                 );
-                let _ = self.app.emit(
+                self.events.publish(
                     EXIT_EVENT,
-                    TerminalExitEventPayload {
+                    value(TerminalExitEventPayload {
                         session_id,
                         exit_code: 1,
                         signal: None,
-                    },
+                    }),
                 );
                 Err(err)
             }
         }
+    }
+
+    /// Resolves a terminal's working directory from the assigned executor task record.
+    pub fn create_for_task(
+        &self,
+        data_dir: &Path,
+        mut request: TerminalSessionStartRequest,
+    ) -> Result<()> {
+        let task_id = request
+            .task_id
+            .clone()
+            .ok_or_else(|| anyhow!("taskId is required"))?;
+        let generation = request
+            .execution_generation
+            .ok_or_else(|| anyhow!("executionGeneration is required"))?;
+        request.cwd = task_cwd(data_dir, Some(&task_id), Some(generation))?;
+        // This mapping is durable because write/resize/kill/replay only carry a session ID.
+        let conn = config::connection_at(&config::db_path_in(data_dir).map_err(|e| anyhow!(e))?)?;
+        let device_id: String = conn.query_row(
+            "SELECT assigned_device_id FROM tasks WHERE id=?1",
+            [&task_id],
+            |r| r.get(0),
+        )?;
+        let session_id = request.session_id.clone();
+
+        // Remove the old fence before stopping its process: a replacement must never leave a
+        // durable route to a shell which has just been killed.  Commit the new fence before
+        // spawning so every process that can emit output has a durable owner.
+        conn.execute(
+            "DELETE FROM terminal_task_sessions WHERE session_id=?1",
+            [&session_id],
+        )?;
+        self.kill(&session_id)?;
+        conn.execute(
+            "INSERT INTO terminal_task_sessions(session_id,task_id,device_id,execution_generation,created_at) VALUES(?1,?2,?3,?4,strftime('%s','now'))",
+            params![session_id, task_id, device_id, generation],
+        )?;
+        if let Err(error) = self.create(request) {
+            // Spawn failure (including a partially-created PTY) must not leave a routable fence.
+            let _ = conn.execute(
+                "DELETE FROM terminal_task_sessions WHERE session_id=?1",
+                [&session_id],
+            );
+            let _ = self.kill(&session_id);
+            return Err(error);
+        }
+        Ok(())
     }
 
     /// Writes input to a terminal session.
@@ -88,6 +138,31 @@ impl TerminalManager {
         session.writer.lock().unwrap().write_all(data.as_bytes())?;
         session.writer.lock().unwrap().flush()?;
         Ok(())
+    }
+
+    /// Writes only while the durable task-generation fence still authorizes this shell.
+    pub fn write_for_task(&self, data_dir: &Path, session_id: &str, data: &str) -> Result<()> {
+        let conn = config::connection_at(&config::db_path_in(data_dir).map_err(|e| anyhow!(e))?)?;
+        let task: Option<(String, i64)> = conn.query_row(
+            "SELECT task_id,execution_generation FROM terminal_task_sessions WHERE session_id=?1",
+            [session_id], |r| Ok((r.get(0)?, r.get(1)?)),
+        ).optional()?;
+        let Some((task_id, generation)) = task else {
+            return Err(anyhow!("{}", r#"{"code":"unknown_executor"}"#));
+        };
+        // Reuse the create-time resolver: it checks ownership, generation, transfer freeze,
+        // and that the executor's worktree remains available.
+        task_cwd(data_dir, Some(&task_id), Some(generation))?;
+        self.write(session_id, data)
+    }
+
+    fn authorize_session(&self, data_dir: &Path, session_id: &str) -> Result<()> {
+        let conn = config::connection_at(&config::db_path_in(data_dir).map_err(|e| anyhow!(e))?)?;
+        let task: Option<(String, i64)> = conn.query_row("SELECT task_id,execution_generation FROM terminal_task_sessions WHERE session_id=?1", [session_id], |r| Ok((r.get(0)?, r.get(1)?))).optional()?;
+        let Some((task_id, generation)) = task else {
+            return Err(anyhow!("{}", r#"{"code":"unknown_executor"}"#));
+        };
+        task_cwd(data_dir, Some(&task_id), Some(generation)).map(|_| ())
     }
 
     /// Resizes a terminal session PTY.
@@ -102,25 +177,39 @@ impl TerminalManager {
         Ok(())
     }
 
+    pub fn resize_for_task(&self, data_dir: &Path, request: PtyResizeRequest) -> Result<()> {
+        self.authorize_session(data_dir, &request.session_id)?;
+        self.resize(request)
+    }
+
     /// Stops and removes a terminal session if it exists.
     pub fn kill(&self, session_id: &str) -> Result<()> {
         let session = self.sessions.lock().unwrap().remove(session_id);
         if let Some(session) = session {
             session.running.store(false, Ordering::SeqCst);
+            if let Some(pid) = session.pid {
+                kill_process_tree(pid);
+            }
             let _ = session.child.lock().unwrap().kill();
-            let _ = self.app.emit(
+            self.events.publish(
                 EXIT_EVENT,
-                TerminalExitEventPayload {
+                value(TerminalExitEventPayload {
                     session_id: session_id.to_string(),
                     exit_code: -1,
                     signal: None,
-                },
+                }),
             );
         }
         Ok(())
     }
 
-    /// Attaches to an existing session, optionally replaying output, or creates it.
+    pub fn kill_for_task(&self, data_dir: &Path, session_id: &str) -> Result<()> {
+        self.authorize_session(data_dir, session_id)?;
+        self.kill(session_id)
+    }
+
+    /// Attaches to an existing session only. Historical/exited sessions are inspectable but never
+    /// restarted by attachment; restart is explicit.
     pub fn attach(&self, request: TerminalSessionAttachRequest) -> Result<TerminalSessionStatus> {
         if let Some(session) = self
             .sessions
@@ -138,12 +227,10 @@ impl TerminalManager {
                 running,
             });
         }
-        let session_id = request.session_id.clone();
-        self.create(request.into())?;
-        Ok(TerminalSessionStatus {
-            session_id,
-            running: true,
-        })
+        Err(anyhow!(
+            "terminal session not found: {}",
+            request.session_id
+        ))
     }
 
     /// Restarts a session using its original start request.
@@ -157,50 +244,56 @@ impl TerminalManager {
         })
     }
 
-    /// Emits buffered output for a session to one window.
-    pub fn replay_to_window(
+    pub fn attach_for_task(
         &self,
-        window: &Window,
+        data_dir: &Path,
+        request: TerminalSessionAttachRequest,
+    ) -> Result<TerminalSessionStatus> {
+        self.authorize_session(data_dir, &request.session_id)?;
+        self.attach(request)
+    }
+
+    pub fn restart_for_task(
+        &self,
+        data_dir: &Path,
         session_id: &str,
     ) -> Result<TerminalSessionStatus> {
-        let running = self.get(session_id)?.running.load(Ordering::SeqCst);
-        let data = self.replay_bytes(session_id)?;
-        if !data.is_empty() {
-            window.emit(
-                DATA_EVENT,
-                TerminalDataEvent {
-                    session_id: session_id.to_string(),
-                    data,
-                },
-            )?;
-        }
-        Ok(TerminalSessionStatus {
-            session_id: session_id.to_string(),
-            running,
-        })
+        self.authorize_session(data_dir, session_id)?;
+        self.restart(session_id)
     }
 
-    /// Replays through the global event bus used by remote connector subscribers.
-    pub fn replay_to_connector(&self, session_id: &str) -> Result<TerminalSessionStatus> {
+    /// Returns replay to the requesting connector; replay is never broadcast globally.
+    pub fn replay_for_task(
+        &self,
+        data_dir: &Path,
+        session_id: &str,
+    ) -> Result<(TerminalSessionStatus, String)> {
+        self.authorize_session(data_dir, session_id)?;
         let running = self.get(session_id)?.running.load(Ordering::SeqCst);
-        self.replay_to_app(session_id)?;
-        Ok(TerminalSessionStatus {
-            session_id: session_id.to_string(),
-            running,
-        })
+        Ok((
+            TerminalSessionStatus {
+                session_id: session_id.to_string(),
+                running,
+            },
+            self.replay_bytes(session_id)?,
+        ))
     }
 
-    /// Enables live UI events and adjusts replay capacity for attachment state.
-    pub fn set_streaming(&self, session_id: &str, enabled: bool) -> Result<()> {
-        let session = self.get(session_id)?;
-        session.stream_to_ui.store(enabled, Ordering::Relaxed);
-        let mut replay = session.replay.lock().unwrap();
-        if enabled {
-            replay.set_limit(TERMINAL_REPLAY_MAX_BYTES);
-        } else {
-            replay.set_limit(TERMINAL_REPLAY_DETACHED_MAX_BYTES);
-        }
+    /// Kept for IPC compatibility. Streaming is viewer-scoped, so hiding one viewer never
+    /// changes the process-wide stream or replay retention.
+    pub fn set_streaming(&self, session_id: &str, _enabled: bool) -> Result<()> {
+        self.get(session_id)?;
         Ok(())
+    }
+
+    pub fn set_streaming_for_task(
+        &self,
+        data_dir: &Path,
+        session_id: &str,
+        enabled: bool,
+    ) -> Result<()> {
+        self.authorize_session(data_dir, session_id)?;
+        self.set_streaming(session_id, enabled)
     }
 
     /// Reports whether a running shell has spawned a child process.
@@ -210,6 +303,35 @@ impl TerminalManager {
             return Ok(false);
         }
         Ok(session.pid.is_some_and(has_child_processes))
+    }
+
+    pub fn is_busy_for_task(&self, data_dir: &Path, session_id: &str) -> Result<bool> {
+        self.authorize_session(data_dir, session_id)?;
+        self.is_busy(session_id)
+    }
+
+    /// Returns the actual PTY children currently owned by a task.
+    pub fn task_processes(&self, data_dir: &Path, task_id: &str) -> Result<Vec<(String, u32)>> {
+        let conn = config::connection_at(&config::db_path_in(data_dir).map_err(|e| anyhow!(e))?)?;
+        let mut statement =
+            conn.prepare("SELECT session_id FROM terminal_task_sessions WHERE task_id=?1")?;
+        let ids = statement
+            .query_map([task_id], |row| row.get::<_, String>(0))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        let sessions = self.sessions.lock().unwrap();
+        Ok(ids
+            .into_iter()
+            .filter_map(|id| sessions.get(&id).and_then(|s| s.pid).map(|pid| (id, pid)))
+            .collect())
+    }
+
+    /// Quiesces only task-owned PTYs. The caller must have recorded explicit confirmation first.
+    pub fn quiesce_task(&self, data_dir: &Path, task_id: &str) -> Result<Vec<(String, u32)>> {
+        let processes = self.task_processes(data_dir, task_id)?;
+        for (session, _) in &processes {
+            self.kill(session)?;
+        }
+        Ok(processes)
     }
 
     /// Stops and removes every terminal session.
@@ -253,7 +375,6 @@ impl TerminalManager {
             master: Mutex::new(pair.master),
             child: Mutex::new(child),
             replay: Mutex::new(ReplayBuffer::new(TERMINAL_REPLAY_MAX_BYTES)),
-            stream_to_ui: AtomicBool::new(true),
             running: AtomicBool::new(true),
         });
 
@@ -263,7 +384,7 @@ impl TerminalManager {
     }
 
     fn start_reader(&self, session: Arc<TerminalSession>, reader: &mut Box<dyn Read + Send>) {
-        let app = self.app.clone();
+        let events = self.events.clone();
         let mut reader = std::mem::replace(reader, Box::new(std::io::empty()));
         thread::spawn(move || {
             let mut buf = [0u8; 8192];
@@ -274,15 +395,13 @@ impl TerminalManager {
                     Ok(n) => {
                         for data in decoder.push(&buf[..n]) {
                             append_replay(&session, &data);
-                            if session.stream_to_ui.load(Ordering::Relaxed) {
-                                let _ = app.emit(
-                                    DATA_EVENT,
-                                    TerminalDataEvent {
-                                        session_id: session.id.clone(),
-                                        data,
-                                    },
-                                );
-                            }
+                            events.publish(
+                                DATA_EVENT,
+                                value(TerminalDataEvent {
+                                    session_id: session.id.clone(),
+                                    data,
+                                }),
+                            );
                         }
                     }
                     Err(_) => break,
@@ -290,33 +409,31 @@ impl TerminalManager {
             }
             if let Some(data) = decoder.finish() {
                 append_replay(&session, &data);
-                if session.stream_to_ui.load(Ordering::Relaxed) {
-                    let _ = app.emit(
-                        DATA_EVENT,
-                        TerminalDataEvent {
-                            session_id: session.id.clone(),
-                            data,
-                        },
-                    );
-                }
+                events.publish(
+                    DATA_EVENT,
+                    value(TerminalDataEvent {
+                        session_id: session.id.clone(),
+                        data,
+                    }),
+                );
             }
         });
     }
 
     fn start_watcher(&self, session: Arc<TerminalSession>) {
-        let app = self.app.clone();
+        let events = self.events.clone();
         thread::spawn(move || {
             while session.running.load(Ordering::SeqCst) {
                 if let Ok(Some(status)) = session.child.lock().unwrap().try_wait() {
                     session.running.store(false, Ordering::SeqCst);
                     let code = status.exit_code() as i32;
-                    let _ = app.emit(
+                    events.publish(
                         EXIT_EVENT,
-                        TerminalExitEventPayload {
+                        value(TerminalExitEventPayload {
                             session_id: session.id.clone(),
                             exit_code: code,
                             signal: None,
-                        },
+                        }),
                     );
                     break;
                 }
@@ -328,13 +445,13 @@ impl TerminalManager {
     fn replay_to_app(&self, session_id: &str) -> Result<()> {
         let data = self.replay_bytes(session_id)?;
         if !data.is_empty() {
-            self.app.emit(
+            self.events.publish(
                 DATA_EVENT,
-                TerminalDataEvent {
+                value(TerminalDataEvent {
                     session_id: session_id.to_string(),
                     data,
-                },
-            )?;
+                }),
+            );
         }
         Ok(())
     }
@@ -344,6 +461,43 @@ impl TerminalManager {
         let text = session.replay.lock().unwrap().text();
         Ok(text)
     }
+}
+
+fn task_cwd(data_dir: &Path, task_id: Option<&str>, generation: Option<i64>) -> Result<String> {
+    let task_id = task_id.filter(|id| !id.is_empty()).ok_or_else(|| {
+        anyhow!(
+            "{}",
+            r#"{"code":"invalid_request","message":"taskId is required"}"#
+        )
+    })?;
+    let generation = generation.ok_or_else(|| {
+        anyhow!(
+            "{}",
+            r#"{"code":"invalid_request","message":"executionGeneration is required"}"#
+        )
+    })?;
+    let conn = config::connection_at(&config::db_path_in(data_dir).map_err(|e| anyhow!(e))?)?;
+    // A transfer freeze is catalog state, not a UI hint; this check survives a restart and
+    // prevents a new shell from racing the snapshot before ownership commits.
+    let frozen: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM task_operations WHERE task_id=?1 AND kind='transfer' AND phase IN ('source frozen','destination staged','verified'))", params![task_id], |r| r.get(0))?;
+    if frozen {
+        return Err(anyhow!("{}", r#"{"code":"task_frozen"}"#));
+    }
+    let row: Option<(i64, String)> = conn.query_row("SELECT t.execution_generation,p.path FROM tasks t JOIN device_task_paths p ON p.task_id=t.id AND p.device_id=t.assigned_device_id WHERE t.id=?1 AND t.tombstoned_at IS NULL", params![task_id], |r| Ok((r.get(0)?,r.get(1)?))).optional()?;
+    let Some((current, cwd)) = row else {
+        return Err(anyhow!(format!(
+            r#"{{"code":"unknown_executor","taskId":"{task_id}"}}"#
+        )));
+    };
+    if current != generation {
+        return Err(anyhow!(format!(
+            r#"{{"code":"stale_generation","expected":{current}}}"#
+        )));
+    }
+    if !Path::new(&cwd).is_dir() {
+        return Err(anyhow!("{}", r#"{"code":"executor_unreachable"}"#));
+    }
+    Ok(cwd)
 }
 
 fn append_replay(session: &TerminalSession, data: &str) {
@@ -419,5 +573,17 @@ mod tests {
     #[test]
     fn iterm_session_id_includes_session_id() {
         assert_eq!(synthetic_iterm_session_id("abc-123"), "swath:abc-123");
+    }
+
+    #[test]
+    fn attachment_does_not_create_or_toggle_a_session() {
+        let source = include_str!("terminal.rs");
+        let attach = source
+            .split("pub fn attach(")
+            .nth(1)
+            .and_then(|body| body.split("pub fn restart(").next())
+            .unwrap();
+        assert!(!attach.contains("self.create("));
+        assert!(!attach.contains("set_streaming"));
     }
 }

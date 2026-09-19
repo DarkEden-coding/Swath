@@ -1,5 +1,6 @@
 import type { ShellProfile } from "./settings";
 import type { PaneKind } from "./tabTypes";
+export type { PaneId, SessionId } from "./projects";
 export type { PaneKind } from "./tabTypes";
 
 export type SplitDirection = "horizontal" | "vertical";

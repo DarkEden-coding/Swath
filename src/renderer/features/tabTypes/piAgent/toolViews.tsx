@@ -287,7 +287,11 @@ function WaitCountdown({
  * A `wait` is the one control action that blocks visibly, so it gets the countdown ring; the rest
  * are instant and fall back to the generic field list.
  */
-function BackgroundTerminalControlPreview({ args, entry, streaming }: ToolViewProps): JSX.Element | null {
+function BackgroundTerminalControlPreview({
+  args,
+  entry,
+  streaming,
+}: ToolViewProps): JSX.Element | null {
   const action = str(args, "action");
   const timeout = typeof args.timeoutSeconds === "number" ? args.timeoutSeconds : undefined;
   if (action !== "wait") return <FieldList args={args} streaming={streaming} />;

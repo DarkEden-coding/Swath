@@ -1,18 +1,21 @@
-export type GitRpcRequest =
-  | { op: "getStatus"; cwd: string }
-  | { op: "stagePaths"; cwd: string; paths: string[] }
-  | { op: "unstagePaths"; cwd: string; paths: string[] }
-  | { op: "discardPaths"; cwd: string; paths: string[] }
-  | { op: "commit"; cwd: string; message: string; runId?: string }
-  | { op: "pull"; cwd: string; runId?: string }
-  | { op: "push"; cwd: string; runId?: string }
-  | { op: "sync"; cwd: string; runId?: string }
-  | { op: "fetch"; cwd: string }
-  | { op: "getLog"; cwd: string }
-  | { op: "getCommitDiff"; cwd: string; hash: string }
-  | { op: "getWorkingDiff"; cwd: string; path: string; staged: boolean }
-  | { op: "listBranches"; cwd: string }
-  | { op: "checkoutBranch"; cwd: string; branch: string };
+export type GitExecutionTarget = { taskId?: string; executionGeneration?: number; paneId?: string };
+export type GitRpcRequest = GitExecutionTarget &
+  (
+    | { op: "getStatus"; cwd: string }
+    | { op: "stagePaths"; cwd: string; paths: string[] }
+    | { op: "unstagePaths"; cwd: string; paths: string[] }
+    | { op: "discardPaths"; cwd: string; paths: string[] }
+    | { op: "commit"; cwd: string; message: string; runId?: string }
+    | { op: "pull"; cwd: string; runId?: string }
+    | { op: "push"; cwd: string; runId?: string }
+    | { op: "sync"; cwd: string; runId?: string }
+    | { op: "fetch"; cwd: string }
+    | { op: "getLog"; cwd: string }
+    | { op: "getCommitDiff"; cwd: string; hash: string }
+    | { op: "getWorkingDiff"; cwd: string; path: string; staged: boolean }
+    | { op: "listBranches"; cwd: string }
+    | { op: "checkoutBranch"; cwd: string; branch: string }
+  );
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -34,15 +37,24 @@ function stringArrayField(obj: Record<string, unknown>, key: string): string[] |
 export function parseGitRpcRequest(raw: unknown): GitRpcRequest | null {
   if (!isRecord(raw)) return null;
   const op = raw.op;
+  const taskId = stringField(raw, "taskId")?.trim();
+  const paneId = stringField(raw, "paneId")?.trim();
+  const target: GitExecutionTarget = {
+    ...(taskId ? { taskId } : {}),
+    ...(paneId ? { paneId } : {}),
+    ...(typeof raw.executionGeneration === "number" && Number.isInteger(raw.executionGeneration)
+      ? { executionGeneration: raw.executionGeneration }
+      : {}),
+  };
   if (op === "getStatus") {
     const cwd = stringField(raw, "cwd");
-    return cwd !== null && cwd.trim() ? { op: "getStatus", cwd: cwd.trim() } : null;
+    return cwd !== null && cwd.trim() ? { op: "getStatus", cwd: cwd.trim(), ...target } : null;
   }
   if (op === "stagePaths" || op === "unstagePaths" || op === "discardPaths") {
     const cwd = stringField(raw, "cwd");
     const paths = stringArrayField(raw, "paths");
     if (!cwd?.trim() || paths === null) return null;
-    return { op, cwd: cwd.trim(), paths };
+    return { op, cwd: cwd.trim(), paths, ...target };
   }
   if (op === "commit") {
     const cwd = stringField(raw, "cwd");
@@ -54,6 +66,7 @@ export function parseGitRpcRequest(raw: unknown): GitRpcRequest | null {
       cwd: cwd.trim(),
       message,
       ...(runId?.trim() ? { runId: runId.trim() } : {}),
+      ...target,
     };
   }
   if (op === "pull" || op === "push" || op === "sync") {
@@ -64,29 +77,30 @@ export function parseGitRpcRequest(raw: unknown): GitRpcRequest | null {
       op,
       cwd: cwd.trim(),
       ...(runId?.trim() ? { runId: runId.trim() } : {}),
+      ...target,
     };
   }
   if (op === "fetch" || op === "getLog" || op === "listBranches") {
     const cwd = stringField(raw, "cwd");
-    return cwd !== null && cwd.trim() ? { op, cwd: cwd.trim() } : null;
+    return cwd !== null && cwd.trim() ? { op, cwd: cwd.trim(), ...target } : null;
   }
   if (op === "getCommitDiff") {
     const cwd = stringField(raw, "cwd");
     const hash = stringField(raw, "hash");
     if (!cwd?.trim() || !hash || !/^[0-9a-f]{40}$/i.test(hash)) return null;
-    return { op: "getCommitDiff", cwd: cwd.trim(), hash };
+    return { op: "getCommitDiff", cwd: cwd.trim(), hash, ...target };
   }
   if (op === "getWorkingDiff") {
     const cwd = stringField(raw, "cwd");
     const path = stringField(raw, "path");
     if (!cwd?.trim() || !path || typeof raw.staged !== "boolean") return null;
-    return { op: "getWorkingDiff", cwd: cwd.trim(), path, staged: raw.staged };
+    return { op: "getWorkingDiff", cwd: cwd.trim(), path, staged: raw.staged, ...target };
   }
   if (op === "checkoutBranch") {
     const cwd = stringField(raw, "cwd");
     const branch = stringField(raw, "branch");
     if (!cwd?.trim() || branch === null || !branch.trim()) return null;
-    return { op: "checkoutBranch", cwd: cwd.trim(), branch: branch.trim() };
+    return { op: "checkoutBranch", cwd: cwd.trim(), branch: branch.trim(), ...target };
   }
   return null;
 }

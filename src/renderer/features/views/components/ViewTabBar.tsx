@@ -101,6 +101,52 @@ function tabTypeIcon(kind: PaneKind): JSX.Element {
   return <IconTerminal width={16} height={16} className="block shrink-0 text-swath-accent" />;
 }
 
+/** Task catalog top bar. Unlike legacy views, selecting history is intentionally non-executing. */
+export function TaskTabBar({
+  tasks,
+  activeTaskId,
+  onSelect,
+  onCreate,
+  onHistory,
+}: {
+  tasks: Array<{ id: string; title: string; lifecycle: "active" | "completed" }>;
+  activeTaskId: string | null;
+  onSelect: (id: string) => void;
+  onCreate: () => void;
+  onHistory: () => void;
+}): JSX.Element {
+  return (
+    <div
+      className="flex h-9 items-center gap-1 border-b border-swath-border bg-swath-panel px-2"
+      role="tablist"
+    >
+      {tasks
+        .filter((task) => task.lifecycle === "active")
+        .map((task) => (
+          <button
+            key={task.id}
+            role="tab"
+            aria-selected={task.id === activeTaskId}
+            onClick={() => onSelect(task.id)}
+            className={`max-w-52 truncate rounded px-3 py-1 text-sm ${task.id === activeTaskId ? "bg-swath-bg text-swath-text" : "text-swath-muted hover:bg-swath-bg"}`}
+          >
+            {task.title}
+          </button>
+        ))}
+      <button
+        onClick={onCreate}
+        className="ml-auto rounded px-2 py-1 text-swath-accent hover:bg-swath-bg"
+        aria-label="Create task"
+      >
+        +
+      </button>
+      <button onClick={onHistory} className="rounded px-2 py-1 text-swath-muted hover:bg-swath-bg">
+        History
+      </button>
+    </div>
+  );
+}
+
 export function ViewTabBar({
   workspace,
   sidebarCollapsed,

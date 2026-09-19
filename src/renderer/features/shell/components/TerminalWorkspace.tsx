@@ -2,6 +2,8 @@ import type { AppSettings, Workspace } from "../../../../shared/types";
 import * as appActions from "../../../app/appActions";
 import { LayoutRenderer } from "../../panes/components/LayoutRenderer";
 import { ViewTabBar } from "../../views/components/ViewTabBar";
+import { TaskWorkspace } from "../../tasks/TaskWorkspace";
+import { useTaskStore } from "../../../state/taskStore";
 
 interface TerminalWorkspaceProps {
   workspace: Workspace;
@@ -19,6 +21,8 @@ export function TerminalWorkspace({
   sidebarCollapsed,
   onToggleSidebar,
 }: TerminalWorkspaceProps): JSX.Element {
+  const taskLoaded = useTaskStore((state) => state.loaded);
+  if (taskLoaded) return <TaskWorkspace />;
   const activeView =
     workspace.views.find((tab) => tab.id === workspace.activeViewId) ?? workspace.views[0];
 

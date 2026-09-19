@@ -10,12 +10,14 @@ import type {
 import { previewSplitRatio, setSplitRatio } from "../../../app/appActions";
 import { getPaneRegistration } from "../paneRegistry";
 import { UnavailablePane } from "./UnavailablePane";
+import type { TaskExecutionContext } from "../paneTypes";
 
 interface LayoutRendererProps {
   workspace: Workspace;
   view: WorkspaceView;
   settings: AppSettings;
   node: LayoutNode;
+  taskExecution?: TaskExecutionContext;
 }
 
 export function LayoutRenderer({
@@ -23,6 +25,7 @@ export function LayoutRenderer({
   view,
   settings,
   node,
+  taskExecution,
 }: LayoutRendererProps): JSX.Element {
   if (node.type === "pane") {
     const pane = node as PaneLeaf;
@@ -44,12 +47,21 @@ export function LayoutRenderer({
           view={view}
           pane={pane}
           settings={settings}
+          taskExecution={taskExecution}
         />
       </Suspense>
     );
   }
 
-  return <SplitRenderer workspace={workspace} view={view} settings={settings} node={node} />;
+  return (
+    <SplitRenderer
+      workspace={workspace}
+      view={view}
+      settings={settings}
+      node={node}
+      taskExecution={taskExecution}
+    />
+  );
 }
 
 interface SplitRendererProps {
@@ -57,9 +69,16 @@ interface SplitRendererProps {
   view: WorkspaceView;
   settings: AppSettings;
   node: SplitNode;
+  taskExecution?: TaskExecutionContext;
 }
 
-function SplitRenderer({ workspace, view, settings, node }: SplitRendererProps): JSX.Element {
+function SplitRenderer({
+  workspace,
+  view,
+  settings,
+  node,
+  taskExecution,
+}: SplitRendererProps): JSX.Element {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const vertical = node.direction === "vertical";
 
@@ -104,7 +123,13 @@ function SplitRenderer({ workspace, view, settings, node }: SplitRendererProps):
   return (
     <div ref={hostRef} className={`flex h-full w-full min-h-0 min-w-0 ${flexDir}`}>
       <div className="flex min-h-20 min-w-24 overflow-hidden" style={{ flex: `${node.ratio} 1 0` }}>
-        <LayoutRenderer workspace={workspace} view={view} settings={settings} node={node.first} />
+        <LayoutRenderer
+          workspace={workspace}
+          view={view}
+          settings={settings}
+          node={node.first}
+          taskExecution={taskExecution}
+        />
       </div>
       <div
         className={`group relative z-[2] flex shrink-0 items-center justify-center bg-transparent [-webkit-app-region:no-drag] [app-region:no-drag] hover:bg-[rgba(56,139,253,0.08)] ${vertical ? "w-2.5 cursor-col-resize" : "h-2.5 cursor-row-resize"}`}
@@ -131,7 +156,13 @@ function SplitRenderer({ workspace, view, settings, node }: SplitRendererProps):
         className="flex min-h-20 min-w-24 overflow-hidden"
         style={{ flex: `${1 - node.ratio} 1 0` }}
       >
-        <LayoutRenderer workspace={workspace} view={view} settings={settings} node={node.second} />
+        <LayoutRenderer
+          workspace={workspace}
+          view={view}
+          settings={settings}
+          node={node.second}
+          taskExecution={taskExecution}
+        />
       </div>
     </div>
   );

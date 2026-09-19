@@ -5,6 +5,7 @@ import type { FilesRpcRequest } from "../../shared/ipc/filesRpc";
 import type { PiRpcRequest } from "../../shared/ipc/piRpc";
 import type { AppConfig } from "../../shared/types";
 import { detectHostPlatform } from "./runtime";
+import { browserLocalState } from "./localState";
 
 /** Demo configuration used only by Vite's browser development mode. */
 export const browserDevConfig: AppConfig = {
@@ -257,6 +258,13 @@ index 1111111..2222222 100644
         };
       },
     },
+    tasks: {
+      rpc: async () => ({
+        ok: false,
+        code: "unsupported",
+        error: "Tasks require the desktop host",
+      }),
+    },
     pi: {
       rpc: async (request: PiRpcRequest) => {
         void request;
@@ -264,6 +272,64 @@ index 1111111..2222222 100644
       },
       onEvent: () => () => {},
     },
+    sync: {
+      snapshot: async (networkId) => ({ networkId, cursor: null, records: [] }),
+      changes: async (networkId) => ({ networkId, cursor: null, records: [] }),
+      ack: async (_networkId, cursor) => ({ ok: false, cursor }),
+      conflicts: async () => ({ conflicts: [] }),
+    },
+    network: {
+      current: async () => null,
+      initialize: async () => {
+        throw new Error("Network setup requires the Swath desktop app");
+      },
+      discover: async () => [],
+      requestJoin: async () => {
+        throw new Error("Network setup requires the Swath desktop app");
+      },
+      joinStatus: async () => ({ state: "pending" }),
+      approveJoin: async () => {
+        throw new Error("Network setup requires the Swath desktop app");
+      },
+      membership: async () => [],
+      promote: async () => {
+        throw new Error("Network setup requires the Swath desktop app");
+      },
+      health: async (networkId) => ({
+        networkId,
+        voters: 0,
+        healthyVoters: 0,
+        required: 1,
+        quorum: false,
+      }),
+    },
+    catalog: {
+      snapshot: async () => {
+        throw new Error("Catalog requires the Swath desktop app");
+      },
+      mutate: async () => {
+        throw new Error("Catalog requires the Swath desktop app");
+      },
+    },
+    migration: {
+      status: async () => ({ needsMigration: false, state: "complete" }),
+      preview: async () => {
+        throw new Error("Migration requires the Swath desktop app");
+      },
+      confirm: async () => {
+        throw new Error("Migration requires the Swath desktop app");
+      },
+      export: async () => ({ filename: "swath-backup.json", content: JSON.stringify(saved) }),
+      conflicts: async () => [],
+      ensureResolutionJob: async () => ({ state: "manual_required" }),
+      submitProposal: async () => {
+        throw new Error("Migration requires the Swath desktop app");
+      },
+      approveProposal: async () => {
+        throw new Error("Migration requires the Swath desktop app");
+      },
+    },
+    localState: browserLocalState(),
     remote: {
       connect: async () => {
         throw new Error("Remote connectors require the Swath desktop app");

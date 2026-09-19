@@ -209,7 +209,7 @@ Only the active view is mounted, so a tab switch unmounts the pane. The pi child
 killed only from `piAgentTabType.closePane`, never on unmount; `piPaneCache.ts` keeps the last
 rendered state, draft and attachments, and a remount reattaches (`spawnedPanes`).
 
-The cache keeps *reducing events* while the pane is unmounted, so the restored transcript is
+The cache keeps _reducing events_ while the pane is unmounted, so the restored transcript is
 already current: a reattach only refreshes `get_state`/`get_session_stats`. `get_messages` is
 reserved for a fresh spawn, or for a pane whose cache was dropped — on a long conversation it would
 otherwise hand React a rebuilt copy of history on every tab switch. Should it run anyway,

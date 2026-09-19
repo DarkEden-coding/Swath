@@ -4,16 +4,17 @@
 //! commands are written to stdin verbatim. Nothing here parses the RPC schema, so new pi
 //! commands and events need no Rust change.
 
+use crate::{config, events::EventPublisher, terminal::process::kill_process_tree};
+use rusqlite::{params, OptionalExtension};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
-use std::path::Path;
-use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::{Arc, Mutex};
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
-use tauri::{AppHandle, Emitter};
+use std::path::{Path, PathBuf};
+use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::{Arc, Mutex};
 
 /// Event channel carrying `{ paneId, line }` stdout records and `{ paneId, exit }` notices.
 const PI_EVENT: &str = "pi:event";
@@ -28,20 +29,83 @@ const PI_SECRETS_EXTENSION: &str = include_str!("pi_secrets.ts");
 type PiResult = Result<Value, String>;
 
 struct PiProcess {
+    pid: u32,
     child: Child,
     stdin: Option<ChildStdin>,
     stderr: Arc<Mutex<String>>,
 }
 
 /// Owns every live pi child process, keyed by pane id.
-#[derive(Default)]
 pub struct PiManager {
+    events: Arc<dyn EventPublisher>,
+    data_dir: PathBuf,
     procs: Mutex<HashMap<String, PiProcess>>,
+    #[cfg(test)]
+    test_calls: Mutex<Option<Vec<Value>>>,
 }
 
 impl PiManager {
-    pub fn new() -> Self {
-        Self::default()
+    /// Creates a Pi manager using the runtime event publisher.
+    pub fn new(events: Arc<dyn EventPublisher>, data_dir: PathBuf) -> Self {
+        Self {
+            events,
+            data_dir,
+            procs: Mutex::new(HashMap::new()),
+            #[cfg(test)]
+            test_calls: Mutex::new(None),
+        }
+    }
+
+    #[cfg(test)]
+    pub fn enable_test_hook(&self) {
+        *self.test_calls.lock().unwrap() = Some(vec![]);
+    }
+
+    #[cfg(test)]
+    pub fn test_calls(&self) -> Vec<Value> {
+        self.test_calls.lock().unwrap().clone().unwrap_or_default()
+    }
+
+    #[cfg(test)]
+    fn test_rpc(&self, request: &Value) -> Option<PiResult> {
+        let mut calls = self.test_calls.lock().unwrap();
+        calls.as_mut().map(|calls| {
+            calls.push(request.clone());
+            Ok(json!({"fake": true}))
+        })
+    }
+
+    /// Returns live Pi children belonging to task panes, derived from the durable pane catalog.
+    pub fn task_processes(&self, task_id: &str) -> PiResult {
+        let conn =
+            config::connection_at(&config::db_path_in(&self.data_dir).map_err(|e| e.to_string())?)
+                .map_err(|e| e.to_string())?;
+        let mut statement = conn
+            .prepare("SELECT id FROM task_panes WHERE task_id=?1 AND tombstoned_at IS NULL")
+            .map_err(|e| e.to_string())?;
+        let panes = statement
+            .query_map([task_id], |row| row.get::<_, String>(0))
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        let procs = self.procs.lock().map_err(|_| "pi state poisoned")?;
+        Ok(
+            json!({"processes": panes.into_iter().filter_map(|pane| procs.get(&pane).map(|proc| json!({"paneId":pane,"pid":proc.pid}))).collect::<Vec<_>>() }),
+        )
+    }
+
+    /// Kills only Pi children associated with this task's durable pane list.
+    pub fn quiesce_task(&self, task_id: &str) -> PiResult {
+        let panes = self.task_processes(task_id)?["processes"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        for pane in &panes {
+            if let Some(id) = pane.get("paneId").and_then(Value::as_str) {
+                self.kill(id)?;
+            }
+        }
+        Ok(json!({"processes":panes}))
     }
 
     /// Terminates every pi child. Called on app exit.
@@ -52,12 +116,25 @@ impl PiManager {
         };
         for (_, mut proc) in procs.drain() {
             drop(proc.stdin.take());
+            kill_process_tree(proc.child.id());
             let _ = proc.child.kill();
         }
     }
 
-    fn spawn(&self, app: &AppHandle, pane_id: &str, cwd: &str, extra_args: &[String]) -> PiResult {
-        self.kill(pane_id)?;
+    /// Attaches to the existing pane process or starts it once. Restart is the only destructive
+    /// operation; attaching a second interface must never replace the first Pi PID.
+    fn ensure(
+        &self,
+        pane_id: &str,
+        cwd: &str,
+        extra_args: &[String],
+        task_id: &str,
+        generation: i64,
+    ) -> PiResult {
+        let mut procs = self.procs.lock().map_err(|_| "pi state poisoned")?;
+        if let Some(process) = procs.get(pane_id) {
+            return Ok(json!({ "ok": true, "attached": true, "pid": process.pid }));
+        }
 
         let temp_dir = std::env::temp_dir();
         let sudo_extension = temp_dir.join("swath-pi-sudo.ts");
@@ -89,6 +166,7 @@ impl PiManager {
             format!("Unable to start pi (is it installed and on your shell PATH?): {err}")
         })?;
 
+        let pid = child.id();
         let stdin = child.stdin.take();
         let stdout = child
             .stdout
@@ -103,8 +181,10 @@ impl PiManager {
         // stdout: one JSON record per line. `BufRead::lines()` splits on `\n` only, which is
         // what the RPC framing rules require (U+2028/U+2029 are legal inside JSON strings).
         {
-            let app = app.clone();
+            let events = self.events.clone();
             let pane_id = pane_id.to_string();
+            let data_dir = self.data_dir.clone();
+            let task_id = task_id.to_string();
             std::thread::spawn(move || {
                 let reader = BufReader::new(stdout);
                 for line in reader.lines() {
@@ -112,9 +192,15 @@ impl PiManager {
                     if line.is_empty() {
                         continue;
                     }
-                    let _ = app.emit(PI_EVENT, json!({ "paneId": &pane_id, "line": line }));
+                    // Token deltas are deliberately not persisted; completed events are append-only.
+                    if let Ok(event) = serde_json::from_str::<Value>(&line) {
+                        let _ = crate::pi_session_store::record(
+                            &data_dir, &task_id, &pane_id, generation, &event,
+                        );
+                    }
+                    events.publish(PI_EVENT, json!({ "paneId": &pane_id, "line": line }));
                 }
-                let _ = app.emit(PI_EVENT, json!({ "paneId": &pane_id, "exit": true }));
+                events.publish(PI_EVENT, json!({ "paneId": &pane_id, "exit": true }));
             });
         }
 
@@ -134,16 +220,16 @@ impl PiManager {
             });
         }
 
-        let mut procs = self.procs.lock().map_err(|_| "pi state poisoned")?;
         procs.insert(
             pane_id.to_string(),
             PiProcess {
+                pid,
                 child,
                 stdin,
                 stderr,
             },
         );
-        Ok(json!({ "ok": true }))
+        Ok(json!({ "ok": true, "attached": false, "pid": pid }))
     }
 
     /// Writes one newline-terminated JSON command to a pane's pi stdin.
@@ -168,6 +254,7 @@ impl PiManager {
         let mut procs = self.procs.lock().map_err(|_| "pi state poisoned")?;
         if let Some(mut proc) = procs.remove(pane_id) {
             drop(proc.stdin.take());
+            kill_process_tree(proc.child.id());
             let _ = proc.child.kill();
             let _ = proc.child.wait();
         }
@@ -398,9 +485,121 @@ fn walk_files(root: &Path, limit: usize) -> Vec<String> {
     found
 }
 
-/// Dispatches a JSON pi RPC request from the renderer.
-pub fn rpc(app: &AppHandle, manager: &PiManager, request: Value) -> PiResult {
-    let op = request.get("op").and_then(Value::as_str).unwrap_or("").trim();
+/// Resolves an executor-owned worktree. Paths supplied by interfaces are never authority.
+fn task_cwd(data_dir: &Path, request: &Value) -> Result<String, String> {
+    let task_id = request
+        .get("taskId")
+        .and_then(Value::as_str)
+        .filter(|v| !v.is_empty())
+        .ok_or_else(|| {
+            json!({"code":"invalid_request","message":"taskId is required"}).to_string()
+        })?;
+    let generation = request
+        .get("executionGeneration")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| {
+            json!({"code":"invalid_request","message":"executionGeneration is required"})
+                .to_string()
+        })?;
+    let conn = config::connection_at(&config::db_path_in(data_dir).map_err(|e| e.to_string())?)
+        .map_err(|e| e.to_string())?;
+    let frozen: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM task_operations WHERE task_id=?1 AND kind='transfer' AND phase IN ('source frozen','destination staged','verified'))", params![task_id], |r| r.get(0)).map_err(|e| e.to_string())?;
+    if frozen {
+        return Err(json!({"code":"task_frozen","taskId":task_id}).to_string());
+    }
+    let row: Option<(i64, String)> = conn.query_row(
+        "SELECT t.execution_generation, p.path FROM tasks t JOIN device_task_paths p ON p.task_id=t.id AND p.device_id=t.assigned_device_id WHERE t.id=?1 AND t.tombstoned_at IS NULL",
+        params![task_id], |r| Ok((r.get(0)?, r.get(1)?))).optional().map_err(|e| e.to_string())?;
+    let Some((current, cwd)) = row else {
+        return Err(json!({"code":"unknown_executor","taskId":task_id}).to_string());
+    };
+    if current != generation {
+        return Err(json!({"code":"stale_generation","taskId":task_id,"expected":current,"received":generation}).to_string());
+    }
+    if !Path::new(&cwd).is_dir() {
+        return Err(json!({"code":"executor_unreachable","taskId":task_id}).to_string());
+    }
+    Ok(cwd)
+}
+
+/// Saves a prompt acceptance before stdin is touched. A crash while writing leaves it uncertain;
+/// callers must inspect that state instead of replaying an ambiguous prompt.
+fn dispatch_prompt(
+    data_dir: &Path,
+    manager: &PiManager,
+    request: &Value,
+    pane_id: &str,
+    line: &str,
+) -> PiResult {
+    let command: Value =
+        serde_json::from_str(line).map_err(|_| "pi send requires JSON".to_string())?;
+    if !matches!(
+        command.get("type").and_then(Value::as_str),
+        Some("prompt" | "follow_up")
+    ) {
+        return manager.send(pane_id, line);
+    }
+    let operation_id = request
+        .get("operationId")
+        .and_then(Value::as_str)
+        .filter(|v| !v.is_empty())
+        .ok_or_else(|| {
+            json!({"code":"invalid_request","message":"operationId is required for prompts"})
+                .to_string()
+        })?;
+    let task_id = request.get("taskId").and_then(Value::as_str).unwrap();
+    let generation = request
+        .get("executionGeneration")
+        .and_then(Value::as_i64)
+        .unwrap();
+    let hash = line;
+    let conn = config::connection_at(&config::db_path_in(data_dir).map_err(|e| e.to_string())?)
+        .map_err(|e| e.to_string())?;
+    if let Some((stored_hash, state, result)) = conn
+        .query_row(
+            "SELECT request_hash,state,result_json FROM pi_prompt_operations WHERE operation_id=?1",
+            params![operation_id],
+            |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, Option<String>>(2)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(|e| e.to_string())?
+    {
+        if stored_hash != hash {
+            return Err(
+                json!({"code":"operation_conflict","operationId":operation_id}).to_string(),
+            );
+        }
+        return Ok(json!({"ok":true,"deduplicated":true,"state":state,"result":result}));
+    }
+    conn.execute("INSERT INTO pi_prompt_operations(operation_id,task_id,pane_id,execution_generation,request_hash,state,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,'accepted',strftime('%s','now'),strftime('%s','now'))", params![operation_id,task_id,pane_id,generation,hash]).map_err(|e|e.to_string())?;
+    match manager.send(pane_id, line) {
+        Ok(result) => {
+            conn.execute("UPDATE pi_prompt_operations SET state='dispatched',result_json=?2,updated_at=strftime('%s','now') WHERE operation_id=?1",params![operation_id,result.to_string()]).map_err(|e|e.to_string())?;
+            Ok(json!({"ok":true,"operationId":operation_id,"state":"dispatched"}))
+        }
+        Err(err) => {
+            conn.execute("UPDATE pi_prompt_operations SET state='uncertain',updated_at=strftime('%s','now') WHERE operation_id=?1",params![operation_id]).map_err(|e|e.to_string())?;
+            Err(
+                json!({"code":"prompt_uncertain","operationId":operation_id,"error":err})
+                    .to_string(),
+            )
+        }
+    }
+}
+
+/// Dispatches a task-scoped JSON Pi RPC request from an interface.
+pub fn rpc_at(data_dir: &Path, manager: &PiManager, request: Value) -> PiResult {
+    let op = request
+        .get("op")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim();
     let pane_id = request
         .get("paneId")
         .and_then(Value::as_str)
@@ -409,17 +608,30 @@ pub fn rpc(app: &AppHandle, manager: &PiManager, request: Value) -> PiResult {
     if pane_id.is_empty() {
         return Err("pi request requires paneId".into());
     }
+    let task_id = request.get("taskId").and_then(Value::as_str).unwrap_or("");
+    let generation = request
+        .get("executionGeneration")
+        .and_then(Value::as_i64)
+        .unwrap_or_default();
+    // History is intentionally available without a worktree or a running executor.
+    if op == "history" {
+        return crate::pi_session_store::history(
+            data_dir,
+            task_id,
+            pane_id,
+            generation,
+            request.get("cursor").and_then(Value::as_i64),
+        );
+    }
+    let cwd = task_cwd(data_dir, &request)?;
+
+    #[cfg(test)]
+    if let Some(result) = manager.test_rpc(&request) {
+        return result;
+    }
 
     match op {
-        "spawn" => {
-            let cwd = request
-                .get("cwd")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .trim();
-            if cwd.is_empty() {
-                return Err("pi spawn requires cwd".into());
-            }
+        "spawn" | "ensure" => {
             let args: Vec<String> = request
                 .get("args")
                 .and_then(Value::as_array)
@@ -431,52 +643,32 @@ pub fn rpc(app: &AppHandle, manager: &PiManager, request: Value) -> PiResult {
                         .collect()
                 })
                 .unwrap_or_default();
-            manager.spawn(app, pane_id, cwd, &args)
+            manager.ensure(pane_id, &cwd, &args, task_id, generation)
         }
         "send" => {
             let line = request
                 .get("line")
                 .and_then(Value::as_str)
                 .ok_or_else(|| "pi send requires line".to_string())?;
-            manager.send(pane_id, line)
+            dispatch_prompt(data_dir, manager, &request, pane_id, line)
         }
-        "kill" => manager.kill(pane_id),
+        "kill" | "restart" => manager.kill(pane_id),
         "stderr" => manager.stderr(pane_id),
-        "files" => {
-            let cwd = request
-                .get("cwd")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .trim();
-            if cwd.is_empty() {
-                return Err("pi files requires cwd".into());
-            }
-            // The other folders of a project group, so `@` reaches across the whole project.
-            let extra: Vec<&str> = request
-                .get("paths")
-                .and_then(Value::as_array)
-                .map(|paths| {
-                    paths
-                        .iter()
-                        .filter_map(Value::as_str)
-                        .map(str::trim)
-                        .filter(|path| !path.is_empty() && *path != cwd)
-                        .collect()
-                })
-                .unwrap_or_default();
-            let extra_roots: Vec<&Path> = extra.iter().map(Path::new).collect();
-            Ok(json!({ "files": walk_group_files(Path::new(cwd), &extra_roots) }))
-        }
+        "files" => Ok(json!({
+            "files": walk_group_files(Path::new(&cwd), &[])
+        })),
         "sessions" => {
-            let dir = request
-                .get("dir")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .trim();
-            if dir.is_empty() {
-                return Err("pi sessions requires dir".into());
+            if let Ok(entries) = fs::read_dir(&cwd) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.extension().is_some_and(|ext| ext == "jsonl") {
+                        let _ = crate::pi_session_store::import_jsonl(
+                            data_dir, task_id, pane_id, generation, &path,
+                        );
+                    }
+                }
             }
-            Ok(json!({ "sessions": list_sessions(Path::new(dir)) }))
+            Ok(json!({ "sessions": list_sessions(Path::new(&cwd)) }))
         }
         "" => Err("Invalid pi request: missing op".into()),
         other => Err(format!("Unknown pi operation: {other}")),
@@ -543,6 +735,20 @@ mod tests {
         // The pane's own folder is the working directory; listing it twice would duplicate it.
         assert_eq!(walk_group_files(&api, &[]), vec!["src/main.rs".to_string()]);
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn ensure_is_non_destructive() {
+        let source = include_str!("pi_agent.rs");
+        let ensure = source
+            .split("fn ensure(")
+            .nth(1)
+            .and_then(|body| body.split("fn send(").next())
+            .unwrap();
+        assert!(ensure.contains("attached"));
+        assert!(!ensure.contains("self.kill(pane_id)?"));
+        assert_eq!(ensure.matches("self.procs.lock").count(), 1);
+        assert!(ensure.find("self.procs.lock").unwrap() < ensure.find("command.spawn").unwrap());
     }
 
     /// Windows must target npm's `.cmd` shim explicitly; CreateProcess does not use PATHEXT.
