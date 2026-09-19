@@ -5,12 +5,51 @@ import { useTaskStore } from "../../state/taskStore";
 import { countPiAgents, usePiActivityStore } from "../tabTypes/piAgent/piActivity";
 import { IconChevronDown, IconFolder, IconSparkle } from "../shell/icons";
 
-interface ProjectRow {
+export interface ProjectRow {
   project: Project;
   workspace: Workspace | null;
   group: boolean;
   grouped: boolean;
   memberCount: number;
+}
+
+export function orderProjectRows(
+  projects: Project[],
+  workspaces: Workspace[],
+  collapsedGroups: ReadonlySet<string>,
+): ProjectRow[] {
+  const mapped = projects.map((project) => ({
+    project,
+    workspace: workspaceForProject(project, workspaces),
+  }));
+  const byWorkspace = new Map(
+    mapped.flatMap((row) => (row.workspace ? [[row.workspace.id, row] as const] : [])),
+  );
+  const ordered: ProjectRow[] = [],
+    seen = new Set<string>();
+  for (const workspace of workspaces) {
+    const row = byWorkspace.get(workspace.id);
+    if (!row || seen.has(row.project.id) || workspace.groupId) continue;
+    const group = workspace.isGroupRoot === true;
+    const members = group
+      ? workspaces.flatMap((candidate) =>
+          candidate.groupId === workspace.id ? (byWorkspace.get(candidate.id) ?? []) : [],
+        )
+      : [];
+    ordered.push({ ...row, group, grouped: false, memberCount: members.length });
+    seen.add(row.project.id);
+    for (const member of members) {
+      // A collapsed member is still owned by this group. Marking it as handled prevents the
+      // ungrouped-project fallback below from rendering it outside the collapsed group.
+      seen.add(member.project.id);
+      if (!collapsedGroups.has(workspace.id))
+        ordered.push({ ...member, group: false, grouped: true, memberCount: 0 });
+    }
+  }
+  for (const row of mapped)
+    if (!seen.has(row.project.id))
+      ordered.push({ ...row, group: false, grouped: false, memberCount: 0 });
+  return ordered;
 }
 
 function workspaceForProject(project: Project, workspaces: Workspace[]): Workspace | null {
@@ -41,38 +80,10 @@ export function TaskProjectSidebar(): JSX.Element {
   const workspaces = useConfigStore((state) => state.config?.workspaces ?? []);
   const activity = usePiActivityStore((state) => state.activity);
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
-  const rows = useMemo(() => {
-    const mapped = catalog.projects.map((project) => ({
-      project,
-      workspace: workspaceForProject(project, workspaces),
-    }));
-    const byWorkspace = new Map(
-      mapped.flatMap((row) => (row.workspace ? [[row.workspace.id, row] as const] : [])),
-    );
-    const ordered: ProjectRow[] = [],
-      seen = new Set<string>();
-    for (const workspace of workspaces) {
-      const row = byWorkspace.get(workspace.id);
-      if (!row || seen.has(row.project.id) || workspace.groupId) continue;
-      const group = workspace.isGroupRoot === true;
-      const members = group
-        ? workspaces.flatMap((candidate) =>
-            candidate.groupId === workspace.id ? (byWorkspace.get(candidate.id) ?? []) : [],
-          )
-        : [];
-      ordered.push({ ...row, group, grouped: false, memberCount: members.length });
-      seen.add(row.project.id);
-      if (group && !collapsedGroups.has(workspace.id))
-        for (const member of members) {
-          ordered.push({ ...member, group: false, grouped: true, memberCount: 0 });
-          seen.add(member.project.id);
-        }
-    }
-    for (const row of mapped)
-      if (!seen.has(row.project.id))
-        ordered.push({ ...row, group: false, grouped: false, memberCount: 0 });
-    return ordered;
-  }, [catalog.projects, collapsedGroups, workspaces]);
+  const rows = useMemo(
+    () => orderProjectRows(catalog.projects, workspaces, collapsedGroups),
+    [catalog.projects, collapsedGroups, workspaces],
+  );
 
   return (
     <>
