@@ -1046,7 +1046,7 @@ fn task_addressed(method: &str, params: &Value) -> bool {
     params.get("taskId").is_some()
         || params.get("sessionId").is_some()
         || params.get("paneId").is_some()
-        || params.get("operationId").is_some()
+        || (method == "task.rpc" && params.get("operationId").is_some())
         || (method == "task.rpc" && params.get("op").and_then(Value::as_str) == Some("createTask"))
 }
 
@@ -1843,27 +1843,6 @@ async fn dispatch_local(
             .map_err(|e| e.to_string())?;
             serde_json::to_value(migration::conflicts(&conn).map_err(|e| e.to_string())?)
                 .map_err(|e| e.to_string())
-        }
-        "migration.ensureResolutionJob" => {
-            let db = config::db_path_in(ctx.core.data_dir()).map_err(|e| e.to_string())?;
-            let conn = config::connection_at(&db).map_err(|e| e.to_string())?;
-            let catalog = network::raft::CatalogService::open_discovered(
-                db.to_string_lossy(),
-                "local-migration-rpc",
-                "http://127.0.0.1:0",
-            )
-            .await
-            .map_err(|e| e.to_string())?
-            .ok_or_else(|| "network_not_found".to_string())?;
-            let conflict_id = field::<String>(&params, "conflictId")?;
-            tokio::task::block_in_place(|| {
-                tokio::runtime::Handle::current().block_on(migration::ensure_resolution_job(
-                    &conn,
-                    &catalog,
-                    &conflict_id,
-                ))
-            })
-            .map_err(|e| e.to_string())
         }
         "migration.submitProposal" => {
             let conn = config::connection_at(

@@ -172,8 +172,6 @@ export function createTauriSwath(): SwathApi {
       confirm: (request) => invoke(TauriCommands.migrationConfirm, { request }),
       export: () => invoke(TauriCommands.migrationExport),
       conflicts: () => invoke(TauriCommands.migrationConflicts),
-      ensureResolutionJob: (conflictId) =>
-        invoke(TauriCommands.migrationEnsureResolutionJob, { conflictId }),
       submitProposal: (proposal) => invoke(TauriCommands.migrationSubmitProposal, { proposal }),
       approveProposal: (approval) => invoke(TauriCommands.migrationApproveProposal, { approval }),
     },

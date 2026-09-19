@@ -321,7 +321,6 @@ index 1111111..2222222 100644
       },
       export: async () => ({ filename: "swath-backup.json", content: JSON.stringify(saved) }),
       conflicts: async () => [],
-      ensureResolutionJob: async () => ({ state: "manual_required" }),
       submitProposal: async () => {
         throw new Error("Migration requires the Swath desktop app");
       },

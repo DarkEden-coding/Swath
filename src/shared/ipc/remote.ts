@@ -38,7 +38,6 @@ export type RemoteMethod =
   | "migration.confirm"
   | "migration.export"
   | "migration.conflicts"
-  | "migration.ensureResolutionJob"
   | "migration.submitProposal"
   | "migration.approveProposal"
   | "event.subscribe"

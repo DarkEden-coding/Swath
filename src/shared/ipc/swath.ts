@@ -79,7 +79,6 @@ export const TauriCommands = {
   migrationConfirm: "migration_confirm",
   migrationExport: "migration_export",
   migrationConflicts: "migration_conflicts",
-  migrationEnsureResolutionJob: "migration_ensure_resolution_job",
   migrationSubmitProposal: "migration_submit_proposal",
   migrationApproveProposal: "migration_approve_proposal",
   localStateLoad: "local_state_load",
@@ -222,7 +221,6 @@ export interface SwathApi {
     /** Source JSON only; the renderer chooses a download destination. */
     export(): Promise<{ filename: string; content: string }>;
     conflicts(): Promise<MigrationConflict[]>;
-    ensureResolutionJob(conflictId: string): Promise<unknown>;
     submitProposal(proposal: MigrationConflictProposal): Promise<unknown>;
     approveProposal(approval: MigrationConflictApproval): Promise<unknown>;
   };

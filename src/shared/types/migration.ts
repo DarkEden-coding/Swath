@@ -28,6 +28,8 @@ export interface MigrationImportRequest {
   networkId: string;
   sourceFingerprint: string;
   mappings: MigrationMapping[];
+  /** Device that owns the imported task paths. Defaults to this installation for local imports. */
+  targetDeviceId?: string;
 }
 
 export interface MigrationStatus {

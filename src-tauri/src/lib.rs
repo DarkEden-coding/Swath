@@ -150,7 +150,6 @@ pub fn run() {
             commands::migration_confirm,
             commands::migration_export,
             commands::migration_conflicts,
-            commands::migration_ensure_resolution_job,
             commands::migration_submit_proposal,
             commands::migration_approve_proposal,
             commands::remote_server_start,

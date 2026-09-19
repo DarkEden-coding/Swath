@@ -157,13 +157,30 @@ export function NetworkStartupGate({
         conflicts={conflicts}
         busy={busy}
         error={error}
-        onResolve={async (conflict) => {
+        onResolve={async (conflict, action) => {
           setBusy(true);
           try {
-            await window.swath.migration.ensureResolutionJob(conflict.conflictId);
+            const proposal = {
+              conflictId: conflict.conflictId,
+              revisionHash: conflict.revisionHash,
+              sourceRecordIds: [conflict.conflictId],
+              action,
+              mapping: {},
+              diff:
+                action === "keep_original"
+                  ? { selected: "original", value: conflict.original }
+                  : { selected: "incoming", value: conflict.incoming },
+            };
+            await window.swath.migration.submitProposal(proposal);
+            await window.swath.migration.approveProposal({
+              conflictId: conflict.conflictId,
+              revisionHash: conflict.revisionHash,
+              sourceRecordIds: proposal.sourceRecordIds,
+              approve: true,
+            });
             await check();
           } catch (cause) {
-            setError(cause instanceof Error ? cause.message : "Could not create review job");
+            setError(cause instanceof Error ? cause.message : "Could not resolve conflict");
           } finally {
             setBusy(false);
           }
@@ -477,7 +494,10 @@ export function MigrationConflictReview({
   conflicts: MigrationConflict[];
   busy: boolean;
   error: string | null;
-  onResolve(conflict: MigrationConflict): Promise<void>;
+  onResolve(
+    conflict: MigrationConflict,
+    action: "keep_original" | "use_incoming",
+  ): Promise<void>;
   onApprove(conflict: MigrationConflict): Promise<void>;
 }): JSX.Element {
   return (
@@ -513,13 +533,22 @@ export function MigrationConflictReview({
                 </button>
               </>
             ) : (
-              <button
-                disabled={busy}
-                onClick={() => void onResolve(conflict)}
-                className="mt-2 rounded border px-3 py-2"
-              >
-                {conflict.state === "manual_required" ? "Manual review required" : "Open review"}
-              </button>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <button
+                  disabled={busy}
+                  onClick={() => void onResolve(conflict, "keep_original")}
+                  className="rounded border border-swath-border px-3 py-2 text-swath-text hover:border-swath-accent"
+                >
+                  Keep existing
+                </button>
+                <button
+                  disabled={busy}
+                  onClick={() => void onResolve(conflict, "use_incoming")}
+                  className="rounded bg-swath-accent px-3 py-2 text-white"
+                >
+                  Use incoming
+                </button>
+              </div>
             )}
           </article>
         ))}

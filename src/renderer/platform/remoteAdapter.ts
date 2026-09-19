@@ -467,8 +467,6 @@ export function createRemoteWebSwath(): SwathApi {
       confirm: (request) => client.call("migration.confirm", { request }),
       export: () => client.call("migration.export"),
       conflicts: () => client.call("migration.conflicts"),
-      ensureResolutionJob: (conflictId) =>
-        client.call("migration.ensureResolutionJob", { conflictId }),
       submitProposal: (proposal) => client.call("migration.submitProposal", { proposal }),
       approveProposal: (approval) => client.call("migration.approveProposal", { approval }),
     },

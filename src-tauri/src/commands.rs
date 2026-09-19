@@ -655,34 +655,6 @@ pub fn migration_conflicts(state: State<'_, AppState>) -> CommandResult<serde_js
     .map_err(|e| e.to_string())
 }
 #[tauri::command]
-pub async fn migration_ensure_resolution_job(
-    state: State<'_, AppState>,
-    conflict_id: String,
-) -> CommandResult<serde_json::Value> {
-    let db = config::db_path_in(state.core.data_dir()).map_err(|e| e.to_string())?;
-    let catalog = network::raft::CatalogService::open_discovered(
-        db.to_string_lossy(),
-        "local-catalog-command",
-        "http://127.0.0.1:0",
-    )
-    .await
-    .map_err(|e| e.to_string())?
-    .ok_or_else(|| "network_not_found".to_string())?;
-    let data_dir = state.core.data_dir().to_path_buf();
-    let runtime = tokio::runtime::Handle::current();
-    tauri::async_runtime::spawn_blocking(move || {
-        let connection = config::connection_at(&config::db_path_in(&data_dir)?)?;
-        runtime.block_on(migration::ensure_resolution_job(
-            &connection,
-            &catalog,
-            &conflict_id,
-        ))
-    })
-    .await
-    .map_err(|e| e.to_string())?
-    .map_err(|e| e.to_string())
-}
-#[tauri::command]
 pub fn migration_submit_proposal(
     state: State<'_, AppState>,
     proposal: migration::Proposal,
