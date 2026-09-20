@@ -83,7 +83,12 @@ pub fn run() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
-            let data_dir = app.path().app_data_dir()?;
+            // Managed desktop executors (for example Fedora launchers replacing a headless
+            // service) must open the same durable network catalog as the headless runtime.
+            let data_dir = std::env::var_os("SWATH_DATA_DIR")
+                .filter(|value| !value.is_empty())
+                .map(std::path::PathBuf::from)
+                .unwrap_or(app.path().app_data_dir()?);
             let connector_events = events::ConnectorEvents::new();
             let publishers: Vec<Arc<dyn events::EventPublisher>> = vec![
                 events::TauriEvents::new(app.handle().clone()),
