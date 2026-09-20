@@ -1883,6 +1883,39 @@ async fn dispatch_local(
                 Err(response.status)
             }
         }
+        "network.repairLearner" => {
+            let network_id = field::<String>(&params, "networkId")?;
+            let device_id = field::<String>(&params, "deviceId")?;
+            let db = config::db_path_in(ctx.core.data_dir()).map_err(|e| e.to_string())?;
+            let (node_id, endpoint) = {
+                let conn = config::connection_at(&db).map_err(|e| e.to_string())?;
+                conn.query_row(
+                    "SELECT node_id,endpoint FROM raft_node_members WHERE network_id=?1 AND device_id=?2",
+                    params![network_id, device_id],
+                    |row| Ok((row.get::<_, i64>(0)? as u64, row.get::<_, String>(1)?)),
+                )
+                .map_err(|_| "device_not_enrolled".to_string())?
+            };
+            let catalog = network::raft::CatalogService::open_discovered(
+                db.to_string_lossy(),
+                ctx.token.clone(),
+                ctx.connector_endpoint.clone(),
+            )
+            .await
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "network_not_found".to_string())?;
+            catalog
+                .raft()
+                .trigger_snapshot()
+                .await
+                .map_err(|e| e.to_string())?;
+            catalog
+                .raft()
+                .add_learner(node_id, openraft::BasicNode::new(endpoint))
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(json!({"ok":true,"deviceId":device_id,"role":"learner"}))
+        }
         "migration.status" => {
             let conn = config::connection_at(
                 &config::db_path_in(ctx.core.data_dir()).map_err(|e| e.to_string())?,
