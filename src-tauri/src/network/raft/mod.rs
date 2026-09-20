@@ -1368,25 +1368,48 @@ impl CatalogService {
         &self,
         request: CatalogRequest,
     ) -> Result<CatalogResponse, CatalogError> {
-        let response = self
-            .raft
-            .client_write(request)
-            .await
-            .map(|r| r.data)
-            .map_err(|e| {
-                let text = e.to_string();
-                let code = if text.contains("ForwardToLeader") || text.contains("leader") {
-                    "not_leader"
-                } else if text.contains("quorum") || text.contains("Unreachable") {
-                    "quorum_unavailable"
-                } else {
-                    "catalog_unavailable"
+        let response = match self.raft.client_write(request.clone()).await {
+            Ok(response) => response.data,
+            Err(local_error) => {
+                // Learners and followers forward the original idempotent request to the elected
+                // leader using the durable peer credential used by Raft replication.
+                let leader = self
+                    .raft
+                    .current_leader()
+                    .ok_or_else(|| catalog_error(&local_error))?;
+                let peer: Option<(String, String)> = Connection::open(&self.db)
+                    .ok()
+                    .and_then(|conn| conn.query_row(
+                        "SELECT r.endpoint,c.credential FROM raft_node_members r JOIN device_connectors c ON c.device_id=r.device_id WHERE r.network_id=?1 AND r.node_id=?2",
+                        params![self.network_id, leader as i64],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    ).optional().ok().flatten());
+                let Some((endpoint, credential)) = peer else {
+                    return Err(catalog_error(&local_error));
                 };
-                CatalogError {
-                    code: code.into(),
-                    message: text,
-                }
-            })?;
+                reqwest::Client::new()
+                    .post(format!("{}/api/raft/write", endpoint.trim_end_matches('/')))
+                    .bearer_auth(credential)
+                    .json(&request)
+                    .send()
+                    .await
+                    .map_err(|error| CatalogError {
+                        code: "catalog_unavailable".into(),
+                        message: error.to_string(),
+                    })?
+                    .error_for_status()
+                    .map_err(|error| CatalogError {
+                        code: "catalog_unavailable".into(),
+                        message: error.to_string(),
+                    })?
+                    .json::<CatalogResponse>()
+                    .await
+                    .map_err(|error| CatalogError {
+                        code: "catalog_unavailable".into(),
+                        message: error.to_string(),
+                    })?
+            }
+        };
         if response.status == "revision_conflict" || response.status == "operation_id_conflict" {
             return Err(CatalogError {
                 code: response.status.clone(),
@@ -1414,12 +1437,31 @@ impl CatalogService {
     }
 }
 
+fn catalog_error(error: impl ToString) -> CatalogError {
+    let message = error.to_string();
+    let code = if message.contains("ForwardToLeader") || message.contains("leader") {
+        "not_leader"
+    } else if message.contains("quorum") || message.contains("Unreachable") {
+        "quorum_unavailable"
+    } else {
+        "catalog_unavailable"
+    };
+    CatalogError {
+        code: code.into(),
+        message,
+    }
+}
+
 pub struct CatalogRaft {
     pub raft: CatalogRaftInner,
     pub store: SqliteStore,
     pub id: NodeId,
 }
 impl CatalogRaft {
+    pub fn current_leader(&self) -> Option<NodeId> {
+        self.raft.metrics().borrow().current_leader
+    }
+
     /// Starts the production catalog using connector URLs stored in `BasicNode`.
     pub async fn new(
         id: NodeId,

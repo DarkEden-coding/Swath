@@ -21,6 +21,8 @@ import { useConfigStore } from "./state/configStore";
 import { useUiStore } from "./state/uiStore";
 import { useTaskStore } from "./state/taskStore";
 import { NetworkStartupGate } from "./features/tasks/NetworkStartupGate";
+import { Notifications } from "./features/shell/components/Notifications";
+import { errorMessage, useNotificationStore } from "./state/notificationStore";
 
 const TerminalWorkspace = lazy(() =>
   import("./features/shell/components/TerminalWorkspace").then((module) => ({
@@ -82,6 +84,22 @@ export function App(): JSX.Element {
   }, []);
 
   useEffect(() => {
+    const notify = (error: unknown) =>
+      useNotificationStore.getState().notifyError(errorMessage(error, "Action failed"));
+    const onUnhandledRejection = (event: PromiseRejectionEvent) => {
+      event.preventDefault();
+      notify(event.reason);
+    };
+    const onError = (event: ErrorEvent) => notify(event.error ?? event.message);
+    window.addEventListener("unhandledrejection", onUnhandledRejection);
+    window.addEventListener("error", onError);
+    return () => {
+      window.removeEventListener("unhandledrejection", onUnhandledRejection);
+      window.removeEventListener("error", onError);
+    };
+  }, []);
+
+  useEffect(() => {
     const onResize = (): void => {
       useUiStore.getState().setSidebarWidthPx(useUiStore.getState().sidebarWidthPx);
     };
@@ -133,13 +151,19 @@ export function App(): JSX.Element {
     return (
       <div className="grid h-full min-h-0 grid-rows-[auto_minmax(0,1fr)] bg-swath-bg">
         <WindowTitleBar />
+        <Notifications />
         <div className={bootScreenClass}>Loading…</div>
       </div>
     );
   }
 
   if (!networkReady) {
-    return <NetworkStartupGate onReady={handleNetworkReady} />;
+    return (
+      <>
+        <NetworkStartupGate onReady={handleNetworkReady} />
+        <Notifications />
+      </>
+    );
   }
 
   const gridTemplateColumns = sidebarCollapsed
@@ -149,6 +173,7 @@ export function App(): JSX.Element {
   return (
     <div className="grid h-full min-h-0 grid-rows-[auto_minmax(0,1fr)] bg-swath-bg">
       <WindowTitleBar />
+      <Notifications />
       <main className="grid min-h-0 w-full bg-swath-bg" style={{ gridTemplateColumns }}>
         {sidebarCollapsed ? (
           <div className="pointer-events-none min-w-0 w-0 overflow-hidden" aria-hidden="true" />

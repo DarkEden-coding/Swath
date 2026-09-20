@@ -4,6 +4,7 @@ import { useConfigStore } from "../../state/configStore";
 import { useTaskStore } from "../../state/taskStore";
 import { countPiAgents, usePiActivityStore } from "../tabTypes/piAgent/piActivity";
 import { IconChevronDown, IconFolder, IconSparkle } from "../shell/icons";
+import { errorMessage, useNotificationStore } from "../../state/notificationStore";
 
 export interface ProjectRow {
   project: Project;
@@ -80,6 +81,7 @@ export function TaskProjectSidebar(): JSX.Element {
   const workspaces = useConfigStore((state) => state.config?.workspaces ?? []);
   const activity = usePiActivityStore((state) => state.activity);
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
+  const notifyError = useNotificationStore((state) => state.notifyError);
   const rows = useMemo(
     () => orderProjectRows(catalog.projects, workspaces, collapsedGroups),
     [catalog.projects, collapsedGroups, workspaces],
@@ -143,8 +145,16 @@ export function TaskProjectSidebar(): JSX.Element {
               }}
               onRemove={async () => {
                 if (!window.confirm(`Remove “${row.project.name}” from Swath?`)) return;
-                await window.swath.tasks.rpc({ op: "removeProject", projectId: row.project.id });
-                await refresh();
+                try {
+                  const reply = (await window.swath.tasks.rpc({
+                    op: "removeProject",
+                    projectId: row.project.id,
+                  })) as { ok?: boolean; error?: string };
+                  if (reply.ok !== true) throw new Error(reply.error || "Project deletion failed");
+                  await refresh();
+                } catch (error) {
+                  notifyError(errorMessage(error, `Could not remove “${row.project.name}”`));
+                }
               }}
             />
           );

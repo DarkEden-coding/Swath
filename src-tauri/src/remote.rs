@@ -347,6 +347,7 @@ impl RemoteServerManager {
             .route("/api/raft/append", post(raft_append))
             .route("/api/raft/vote", post(raft_vote))
             .route("/api/raft/snapshot", post(raft_snapshot))
+            .route("/api/raft/write", post(raft_write))
             .route(
                 "/api/preview/{task_id}/{port}/ws/{*path}",
                 get(preview_websocket),
@@ -632,6 +633,23 @@ async fn raft_vote(
             Json(json!({"error":e.to_string()})),
         )
     })
+}
+
+async fn raft_write(
+    State(ctx): State<ServerContext>,
+    headers: HeaderMap,
+    Json(request): Json<network::raft::CatalogRequest>,
+) -> Result<Json<network::raft::CatalogResponse>, (StatusCode, Json<Value>)> {
+    let raft = raft_context(&ctx, &headers).await?;
+    raft.client_write(request)
+        .await
+        .map(|response| Json(response.data))
+        .map_err(|e| {
+            (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({"error":e.to_string()})),
+            )
+        })
 }
 
 async fn raft_snapshot(
