@@ -10,6 +10,7 @@ BIN_DIR="${INSTALL_PREFIX}/bin"
 DESKTOP_DIR="${INSTALL_PREFIX}/share/applications"
 ICON_DIR="${INSTALL_PREFIX}/share/icons/hicolor/256x256/apps"
 INSTALLED_BIN_PATH="${BIN_DIR}/${BIN_NAME}"
+DESKTOP_WRAPPER_PATH="${BIN_DIR}/${BIN_NAME}-desktop"
 DESKTOP_PATH="${DESKTOP_DIR}/${BIN_NAME}.desktop"
 SYSTEM_DESKTOP_PATH="/usr/share/applications/${BIN_NAME}.desktop"
 ICON_SOURCE="${ROOT_DIR}/src-tauri/icons/icon.png"
@@ -100,12 +101,27 @@ mkdir -p "$BIN_DIR" "$DESKTOP_DIR" "$ICON_DIR"
 install -m 0755 "$EXPECTED_BIN_PATH" "$INSTALLED_BIN_PATH"
 install -m 0644 "$ICON_SOURCE" "$INSTALLED_ICON_PATH"
 
+cat > "$DESKTOP_WRAPPER_PATH" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+CONNECTOR_ENV="${HOME}/.config/swath/connector.env"
+if [[ -f "$CONNECTOR_ENV" ]]; then
+  set -a
+  # shellcheck disable=SC1090
+  source "$CONNECTOR_ENV"
+  set +a
+  export SWATH_CONNECTOR_AUTOSTART=1
+fi
+exec "${HOME}/.local/bin/swath" "$@"
+EOF
+chmod 0755 "$DESKTOP_WRAPPER_PATH"
+
 cat > "$DESKTOP_PATH" <<EOF
 [Desktop Entry]
 Type=Application
 Name=${APP_NAME}
 Comment=${APP_NAME} (${HASH})
-Exec=${INSTALLED_BIN_PATH}
+Exec=${DESKTOP_WRAPPER_PATH}
 Icon=${BIN_NAME}
 Terminal=false
 Categories=Development;Utility;
@@ -117,8 +133,8 @@ if [[ ! -x "$INSTALLED_BIN_PATH" ]]; then
   exit 1
 fi
 
-if ! grep -q "^Exec=${INSTALLED_BIN_PATH}$" "$DESKTOP_PATH"; then
-  echo "Desktop entry Exec mismatch. Expected '${INSTALLED_BIN_PATH}'." >&2
+if ! grep -q "^Exec=${DESKTOP_WRAPPER_PATH}$" "$DESKTOP_PATH"; then
+  echo "Desktop entry Exec mismatch. Expected '${DESKTOP_WRAPPER_PATH}'." >&2
   exit 1
 fi
 
@@ -140,5 +156,5 @@ if command -v kbuildsycoca6 >/dev/null 2>&1; then
 fi
 
 echo "Installed binary: ${INSTALLED_BIN_PATH}"
-echo "Installed shortcut: ${DESKTOP_PATH} -> ${INSTALLED_BIN_PATH}"
+echo "Installed shortcut: ${DESKTOP_PATH} -> ${DESKTOP_WRAPPER_PATH}"
 echo "Launchers that index desktop entries, such as KRunner or GNOME Search, should now be able to find '${APP_NAME}'."

@@ -100,6 +100,18 @@ pub fn run() {
                 remote: remote.clone(),
             };
             app.manage(state);
+            if std::env::var("SWATH_CONNECTOR_AUTOSTART")
+                .is_ok_and(|value| !matches!(value.as_str(), "0" | "false" | "no"))
+            {
+                if let Ok(token) = std::env::var("SWATH_CONNECTOR_TOKEN") {
+                    let options = headless_options(token);
+                    tauri::async_runtime::spawn(async move {
+                        if let Err(error) = remote.start(options).await {
+                            eprintln!("Unable to auto-start Swath connector: {error}");
+                        }
+                    });
+                }
+            }
             if let Some(window) = app.get_webview_window("main") {
                 window_state::restore(app.handle(), &window).map_err(|err| err.to_string())?;
                 window.show().map_err(|err| err.to_string())?;
