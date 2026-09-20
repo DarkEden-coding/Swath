@@ -4,7 +4,11 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REMOTE_ROOT="/home/dark/Swath"
 DEPLOY_BRANCH="${SWATH_DEPLOY_BRANCH:-feature/shared-execution}"
-SSH_OPTIONS=(-o BatchMode=yes -o ConnectTimeout=10)
+# Direct Tailscale IPs are used below.  Accept a first connection's host key so a newly enrolled
+# device can participate in a rollout without requiring an interactive SSH prompt; an already
+# known key still cannot change silently.
+SSH_OPTIONS=(-o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new)
+DEPLOY_ALLOW_DIRTY="${SWATH_DEPLOY_ALLOW_DIRTY:-0}"
 MANAGER_NAMES=(power-server PiTwo server-two)
 MANAGER_HOSTS=(100.107.192.39 100.119.37.90 100.99.222.5)
 SCYTHE_HOST="100.80.230.33"
@@ -90,8 +94,8 @@ require_command cargo
 require_command rsync
 require_command ssh
 
-if [[ -n "$(git status --porcelain --untracked-files=no)" ]]; then
-  echo "Tracked files have local changes. Commit or stash them before deploying." >&2
+if [[ -n "$(git status --porcelain --untracked-files=no)" && "$DEPLOY_ALLOW_DIRTY" != "1" ]]; then
+  echo "Tracked files have local changes. Commit or stash them before deploying, or set SWATH_DEPLOY_ALLOW_DIRTY=1 for a reviewed repair rollout." >&2
   exit 1
 fi
 
@@ -102,11 +106,16 @@ if [[ "$current_branch" != "$DEPLOY_BRANCH" ]]; then
   exit 1
 fi
 
-log "Updating $DEPLOY_BRANCH from GitHub"
-git fetch origin "$DEPLOY_BRANCH"
-git pull --ff-only origin "$DEPLOY_BRANCH"
-commit="$(git rev-parse HEAD)"
-echo "Deploying commit $commit"
+if [[ "$DEPLOY_ALLOW_DIRTY" == "1" ]]; then
+  commit="repair-$(git rev-parse --short HEAD)-$(date -u +%Y%m%d%H%M%S)"
+  log "Deploying the reviewed local repair tree without fetching or resetting Git"
+else
+  log "Updating $DEPLOY_BRANCH from GitHub"
+  git fetch origin "$DEPLOY_BRANCH"
+  git pull --ff-only origin "$DEPLOY_BRANCH"
+  commit="$(git rev-parse HEAD)"
+fi
+echo "Deploying $commit"
 
 log "Running local validation"
 npm run typecheck

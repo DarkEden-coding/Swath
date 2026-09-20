@@ -23,6 +23,7 @@ use axum::{
 };
 use base64ct::{Base64UrlUnpadded, Encoding};
 use futures_util::{SinkExt, StreamExt};
+use openraft::BasicNode;
 use rusqlite::{params, OptionalExtension};
 use rust_embed::RustEmbed;
 use serde::{Deserialize, Serialize};
@@ -128,6 +129,16 @@ struct EnrollmentRequest {
     connector_endpoint: String,
     #[serde(default)]
     metadata: serde_json::Value,
+}
+
+/// A non-voting node announces the connector address at which the current leader can replicate
+/// Raft entries to it. The leader owns the resulting membership update.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LearnerEndpointRegistration {
+    device_id: String,
+    node_id: i64,
+    endpoint: String,
 }
 
 /// Enrollment is intentionally outside the bearer-authenticated UI RPC: the one-time secret is
@@ -348,6 +359,7 @@ impl RemoteServerManager {
             .route("/api/raft/vote", post(raft_vote))
             .route("/api/raft/snapshot", post(raft_snapshot))
             .route("/api/raft/write", post(raft_write))
+            .route("/api/raft/learner-endpoint", post(raft_learner_endpoint))
             .route(
                 "/api/preview/{task_id}/{port}/ws/{*path}",
                 get(preview_websocket),
@@ -365,6 +377,9 @@ impl RemoteServerManager {
                 })
                 .await;
         });
+        // A learner may have been offline while its connector address changed. Re-advertise it
+        // after the listener exists so the leader can resume replication without a manual DB edit.
+        tokio::spawn(register_local_learner_endpoint(context.clone()));
         *self.running.lock().unwrap() = Some(RunningServer {
             options,
             https_url,
@@ -645,11 +660,140 @@ async fn raft_write(
         .await
         .map(|response| Json(response.data))
         .map_err(|e| {
+            if let Some(forward) = e.forward_to_leader() {
+                return (
+                    StatusCode::CONFLICT,
+                    Json(json!({
+                        "code":"not_leader",
+                        "error":e.to_string(),
+                        "leaderId":forward.leader_id,
+                        "leaderEndpoint":forward.leader_node.as_ref().map(|node| &node.addr),
+                    })),
+                );
+            }
             (
                 StatusCode::BAD_GATEWAY,
                 Json(json!({"error":e.to_string()})),
             )
         })
+}
+
+/// The leader updates an existing learner's network address through OpenRaft. This is deliberately
+/// not a catalog mutation: Raft membership owns node addresses, while the catalog owns projects.
+async fn raft_learner_endpoint(
+    State(ctx): State<ServerContext>,
+    headers: HeaderMap,
+    Json(request): Json<LearnerEndpointRegistration>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    if request.node_id <= 0 || !safe_raft_endpoint(&request.endpoint) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error":"invalid_learner_endpoint"})),
+        ));
+    }
+    let raft = raft_context(&ctx, &headers).await?;
+    let db = config::connection_at(&config::db_path_in(ctx.core.data_dir()).map_err(|error| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"error":error.to_string()})),
+        )
+    })?)
+    .map_err(|error| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"error":error.to_string()})),
+        )
+    })?;
+    let registered: Option<(i64, i64)> = db
+        .query_row(
+            "SELECT r.node_id,COALESCE(c.voter,0) FROM raft_node_members r LEFT JOIN coordinator_members c ON c.network_id=r.network_id AND c.device_id=r.device_id WHERE r.device_id=?1",
+            [&request.device_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(|error| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error":error.to_string()})),
+            )
+        })?;
+    if registered != Some((request.node_id, 0)) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error":"learner_identity_mismatch"})),
+        ));
+    }
+    // A previously offline learner can be behind the leader's compacted log.  Make a fresh
+    // durable snapshot available before asking OpenRaft to resume replication to it.
+    raft.trigger_snapshot().await.map_err(|error| {
+        (
+            StatusCode::BAD_GATEWAY,
+            Json(json!({"error":error.to_string()})),
+        )
+    })?;
+    raft.add_learner(
+        request.node_id as network::raft::NodeId,
+        BasicNode::new(request.endpoint),
+    )
+    .await
+    .map_err(|error| {
+        (
+            StatusCode::BAD_GATEWAY,
+            Json(json!({"error":error.to_string()})),
+        )
+    })?;
+    Ok(Json(json!({"ok":true})))
+}
+
+async fn register_local_learner_endpoint(ctx: ServerContext) {
+    let Some(device_id) = ctx.device_id.as_deref() else {
+        return;
+    };
+    let Ok(db) =
+        config::connection_at(&config::db_path_in(ctx.core.data_dir()).unwrap_or_default())
+    else {
+        return;
+    };
+    let local: Option<(String, i64, i64)> = db
+        .query_row(
+            "SELECT r.network_id,r.node_id,COALESCE(c.voter,0) FROM raft_node_members r LEFT JOIN coordinator_members c ON c.network_id=r.network_id AND c.device_id=r.device_id WHERE r.device_id=?1",
+            [device_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()
+        .ok()
+        .flatten();
+    let Some((network_id, node_id, voter)) = local else {
+        return;
+    };
+    if voter != 0 {
+        return;
+    }
+    let peers: Vec<(String, String)> = db
+        .prepare(
+            "SELECT c.endpoint,c.credential FROM raft_node_members r JOIN device_connectors c ON c.device_id=r.device_id WHERE r.network_id=?1 AND r.device_id!=?2 ORDER BY r.node_id",
+        )
+        .and_then(|mut statement| {
+            statement
+                .query_map(params![network_id, device_id], |row| Ok((row.get(0)?, row.get(1)?)))?
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .unwrap_or_default();
+    drop(db);
+    for (endpoint, credential) in peers {
+        let response = reqwest::Client::new()
+            .post(format!(
+                "{}/api/raft/learner-endpoint",
+                endpoint.trim_end_matches('/')
+            ))
+            .bearer_auth(credential)
+            .json(&json!({"deviceId":device_id,"nodeId":node_id,"endpoint":ctx.connector_endpoint}))
+            .send()
+            .await;
+        if matches!(response, Ok(ref result) if result.status().is_success()) {
+            return;
+        }
+    }
 }
 
 async fn raft_snapshot(

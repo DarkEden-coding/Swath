@@ -5,6 +5,7 @@ import { useTaskStore } from "../../state/taskStore";
 import { countPiAgents, usePiActivityStore } from "../tabTypes/piAgent/piActivity";
 import { IconChevronDown, IconFolder, IconSparkle } from "../shell/icons";
 import { errorMessage, useNotificationStore } from "../../state/notificationStore";
+import { dialogClient } from "../../services/dialogClient";
 
 export interface ProjectRow {
   project: Project;
@@ -144,7 +145,13 @@ export function TaskProjectSidebar(): JSX.Element {
                 if (path) await copyText(path);
               }}
               onRemove={async () => {
-                if (!window.confirm(`Remove “${row.project.name}” from Swath?`)) return;
+                const confirmed = await dialogClient.confirm({
+                  message: `Remove “${row.project.name}” from Swath?`,
+                  detail: "Tasks and files on disk are not deleted.",
+                  confirmLabel: "Remove",
+                  cancelLabel: "Cancel",
+                });
+                if (!confirmed) return;
                 try {
                   const reply = (await window.swath.tasks.rpc({
                     op: "removeProject",

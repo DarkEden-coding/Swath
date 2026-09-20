@@ -120,6 +120,10 @@ export function TerminalPane({
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
+  const [editPrompt, setEditPrompt] = useState<{
+    kind: "title" | "cwd";
+    value: string;
+  } | null>(null);
   const activePaneId = useUiStore((state) => state.activePaneId);
   const paneId = pane.id;
 
@@ -511,19 +515,12 @@ export function TerminalPane({
     if (action === "clear") termRef.current?.clear();
     if (action === "find") setSearchOpen(true);
     if (action === "restart") restart();
-    if (action === "rename") {
-      const title = window.prompt("Pane title", headerLine)?.trim();
-      if (title) appActions.renamePane(workspace.id, view.id, paneId, title);
-    }
-    if (action === "cwd") {
-      const cwd = window
-        .prompt(
-          "Initial CWD for next restart",
-          paneMeta?.cwd ?? paneMeta?.metadata?.cwd ?? workspace.path,
-        )
-        ?.trim();
-      if (cwd) appActions.setPaneInitialCwd(workspace.id, view.id, paneId, cwd);
-    }
+    if (action === "rename") setEditPrompt({ kind: "title", value: headerLine });
+    if (action === "cwd")
+      setEditPrompt({
+        kind: "cwd",
+        value: paneMeta?.cwd ?? paneMeta?.metadata?.cwd ?? workspace.path,
+      });
     if (action === "splitRight") appActions.splitPane(workspace.id, view.id, paneId, "vertical");
     if (action === "splitDown") appActions.splitPane(workspace.id, view.id, paneId, "horizontal");
     if (action === "close") close();
@@ -650,6 +647,59 @@ export function TerminalPane({
       ) : null}
       {contextMenu ? (
         <TerminalContextMenu x={contextMenu.x} y={contextMenu.y} onAction={runContextAction} />
+      ) : null}
+      {editPrompt ? (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label={editPrompt.kind === "title" ? "Rename pane" : "Set initial directory"}
+          className="absolute inset-0 z-30 grid place-items-center bg-black/50"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setEditPrompt(null);
+          }}
+        >
+          <form
+            className="w-[min(420px,calc(100%-2rem))] rounded-lg border border-swath-border bg-swath-panel p-4 shadow-swath"
+            onSubmit={(event) => {
+              event.preventDefault();
+              const value = editPrompt.value.trim();
+              if (!value) return;
+              if (editPrompt.kind === "title")
+                appActions.renamePane(workspace.id, view.id, paneId, value);
+              else appActions.setPaneInitialCwd(workspace.id, view.id, paneId, value);
+              setEditPrompt(null);
+            }}
+          >
+            <label className="block text-xs text-swath-muted">
+              {editPrompt.kind === "title" ? "Pane title" : "Initial CWD for next restart"}
+              <input
+                autoFocus
+                value={editPrompt.value}
+                onChange={(event) =>
+                  setEditPrompt((current) =>
+                    current ? { ...current, value: event.target.value } : current,
+                  )
+                }
+                className="mt-2 w-full rounded border border-swath-border bg-swath-bg px-2 py-1.5 text-swath-text"
+              />
+            </label>
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                type="button"
+                className="rounded border border-swath-border px-3 py-1.5 text-xs text-swath-muted hover:text-swath-text"
+                onClick={() => setEditPrompt(null)}
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                className="rounded bg-swath-accent px-3 py-1.5 text-xs font-medium text-white"
+              >
+                Save
+              </button>
+            </div>
+          </form>
+        </div>
       ) : null}
     </PaneFrame>
   );

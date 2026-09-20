@@ -1,7 +1,7 @@
 //! Durable OpenRaft catalog core. Transport adapters may mount the three public RPC handlers.
 #![allow(clippy::result_large_err)]
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, HashSet},
     io::{Cursor, Read},
     ops::{Bound, RangeBounds},
     sync::{Arc, Mutex, OnceLock},
@@ -598,6 +598,139 @@ fn project_mutation(
                     expected + 1,
                 )
             })
+        }
+        // Reconciles legacy per-device project imports into one shared project without touching
+        // task worktrees or durable Pi records.  The entire operation is one Raft projection so
+        // peers never observe a task moved to a project that has already been tombstoned.
+        "merge" => {
+            let Some(raw_duplicates) = p
+                .get("duplicateProjectIds")
+                .and_then(serde_json::Value::as_array)
+            else {
+                return Ok(invalid("invalid_request"));
+            };
+            let duplicates: Vec<&str> = raw_duplicates
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .collect();
+            if duplicates.is_empty()
+                || duplicates.len() != raw_duplicates.len()
+                || duplicates.iter().any(|duplicate| *duplicate == id)
+                || duplicates
+                    .iter()
+                    .enumerate()
+                    .any(|(index, duplicate)| duplicates[..index].contains(duplicate))
+            {
+                return Ok(invalid("invalid_request"));
+            }
+
+            let canonical_network: Option<String> = tx
+                .query_row(
+                    "SELECT network_id FROM projects WHERE id=?1 AND revision=?2 AND tombstoned_at IS NULL",
+                    params![id, expected],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            let Some(canonical_network) = canonical_network else {
+                return Ok(conflict());
+            };
+            for duplicate in &duplicates {
+                let valid: bool = tx.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM projects WHERE id=?1 AND network_id=?2 AND tombstoned_at IS NULL)",
+                    params![duplicate, canonical_network],
+                    |row| row.get(0),
+                )?;
+                if !valid {
+                    return Ok(invalid("duplicate_project_not_found"));
+                }
+            }
+
+            let mut project_ids = vec![id];
+            project_ids.extend(duplicates.iter().copied());
+            let mut task_ids = Vec::new();
+            for project_id in &project_ids {
+                let mut statement = tx.prepare(
+                    "SELECT id FROM tasks WHERE project_id=?1 AND tombstoned_at IS NULL ORDER BY created_at,id",
+                )?;
+                let rows = statement
+                    .query_map([project_id], |row| row.get::<_, String>(0))?
+                    .collect::<Result<Vec<_>, _>>()?;
+                task_ids.extend(rows);
+            }
+            let order =
+                serde_json::to_string(&task_ids).map_err(|_| rusqlite::Error::InvalidQuery)?;
+
+            // Keep only Pi panes.  Pi history uses the existing task/pane IDs, so no transcript
+            // rows need rewriting and the original working directories remain untouched.
+            let mut removed_panes = 0usize;
+            for task_id in &task_ids {
+                let mut pi_statement = tx.prepare(
+                    "SELECT id FROM task_panes WHERE task_id=?1 AND kind='piAgent' AND tombstoned_at IS NULL ORDER BY created_at,id",
+                )?;
+                let pi_panes = pi_statement
+                    .query_map([task_id], |row| row.get::<_, String>(0))?
+                    .collect::<Result<Vec<_>, _>>()?;
+                let mut stale_statement = tx.prepare(
+                    "SELECT id,revision FROM task_panes WHERE task_id=?1 AND kind!='piAgent' AND tombstoned_at IS NULL",
+                )?;
+                let stale = stale_statement
+                    .query_map([task_id], |row| {
+                        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+                    })?
+                    .collect::<Result<Vec<_>, _>>()?;
+                for (pane_id, pane_revision) in stale {
+                    tx.execute(
+                        "UPDATE task_panes SET tombstoned_at=strftime('%s','now'),revision=revision+1 WHERE id=?1 AND revision=?2 AND tombstoned_at IS NULL",
+                        params![pane_id, pane_revision],
+                    )?;
+                    tx.execute(
+                        "INSERT INTO tombstones(record_type,record_id,revision,deleted_at) VALUES('pane',?1,?2,strftime('%s','now'))",
+                        params![pane_id, pane_revision + 1],
+                    )?;
+                    removed_panes += 1;
+                }
+                let pane_order =
+                    serde_json::to_string(&pi_panes).map_err(|_| rusqlite::Error::InvalidQuery)?;
+                tx.execute(
+                    "UPDATE tasks SET pane_order=?1,revision=revision+1 WHERE id=?2 AND tombstoned_at IS NULL",
+                    params![pane_order, task_id],
+                )?;
+            }
+
+            for duplicate in &duplicates {
+                tx.execute(
+                    "UPDATE tasks SET project_id=?1,revision=revision+1 WHERE project_id=?2 AND tombstoned_at IS NULL",
+                    params![id, duplicate],
+                )?;
+            }
+            let source = p
+                .get("repositorySource")
+                .and_then(serde_json::Value::as_str);
+            if tx.execute(
+                "UPDATE projects SET task_order=?1,repository_source=COALESCE(?2,repository_source),revision=revision+1 WHERE id=?3 AND revision=?4 AND tombstoned_at IS NULL",
+                params![order, source, id, expected],
+            )? == 0 {
+                return Ok(conflict());
+            }
+            for duplicate in &duplicates {
+                let revision: i64 = tx.query_row(
+                    "SELECT revision FROM projects WHERE id=?1 AND tombstoned_at IS NULL",
+                    [duplicate],
+                    |row| row.get(0),
+                )?;
+                tx.execute(
+                    "UPDATE projects SET tombstoned_at=strftime('%s','now'),revision=revision+1 WHERE id=?1 AND revision=?2 AND tombstoned_at IS NULL",
+                    params![duplicate, revision],
+                )?;
+                tx.execute(
+                    "INSERT INTO tombstones(record_type,record_id,revision,deleted_at) VALUES('project',?1,?2,strftime('%s','now'))",
+                    params![duplicate, revision + 1],
+                )?;
+            }
+            Ok(committed(
+                serde_json::json!({"projectId":id,"revision":expected+1,"mergedProjectIds":duplicates,"taskIds":task_ids,"removedNonPiPanes":removed_panes}),
+                expected + 1,
+            ))
         }
         "tombstone" => tombstone(tx, "projects", "project", id, expected),
         _ => Ok(invalid("invalid_action")),
@@ -1372,42 +1505,83 @@ impl CatalogService {
             Ok(response) => response.data,
             Err(local_error) => {
                 // Learners and followers forward the original idempotent request to the elected
-                // leader using the durable peer credential used by Raft replication.
-                let leader = self
-                    .raft
-                    .current_leader()
+                // leader using the durable peer credential used by Raft replication. Prefer the
+                // leader attached to this specific error: metrics can lag an election and used to
+                // send writes to a stale leader, whose redirect was surfaced as a 502.
+                let mut leader = local_error
+                    .forward_to_leader()
+                    .and_then(|forward| forward.leader_id)
+                    .or_else(|| self.raft.current_leader())
                     .ok_or_else(|| catalog_error(&local_error))?;
-                let peer: Option<(String, String)> = Connection::open(&self.db)
-                    .ok()
-                    .and_then(|conn| conn.query_row(
-                        "SELECT r.endpoint,c.credential FROM raft_node_members r JOIN device_connectors c ON c.device_id=r.device_id WHERE r.network_id=?1 AND r.node_id=?2",
-                        params![self.network_id, leader as i64],
-                        |row| Ok((row.get(0)?, row.get(1)?)),
-                    ).optional().ok().flatten());
-                let Some((endpoint, credential)) = peer else {
-                    return Err(catalog_error(&local_error));
-                };
-                reqwest::Client::new()
-                    .post(format!("{}/api/raft/write", endpoint.trim_end_matches('/')))
-                    .bearer_auth(credential)
-                    .json(&request)
-                    .send()
-                    .await
-                    .map_err(|error| CatalogError {
+                let client = reqwest::Client::new();
+                let mut visited = HashSet::new();
+                loop {
+                    if !visited.insert(leader) || visited.len() > 4 {
+                        return Err(CatalogError {
+                            code: "catalog_unavailable".into(),
+                            message: "catalog leader redirect loop".into(),
+                        });
+                    }
+                    let peer: Option<(String, String)> = Connection::open(&self.db)
+                        .ok()
+                        .and_then(|conn| conn.query_row(
+                            "SELECT r.endpoint,c.credential FROM raft_node_members r JOIN device_connectors c ON c.device_id=r.device_id WHERE r.network_id=?1 AND r.node_id=?2",
+                            params![self.network_id, leader as i64],
+                            |row| Ok((row.get(0)?, row.get(1)?)),
+                        ).optional().ok().flatten());
+                    let Some((endpoint, credential)) = peer else {
+                        return Err(CatalogError {
+                            code: "catalog_unavailable".into(),
+                            message: format!("catalog leader {leader} is not a registered peer"),
+                        });
+                    };
+                    let remote = client
+                        .post(format!("{}/api/raft/write", endpoint.trim_end_matches('/')))
+                        .bearer_auth(credential)
+                        .json(&request)
+                        .send()
+                        .await
+                        .map_err(|error| CatalogError {
+                            code: "catalog_unavailable".into(),
+                            message: error.to_string(),
+                        })?;
+                    let status = remote.status();
+                    let body = remote.bytes().await.map_err(|error| CatalogError {
                         code: "catalog_unavailable".into(),
                         message: error.to_string(),
-                    })?
-                    .error_for_status()
-                    .map_err(|error| CatalogError {
-                        code: "catalog_unavailable".into(),
-                        message: error.to_string(),
-                    })?
-                    .json::<CatalogResponse>()
-                    .await
-                    .map_err(|error| CatalogError {
-                        code: "catalog_unavailable".into(),
-                        message: error.to_string(),
-                    })?
+                    })?;
+                    if status.is_success() {
+                        break serde_json::from_slice::<CatalogResponse>(&body).map_err(
+                            |error| CatalogError {
+                                code: "catalog_unavailable".into(),
+                                message: error.to_string(),
+                            },
+                        )?;
+                    }
+                    let error: serde_json::Value =
+                        serde_json::from_slice(&body).unwrap_or(serde_json::Value::Null);
+                    if error.get("code").and_then(serde_json::Value::as_str) == Some("not_leader") {
+                        if let Some(next) =
+                            error.get("leaderId").and_then(serde_json::Value::as_u64)
+                        {
+                            leader = next;
+                            continue;
+                        }
+                    }
+                    return Err(CatalogError {
+                        code: error
+                            .get("code")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or("catalog_unavailable")
+                            .into(),
+                        message: error
+                            .get("error")
+                            .or_else(|| error.get("message"))
+                            .and_then(serde_json::Value::as_str)
+                            .map(str::to_string)
+                            .unwrap_or_else(|| format!("HTTP status {status}")),
+                    });
+                }
             }
         };
         if response.status == "revision_conflict" || response.status == "operation_id_conflict" {

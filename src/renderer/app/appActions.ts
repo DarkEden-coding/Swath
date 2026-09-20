@@ -368,7 +368,12 @@ export function closeView(workspaceId: string, viewId: string): void {
       config.settings.confirmBeforeClosingPane &&
       panes.length > 0 &&
       (await anyBusyRegisteredPane(panes)) &&
-      !window.confirm("Close this view and close its running panes?")
+      !(await dialogClient.confirm({
+        message: "Close this view and its running panes?",
+        detail: "Any processes running in these panes will be stopped.",
+        confirmLabel: "Close View",
+        cancelLabel: "Cancel",
+      }))
     )
       return;
     closeRegisteredPanes(panes);
@@ -418,7 +423,12 @@ export function closePane(workspaceId: string, viewId: string, paneId: string): 
     if (
       config.settings.confirmBeforeClosingPane &&
       (await isPaneBusy(pane.kind, paneId).catch(() => false)) &&
-      !window.confirm("Close this running pane?")
+      !(await dialogClient.confirm({
+        message: "Close this running pane?",
+        detail: "The process running in this pane will be stopped.",
+        confirmLabel: "Close Pane",
+        cancelLabel: "Cancel",
+      }))
     )
       return;
     closeRegisteredPanes([pane]);

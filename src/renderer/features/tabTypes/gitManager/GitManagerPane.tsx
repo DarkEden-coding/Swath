@@ -8,6 +8,7 @@ import {
   type GitRunResult,
   type GitStatusResult,
 } from "../../../services/gitClient";
+import { dialogClient } from "../../../services/dialogClient";
 import { PaneFrame } from "../../panes/components/PaneFrame";
 import type { PaneComponentProps } from "../../panes/paneTypes";
 import { GitDiffDialog, type GitDiffTarget } from "./CommitDiffDialog";
@@ -246,12 +247,13 @@ export function GitManagerPane({ workspace, view, pane }: PaneComponentProps): J
 
   const runDiscard = async (paths: string[]): Promise<void> => {
     if (!cwd || paths.length === 0) return;
-    if (
-      !window.confirm(
-        `Discard changes to ${paths.length === 1 ? paths[0] : `${paths.length} files`}? This cannot be undone.`,
-      )
-    )
-      return;
+    const confirmed = await dialogClient.confirm({
+      message: `Discard changes to ${paths.length === 1 ? paths[0] : `${paths.length} files`}?`,
+      detail: "This cannot be undone.",
+      confirmLabel: "Discard Changes",
+      cancelLabel: "Cancel",
+    });
+    if (!confirmed) return;
     setBusy(true);
     try {
       const r = await gitClient.discardPaths(cwd, paths);
