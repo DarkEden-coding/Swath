@@ -741,23 +741,29 @@ fn tombstone(
     table: &str,
     typ: &str,
     id: &str,
-    expected: i64,
+    _expected: i64,
 ) -> Result<CatalogResponse, rusqlite::Error> {
     let select = match table {
-        "projects" => "SELECT revision FROM projects WHERE id=?1 AND tombstoned_at IS NULL",
-        "tasks" => "SELECT revision FROM tasks WHERE id=?1 AND tombstoned_at IS NULL",
-        "task_panes" => "SELECT revision FROM task_panes WHERE id=?1 AND tombstoned_at IS NULL",
+        "projects" => "SELECT revision,tombstoned_at FROM projects WHERE id=?1",
+        "tasks" => "SELECT revision,tombstoned_at FROM tasks WHERE id=?1",
+        "task_panes" => "SELECT revision,tombstoned_at FROM task_panes WHERE id=?1",
         _ => return Ok(invalid("invalid_request")),
     };
-    let current: Option<i64> = tx.query_row(select, [id], |row| row.get(0)).optional()?;
-    let Some(current) = current else {
+    let record: Option<(i64, Option<i64>)> = tx
+        .query_row(select, [id], |row| Ok((row.get(0)?, row.get(1)?)))
+        .optional()?;
+    let Some((current, tombstoned_at)) = record else {
         return Ok(conflict());
     };
-    // Removal is a monotonic intent. A learner may legitimately submit an older revision while
-    // it catches up with the leader, so accept a stale fence and tombstone the current record.
-    // A future fence is still invalid, and edits/reorders continue to require exact revisions.
-    if expected > current {
-        return Ok(conflict());
+    // Removal is a monotonic intent. Learner projections can be either behind or ahead of the
+    // current leader after reconnecting from an older snapshot, so tombstone the authoritative
+    // active row regardless of the caller's cached revision. Repeated removal is also successful.
+    // Edits and reorders continue to require exact revision fences.
+    if tombstoned_at.is_some() {
+        return Ok(committed(
+            serde_json::json!({"id":id,"revision":current}),
+            current,
+        ));
     }
     let sql=match table{"projects"=>"UPDATE projects SET tombstoned_at=strftime('%s','now'),revision=revision+1 WHERE id=?1 AND revision=?2 AND tombstoned_at IS NULL","tasks"=>"UPDATE tasks SET tombstoned_at=strftime('%s','now'),revision=revision+1 WHERE id=?1 AND revision=?2 AND tombstoned_at IS NULL","task_panes"=>"UPDATE task_panes SET tombstoned_at=strftime('%s','now'),revision=revision+1 WHERE id=?1 AND revision=?2 AND tombstoned_at IS NULL",_=>unreachable!()};
     if tx.execute(sql, params![id, current])? == 0 {
@@ -1986,6 +1992,17 @@ mod raft_tests {
                 .unwrap(),
             3,
         );
+        let removed_again = node
+            .client_write(CatalogRequest::Project {
+                operation_id: "project:remove-again".into(),
+                expected_revision: 99,
+                payload: serde_json::json!({"action":"tombstone","projectId":"p"}),
+            })
+            .await
+            .unwrap()
+            .data;
+        assert_eq!(removed_again.status, "committed");
+        assert_eq!(removed_again.revision, Some(3));
         node.shutdown().await;
     }
 

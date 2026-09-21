@@ -84,7 +84,7 @@ pub(super) async fn catalog_write(
     kind: &str,
     expected_revision: i64,
     payload: Value,
-) -> Result<(), String> {
+) -> Result<network::raft::CatalogResponse, String> {
     let conn = catalog_connection(data_dir)?;
     let operation_id = format!(
         "{}:{}",
@@ -143,7 +143,7 @@ pub(super) async fn catalog_write(
     if response.status != "committed" {
         return Err(response.status);
     }
-    Ok(())
+    Ok(response)
 }
 pub(super) fn revision(conn: &rusqlite::Connection, table: &str, id: &str) -> Result<i64, String> {
     conn.query_row(
@@ -419,7 +419,7 @@ async fn rename_project(data_dir: &Path, request: &Value) -> Result<Value, Strin
 async fn remove_project(data_dir: &Path, request: &Value) -> Result<Value, String> {
     let project = field(request, "projectId")?;
     let conn = catalog_connection(data_dir)?;
-    catalog_write(
+    let response = catalog_write(
         data_dir,
         request,
         "project",
@@ -427,7 +427,39 @@ async fn remove_project(data_dir: &Path, request: &Value) -> Result<Value, Strin
         json!({"action":"tombstone","projectId":project}),
     )
     .await?;
+    apply_confirmed_tombstone(&conn, "projects", "project", project, &response)?;
     Ok(json!({"ok":true}))
+}
+
+fn apply_confirmed_tombstone(
+    conn: &rusqlite::Connection,
+    table: &str,
+    record_type: &str,
+    record_id: &str,
+    response: &network::raft::CatalogResponse,
+) -> Result<(), String> {
+    let revision = response
+        .revision
+        .ok_or_else(|| "committed tombstone did not include a revision".to_string())?;
+    let sql = match table {
+        "projects" => "UPDATE projects SET tombstoned_at=COALESCE(tombstoned_at,strftime('%s','now')),revision=MAX(revision,?2) WHERE id=?1",
+        "tasks" => "UPDATE tasks SET tombstoned_at=COALESCE(tombstoned_at,strftime('%s','now')),revision=MAX(revision,?2) WHERE id=?1",
+        "task_panes" => "UPDATE task_panes SET tombstoned_at=COALESCE(tombstoned_at,strftime('%s','now')),revision=MAX(revision,?2) WHERE id=?1",
+        _ => return Err("invalid catalog table".into()),
+    };
+    if conn
+        .execute(sql, params![record_id, revision])
+        .map_err(|error| error.to_string())?
+        == 0
+    {
+        return Err("not_found".into());
+    }
+    conn.execute(
+        "INSERT INTO tombstones(record_type,record_id,revision,deleted_at) VALUES(?1,?2,?3,strftime('%s','now')) ON CONFLICT(record_type,record_id) DO UPDATE SET revision=MAX(revision,excluded.revision)",
+        params![record_type, record_id, revision],
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(())
 }
 async fn rename_task(data_dir: &Path, request: &Value) -> Result<Value, String> {
     mutate_name(data_dir, "tasks", "task", "taskId", request).await
@@ -541,7 +573,7 @@ async fn remove_pane(data_dir: &Path, request: &Value) -> Result<Value, String> 
     let task = field(request, "taskId")?;
     let pane = field(request, "paneId")?;
     let conn = catalog_connection(data_dir)?;
-    catalog_write(
+    let response = catalog_write(
         data_dir,
         request,
         "pane",
@@ -549,6 +581,7 @@ async fn remove_pane(data_dir: &Path, request: &Value) -> Result<Value, String> 
         json!({"action":"tombstone","paneId":pane,"taskId":task}),
     )
     .await?;
+    apply_confirmed_tombstone(&conn, "task_panes", "pane", pane, &response)?;
     Ok(json!({"ok":true}))
 }
 
