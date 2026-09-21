@@ -1578,6 +1578,14 @@ pub struct CatalogService {
     db: String,
     network_id: String,
 }
+type CatalogInstanceKey = (String, String, NodeId);
+static CATALOG_INSTANCES: OnceLock<
+    tokio::sync::Mutex<HashMap<CatalogInstanceKey, std::sync::Weak<CatalogRaft>>>,
+> = OnceLock::new();
+fn catalog_instances(
+) -> &'static tokio::sync::Mutex<HashMap<CatalogInstanceKey, std::sync::Weak<CatalogRaft>>> {
+    CATALOG_INSTANCES.get_or_init(|| tokio::sync::Mutex::new(HashMap::new()))
+}
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub struct CatalogError {
@@ -1595,7 +1603,23 @@ impl CatalogService {
         let db = db.into();
         let network_id = network_id.into();
         let endpoint = endpoint.into();
+        // A process must own exactly one Raft engine for a given local catalog. Commands used to
+        // reopen a complete engine for every mutation, so its state-machine transaction raced the
+        // server-owned engine over the same SQLite file and surfaced as `database is locked`.
+        // Serialize discovery/creation as well as caching: two concurrent first callers must not
+        // both get past a weak-cache miss.
+        let key = (db.clone(), network_id.clone(), node_id);
+        let mut instances = catalog_instances().lock().await;
+        if let Some(raft) = instances.get(&key).and_then(std::sync::Weak::upgrade) {
+            return Ok(Self {
+                raft,
+                db,
+                network_id,
+            });
+        }
         let conn = Connection::open(&db)?;
+        conn.busy_timeout(std::time::Duration::from_secs(10))?;
+        conn.pragma_update(None, "journal_mode", "WAL")?;
         crate::network::migrate(&conn)?;
         conn.execute("INSERT INTO catalog_nodes(network_id,node_id,endpoint,updated_at) VALUES(?1,?2,?3,strftime('%s','now')) ON CONFLICT(network_id) DO UPDATE SET endpoint=excluded.endpoint,updated_at=excluded.updated_at", params![network_id, node_id as i64, endpoint])?;
         let bound_device: Option<String> = conn
@@ -1624,6 +1648,7 @@ impl CatalogService {
         if bootstrap {
             let _ = raft.initialize(BasicNode::new(endpoint)).await;
         }
+        instances.insert(key, Arc::downgrade(&raft));
         Ok(Self {
             raft,
             db,
@@ -1987,6 +2012,16 @@ mod raft_tests {
         )
         .await
         .unwrap();
+        let reopened = CatalogService::open(
+            &database,
+            "joined",
+            42,
+            "local-task-rpc",
+            "http://127.0.0.1:0",
+        )
+        .await
+        .unwrap();
+        assert!(Arc::ptr_eq(service.raft(), reopened.raft()));
         sleep(Duration::from_millis(300)).await;
         assert!(service
             .raft
@@ -1995,6 +2030,7 @@ mod raft_tests {
             .borrow()
             .current_leader
             .is_none());
+        drop(reopened);
         service.raft.shutdown().await;
     }
 
