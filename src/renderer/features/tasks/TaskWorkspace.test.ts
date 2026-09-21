@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { piSessionMetadata, reorderedPaneIds, taskRendererProjection } from "./TaskWorkspace";
+import {
+  piSessionMetadata,
+  reorderedPaneIds,
+  reorderedTaskViewPaneIds,
+  taskRendererProjection,
+} from "./TaskWorkspace";
 
 describe("piSessionMetadata", () => {
   it("does not pass a migrated pane id to pi as --session", () => {
@@ -106,6 +111,28 @@ describe("taskRendererProjection", () => {
       first: { id: "legacy-pane:op:old-git" },
       second: { id: "legacy-pane:op:old-pi" },
     });
+    const reordered = taskRendererProjection(
+      { id: "legacy-task:workspace-1", title: "Task" },
+      [
+        { id: "legacy-pane:op:old-git", kind: "gitManager", title: null },
+        { id: "legacy-pane:op:old-pi", kind: "piAgent", title: null },
+        { id: "legacy-pane:op:old-terminal", kind: "terminal", title: null },
+      ],
+      "/project",
+      null,
+      legacy,
+    );
+    expect(reordered.workspace.views.map((item) => item.id)).toEqual(["source", "terminal"]);
+    expect(reordered.workspace.views[0]?.layout).toMatchObject({
+      type: "split",
+      first: { id: "legacy-pane:op:old-git" },
+      second: { id: "legacy-pane:op:old-pi" },
+    });
+    expect(reorderedTaskViewPaneIds(reordered.workspace.views, 0, 1)).toEqual([
+      "legacy-pane:op:old-terminal",
+      "legacy-pane:op:old-git",
+      "legacy-pane:op:old-pi",
+    ]);
   });
 
   it("prunes deleted legacy panes and uses authoritative shared metadata", () => {

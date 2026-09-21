@@ -85,7 +85,18 @@ export function taskRendererProjection(
         },
         activePaneId: pane.id,
       }));
-    const views = [...restored, ...added];
+    const panePositions = new Map(panes.map((pane, index) => [pane.id, index]));
+    // Migrated workspaces retain their split geometry and titles, but their old view array is not
+    // the tab-order authority. Sort whole views by the first pane they contain in the catalog.
+    const views = [...restored, ...added].sort((left, right) => {
+      const position = (view: WorkspaceView) =>
+        Math.min(
+          ...collectPanes(view.layout).map(
+            (pane) => panePositions.get(pane.id) ?? Number.MAX_SAFE_INTEGER,
+          ),
+        );
+      return position(left) - position(right);
+    });
     if (!views.length) {
       const empty = {
         type: "pane" as const,
@@ -176,6 +187,22 @@ export function reorderedPaneIds(
   const [paneId] = order.splice(fromIndex, 1);
   if (paneId) order.splice(toIndex, 0, paneId);
   return order;
+}
+
+/** Moves whole tabs, keeping every pane in a legacy split view together. */
+export function reorderedTaskViewPaneIds(
+  views: readonly WorkspaceView[],
+  fromIndex: number,
+  toIndex: number,
+): string[] {
+  const moved = reorderedPaneIds(
+    views.map((view) => view.id),
+    fromIndex,
+    toIndex,
+  );
+  return moved.flatMap((id) =>
+    collectPanes(views.find((view) => view.id === id)!.layout).map((pane) => pane.id),
+  );
 }
 
 function rpcOk(value: unknown): boolean {
@@ -535,7 +562,9 @@ export function TaskWorkspace(): JSX.Element {
         if (!rpcOk(reply)) throw new Error(JSON.stringify(reply));
       })
       .catch((error: unknown) => reportError(`Task ${request.op}`, error))
-      .finally(() => void refresh().catch((error: unknown) => reportError("Refreshing tasks", error)));
+      .finally(
+        () => void refresh().catch((error: unknown) => reportError("Refreshing tasks", error)),
+      );
   };
   return (
     <div className="grid h-full min-h-0 grid-rows-[1fr] bg-swath-bg">
@@ -556,21 +585,21 @@ export function TaskWorkspace(): JSX.Element {
         }
         onReorderView={(fromIndex, toIndex) => {
           if (!task) return;
-          const order = reorderedPaneIds(
-            panes.map((pane) => pane.id),
-            fromIndex,
-            toIndex,
-          );
+          if (!projection) return;
+          const order = reorderedTaskViewPaneIds(projection.workspace.views, fromIndex, toIndex);
           reorderTaskPanes(task.id, order);
         }}
         onCreatePane={(taskId, kind) =>
-          void window.swath.tasks.rpc({ op: "createPane", taskId, kind }).then(async (reply) => {
-            if (!rpcOk(reply)) return;
-            await refresh();
-            const paneId = (reply as { paneId?: string }).paneId;
-            if (paneId)
-              setActiveViewIds((current) => ({ ...current, [taskId]: `task-view:${paneId}` }));
-          }).catch((error: unknown) => reportError("Creating task pane", error))
+          void window.swath.tasks
+            .rpc({ op: "createPane", taskId, kind })
+            .then(async (reply) => {
+              if (!rpcOk(reply)) return;
+              await refresh();
+              const paneId = (reply as { paneId?: string }).paneId;
+              if (paneId)
+                setActiveViewIds((current) => ({ ...current, [taskId]: `task-view:${paneId}` }));
+            })
+            .catch((error: unknown) => reportError("Creating task pane", error))
         }
         piOnly={legacyWorkspace?.isGroupRoot === true}
         onCreate={() => setCreateOpen(true)}
