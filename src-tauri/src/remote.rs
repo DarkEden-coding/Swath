@@ -485,7 +485,17 @@ fn configure_tailscale_serve(port: u16, https_port: u16) -> Result<Option<String
             message.trim()
         ));
     }
-    Ok(tailscale_https_url(&message).or_else(tailscale_dns_url))
+    Ok(tailscale_https_url(&message)
+        .or_else(tailscale_dns_url)
+        .and_then(|url| tailscale_endpoint_port(url, https_port)))
+}
+
+fn tailscale_endpoint_port(url: String, https_port: u16) -> Option<String> {
+    let mut parsed = reqwest::Url::parse(&url).ok()?;
+    if https_port != 443 && parsed.port().is_none() {
+        parsed.set_port(Some(https_port)).ok()?;
+    }
+    Some(parsed.to_string())
 }
 
 fn tailscale_https_url(message: &str) -> Option<String> {
@@ -3050,6 +3060,18 @@ mod tests {
         assert_eq!(
             tailscale_https_url(output).as_deref(),
             Some("https://swath.example.ts.net/")
+        );
+    }
+
+    #[test]
+    fn preserves_non_default_tailscale_serve_port_in_catalog_endpoint() {
+        assert_eq!(
+            tailscale_endpoint_port("https://power-server.example.ts.net/".into(), 9443).as_deref(),
+            Some("https://power-server.example.ts.net:9443/")
+        );
+        assert_eq!(
+            tailscale_endpoint_port("https://power-server.example.ts.net/".into(), 443).as_deref(),
+            Some("https://power-server.example.ts.net/")
         );
     }
 
