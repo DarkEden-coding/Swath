@@ -57,6 +57,193 @@ pub fn headless_options(token: String) -> remote::RemoteServerOptions {
     }
 }
 
+/// Converts an existing healthy Raft deployment to one durable catalog server.
+///
+/// This is intentionally a local, operator-run migration rather than a UI action. It first
+/// commits Raft membership containing only the local device, then records that fixed server in
+/// the catalog projection. Call it on the current leader while all existing voters are online.
+pub async fn migrate_to_single_server(
+    data_dir: std::path::PathBuf,
+    token: String,
+) -> anyhow::Result<()> {
+    config::initialize(&data_dir)?;
+    let db = config::db_path_in(&data_dir)?;
+    let conn = config::connection_at(&db)?;
+    let network_id: String = conn.query_row(
+        "SELECT id FROM networks WHERE tombstoned_at IS NULL ORDER BY created_at,id LIMIT 1",
+        [],
+        |row| row.get(0),
+    )?;
+    if network::is_single_server(&conn, &network_id)? {
+        return Ok(());
+    }
+    // A replicated projection can carry another device's `local-device` marker. The catalog
+    // node is this physical server's durable identity, so prefer its Raft-node binding.
+    let local_device: String = conn
+        .query_row(
+            "SELECT r.device_id FROM catalog_nodes c JOIN raft_node_members r ON r.network_id=c.network_id AND r.node_id=c.node_id WHERE c.network_id=?1",
+            [&network_id],
+            |row| row.get(0),
+        )
+        .or_else(|_| {
+            conn.query_row(
+                "SELECT id FROM devices WHERE network_id=?1 AND enrollment_id='local-device' AND tombstoned_at IS NULL",
+                [&network_id],
+                |row| row.get(0),
+            )
+        })?;
+    let local_node: i64 = conn.query_row(
+        "SELECT node_id FROM raft_node_members WHERE network_id=?1 AND device_id=?2",
+        rusqlite::params![network_id, local_device],
+        |row| row.get(0),
+    )?;
+    let endpoint: String = conn.query_row(
+        "SELECT endpoint FROM catalog_nodes WHERE network_id=?1",
+        [&network_id],
+        |row| row.get(0),
+    )?;
+    drop(conn);
+
+    let catalog = network::raft::CatalogService::open(
+        db.to_string_lossy(),
+        network_id.clone(),
+        local_node as network::raft::NodeId,
+        token,
+        endpoint,
+    )
+    .await?;
+    // OpenRaft only accepts this from the current leader. A just-started server can know the
+    // previous leader before its local Raft worker is ready to accept writes, so wait briefly
+    // rather than treating that transient state as a failed migration. Any persistent failure
+    // leaves the existing configuration intact.
+    let mut last_error = None;
+    for _ in 0..40 {
+        match catalog
+            .raft()
+            .change_membership(vec![local_node as network::raft::NodeId])
+            .await
+        {
+            Ok(_) => {
+                last_error = None;
+                break;
+            }
+            Err(error) => {
+                last_error = Some(error.to_string());
+                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            }
+        }
+    }
+    if let Some(error) = last_error {
+        return Err(anyhow::anyhow!(
+            "power-server did not become the Raft leader: {error}"
+        ));
+    }
+
+    // The committed membership above is now the authority for writes. Record the fixed server
+    // and mirror its role in the UI projection in one transaction; no peer can subsequently
+    // elect itself or regain a vote from this catalog.
+    {
+        let mut conn = config::connection_at(&db)?;
+        let tx = conn.transaction()?;
+        tx.execute(
+            "UPDATE networks SET server_device_id=?1 WHERE id=?2 AND server_device_id IS NULL",
+            rusqlite::params![local_device, network_id],
+        )?;
+        tx.execute(
+            "UPDATE coordinator_members SET voter=CASE WHEN device_id=?2 THEN 1 ELSE 0 END, healthy=CASE WHEN device_id=?2 THEN 1 ELSE 0 END WHERE network_id=?1",
+            rusqlite::params![network_id, local_device],
+        )?;
+        tx.commit()?;
+    }
+    catalog.raft().trigger_snapshot().await?;
+    Ok(())
+}
+
+/// Destructively reseeds a broken multi-voter catalog as one server while retaining its catalog
+/// projection. This is an operator recovery command: it removes only the other *voter* devices,
+/// refuses to proceed if one owns an active task, and discards the old Raft log/snapshots.
+pub fn reseed_single_server(data_dir: std::path::PathBuf) -> anyhow::Result<()> {
+    config::initialize(&data_dir)?;
+    let db = config::db_path_in(&data_dir)?;
+    let mut conn = config::connection_at(&db)?;
+    let network_id: String = conn.query_row(
+        "SELECT id FROM networks WHERE tombstoned_at IS NULL ORDER BY created_at,id LIMIT 1",
+        [],
+        |row| row.get(0),
+    )?;
+    let local_device: String = conn
+        .query_row(
+            "SELECT r.device_id FROM catalog_nodes c JOIN raft_node_members r ON r.network_id=c.network_id AND r.node_id=c.node_id WHERE c.network_id=?1",
+            [&network_id],
+            |row| row.get(0),
+        )
+        .or_else(|_| {
+            conn.query_row(
+                "SELECT id FROM devices WHERE network_id=?1 AND enrollment_id='local-device' AND tombstoned_at IS NULL",
+                [&network_id],
+                |row| row.get(0),
+            )
+        })?;
+    let retired_voters: Vec<String> = conn
+        .prepare(
+            "SELECT device_id FROM coordinator_members WHERE network_id=?1 AND voter=1 AND device_id!=?2",
+        )?
+        .query_map(rusqlite::params![network_id, local_device], |row| row.get(0))?
+        .collect::<std::result::Result<_, _>>()?;
+    let active_on_retired: i64 = conn.query_row(
+        "SELECT count(*) FROM tasks WHERE lifecycle='active' AND assigned_device_id IN (SELECT device_id FROM coordinator_members WHERE network_id=?1 AND voter=1 AND device_id!=?2)",
+        rusqlite::params![network_id, local_device],
+        |row| row.get(0),
+    )?;
+    if active_on_retired != 0 {
+        return Err(anyhow::anyhow!(
+            "refusing to retire coordinators with {active_on_retired} active task(s)"
+        ));
+    }
+    let tx = conn.transaction()?;
+    tx.execute(
+        "UPDATE networks SET server_device_id=?1 WHERE id=?2",
+        rusqlite::params![local_device, network_id],
+    )?;
+    tx.execute(
+        "UPDATE coordinator_members SET voter=1,healthy=1 WHERE network_id=?1 AND device_id=?2",
+        rusqlite::params![network_id, local_device],
+    )?;
+    for device_id in retired_voters {
+        tx.execute(
+            "DELETE FROM coordinator_members WHERE network_id=?1 AND device_id=?2",
+            rusqlite::params![network_id, device_id],
+        )?;
+        tx.execute(
+            "DELETE FROM raft_node_members WHERE network_id=?1 AND device_id=?2",
+            rusqlite::params![network_id, device_id],
+        )?;
+        tx.execute(
+            "DELETE FROM device_connectors WHERE device_id=?1",
+            [device_id.as_str()],
+        )?;
+        tx.execute(
+            "DELETE FROM git_replicas WHERE network_id=?1 AND device_id=?2",
+            rusqlite::params![network_id, device_id],
+        )?;
+        tx.execute(
+            "UPDATE devices SET tombstoned_at=strftime('%s','now') WHERE id=?1",
+            [device_id.as_str()],
+        )?;
+    }
+    tx.execute("DELETE FROM raft_log WHERE network_id=?1", [&network_id])?;
+    tx.execute(
+        "DELETE FROM raft_snapshots WHERE network_id=?1",
+        [&network_id],
+    )?;
+    tx.execute(
+        "DELETE FROM raft_hard_state WHERE network_id=?1",
+        [&network_id],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
 /// Starts a display-free executor runtime and authenticated connector.
 pub async fn run_headless(
     data_dir: std::path::PathBuf,

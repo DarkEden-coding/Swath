@@ -564,6 +564,9 @@ pub async fn network_promote(
     device_id: String,
 ) -> CommandResult<()> {
     let conn = network_connection(&state)?;
+    if network::is_single_server(&conn, &network_id).map_err(|e| e.to_string())? {
+        return Err("single_server_topology: the catalog server is fixed".into());
+    }
     let revision: i64 = conn
         .query_row(
             "SELECT revision FROM networks WHERE id=?1 AND tombstoned_at IS NULL",
@@ -640,6 +643,9 @@ pub async fn network_demote(
     device_id: String,
 ) -> CommandResult<()> {
     let conn = network_connection(&state)?;
+    if network::is_single_server(&conn, &network_id).map_err(|e| e.to_string())? {
+        return Err("single_server_topology: the catalog server is fixed".into());
+    }
     let revision: i64 = conn
         .query_row(
             "SELECT revision FROM networks WHERE id=?1 AND tombstoned_at IS NULL",

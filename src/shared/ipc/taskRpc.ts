@@ -14,7 +14,7 @@ export type TaskRpcRequest =
   | { op: "reorderTasks"; projectId: string; taskIds: string[] }
   | { op: "completeTask"; taskId: string }
   | { op: "reactivateTask"; taskId: string }
-  | { op: "reorderPanes"; taskId: string; paneIds: string[] }
+  | { op: "reorderPanes"; taskId: string; paneIds: string[]; operationId?: string }
   | { op: "createPane"; taskId: string; kind: string; title?: string }
   | {
       op: "updatePane";
@@ -108,7 +108,10 @@ export function parseTaskRpcRequest(raw: unknown): TaskRpcRequest | null {
       return projectId ? { op: raw.op, projectId, taskIds: ids } : null;
     }
     const taskId = text(raw.taskId);
-    return taskId ? { op: raw.op, taskId, paneIds: ids } : null;
+    const operationId = raw.operationId === undefined ? undefined : text(raw.operationId);
+    return taskId && (raw.operationId === undefined || operationId)
+      ? { op: raw.op, taskId, paneIds: ids, ...(operationId ? { operationId } : {}) }
+      : null;
   }
   if (raw.op === "createPane") {
     const taskId = text(raw.taskId),

@@ -6,6 +6,7 @@ import { LayoutRenderer } from "../panes/components/LayoutRenderer";
 import { TaskTabBar } from "../views/components/ViewTabBar";
 import { collectPanes } from "../../domain/layout/layoutTree";
 import { setViewedPanes } from "../tabTypes/piAgent/piActivity";
+import { reorderTaskPanes } from "../../domain/tasks/catalogMutations";
 
 /** Legacy imports sometimes stored the old pane id here; Pi's --session accepts a JSONL path/id. */
 export function piSessionMetadata(
@@ -442,7 +443,7 @@ function CleanupDialog({
 }
 
 export function TaskWorkspace(): JSX.Element {
-  const { catalog, local, devices, networkId, refresh, selectTask, movePane } = useTaskStore();
+  const { catalog, local, devices, networkId, refresh, selectTask } = useTaskStore();
   const settings = useConfigStore((state) => state.config?.settings);
   const [createOpen, setCreateOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
@@ -552,10 +553,7 @@ export function TaskWorkspace(): JSX.Element {
             fromIndex,
             toIndex,
           );
-          movePane(task.id, fromIndex, toIndex);
-          void window.swath.tasks
-            .rpc({ op: "reorderPanes", taskId: task.id, paneIds: order })
-            .then(refresh);
+          reorderTaskPanes(task.id, order);
         }}
         onCreatePane={(taskId, kind) =>
           void window.swath.tasks.rpc({ op: "createPane", taskId, kind }).then(async (reply) => {

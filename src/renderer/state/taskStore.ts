@@ -27,6 +27,7 @@ interface TaskState {
   selectTask: (id: string, historical?: boolean) => void;
   setFocusedPane: (id: string | null) => void;
   movePane: (taskId: string, fromIndex: number, toIndex: number) => void;
+  setPaneOrderOverride: (taskId: string, order: string[] | null) => void;
   setDraft: (paneId: string, draft: string) => void;
 }
 
@@ -119,6 +120,13 @@ export const useTaskStore = create<TaskState>((set, get) => ({
           paneOrderByTask: { ...state.local.paneOrderByTask, [taskId]: order },
         },
       };
+    }),
+  setPaneOrderOverride: (taskId, order) =>
+    set((state) => {
+      const paneOrderByTask = { ...state.local.paneOrderByTask };
+      if (order) paneOrderByTask[taskId] = order;
+      else delete paneOrderByTask[taskId];
+      return { local: { ...state.local, paneOrderByTask } };
     }),
   setDraft: (paneId, draft) =>
     set((state) => ({

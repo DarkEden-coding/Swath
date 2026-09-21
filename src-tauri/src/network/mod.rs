@@ -4,7 +4,7 @@ use anyhow::{anyhow, Result};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
-const SHARED_SCHEMA_VERSION: i64 = 3;
+const SHARED_SCHEMA_VERSION: i64 = 4;
 
 /// A structured result returned when a catalog mutation cannot reach its voter quorum.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -24,7 +24,10 @@ pub fn migrate(conn: &Connection) -> Result<()> {
          CREATE TABLE IF NOT EXISTS schema_migrations (name TEXT PRIMARY KEY, version INTEGER NOT NULL);
          CREATE TABLE IF NOT EXISTS networks (
            id TEXT PRIMARY KEY, name TEXT NOT NULL, schema_version INTEGER NOT NULL,
-           revision INTEGER NOT NULL, created_at INTEGER NOT NULL, tombstoned_at INTEGER
+           revision INTEGER NOT NULL, created_at INTEGER NOT NULL, tombstoned_at INTEGER,
+           -- A non-null value makes this a deliberately single-server catalog. The referenced
+           -- device is the only Raft voter; other enrolled devices are clients/executors.
+           server_device_id TEXT REFERENCES devices(id)
          );
          CREATE TABLE IF NOT EXISTS local_device_identity (
            singleton INTEGER PRIMARY KEY CHECK(singleton = 1), id TEXT NOT NULL UNIQUE
@@ -106,6 +109,16 @@ pub fn migrate(conn: &Connection) -> Result<()> {
     if !columns.iter().any(|c| c == "metadata_json") {
         conn.execute("ALTER TABLE enrollment_credentials ADD COLUMN metadata_json TEXT NOT NULL DEFAULT '{}'", [])?;
     }
+    let network_columns: Vec<String> = conn
+        .prepare("PRAGMA table_info(networks)")?
+        .query_map([], |r| r.get(1))?
+        .collect::<std::result::Result<_, _>>()?;
+    if !network_columns.iter().any(|c| c == "server_device_id") {
+        conn.execute(
+            "ALTER TABLE networks ADD COLUMN server_device_id TEXT REFERENCES devices(id)",
+            [],
+        )?;
+    }
     let mut known = conn.prepare("SELECT name, version FROM schema_migrations")?;
     for row in known.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))? {
         let (name, version) = row?;
@@ -127,6 +140,23 @@ pub fn migrate(conn: &Connection) -> Result<()> {
         _ => {}
     }
     Ok(())
+}
+
+/// Returns the permanently selected catalog server, if this network has been simplified to one.
+pub fn single_server_device(conn: &Connection, network_id: &str) -> Result<Option<String>> {
+    conn.query_row(
+        "SELECT server_device_id FROM networks WHERE id=?1 AND tombstoned_at IS NULL",
+        [network_id],
+        |row| row.get::<_, Option<String>>(0),
+    )
+    .optional()
+    .map(|value| value.flatten())
+    .map_err(Into::into)
+}
+
+/// A single-server network has no coordinator role changes: its server is intentionally fixed.
+pub fn is_single_server(conn: &Connection, network_id: &str) -> Result<bool> {
+    Ok(single_server_device(conn, network_id)?.is_some())
 }
 
 /// Returns whether a catalog mutation can commit. One voter needs itself; two voters require both; three require two.
@@ -395,7 +425,10 @@ mod tests {
     fn voter_quorum_is_explicit() {
         let c = Connection::open_in_memory().unwrap();
         migrate(&c).unwrap();
-        c.execute("INSERT INTO networks VALUES('n','n',2,1,0,NULL)", [])
+        c.execute(
+            "INSERT INTO networks(id,name,schema_version,revision,created_at,tombstoned_at) VALUES('n','n',2,1,0,NULL)",
+            [],
+        )
             .unwrap();
         c.execute(
             "INSERT INTO devices VALUES('d','n','d','d','x','e',1,0,NULL)",

@@ -1683,10 +1683,28 @@ async fn dispatch_to_owner(
     if method == "transfer.stage" {
         return dispatch_local(ctx, method, params).await;
     }
-    // Completing a task changes replicated catalog lifecycle only. Routing it to the executor
-    // made the action unnecessarily depend on that machine being reachable and authenticated.
-    if method == "task.rpc" && params.get("op").and_then(Value::as_str) == Some("completeTask") {
-        return dispatch_local(ctx, method, params).await;
+    // Catalog metadata is a control-plane concern. In the fixed-server topology it goes directly
+    // to that server; in a legacy topology any local catalog replica can forward it to the leader.
+    // It must never depend on the assigned executor being online.
+    if matches!(method, "task.rpc" | "catalog.rpc") && tasks::is_catalog_operation(&params) {
+        let db = config::db_path_in(ctx.core.data_dir()).map_err(|error| error.to_string())?;
+        let conn = config::connection_at(&db).map_err(|error| error.to_string())?;
+        let server: Option<String> = conn
+            .query_row(
+                "SELECT server_device_id FROM networks WHERE tombstoned_at IS NULL AND server_device_id IS NOT NULL ORDER BY created_at,id LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| error.to_string())?;
+        drop(conn);
+        if let Some(server) = server {
+            if ctx.device_id.as_deref() == Some(server.as_str()) {
+                return dispatch_local(ctx, "catalog.rpc", params).await;
+            }
+            return peer_call(ctx, &server, "catalog.rpc", params, hop).await;
+        }
+        return dispatch_local(ctx, "catalog.rpc", params).await;
     }
     let owner = task_device(ctx, method, &params)?;
     if task_addressed(method, &params) && owner.is_none() {
@@ -1889,7 +1907,7 @@ async fn dispatch_local(
             ctx.core.events.publish("pi:history", json!({"networkId":network,"cursor":result.get("cursor"),"applied":result["applied"]}));
             Ok(result)
         }
-        "task.rpc" => {
+        "task.rpc" | "catalog.rpc" => {
             let op = params
                 .get("op")
                 .and_then(Value::as_str)
@@ -2006,6 +2024,15 @@ async fn dispatch_local(
             .ok_or_else(|| "network_not_found".to_string())?;
             let conn = config::connection_at(&db).map_err(|e| e.to_string())?;
             network::catalog_snapshot(&conn, &network_id)
+        }
+        // This is intentionally peer-authenticated rather than a browser UI action. It is a
+        // one-time topology migration, invoked by the power-server operator while the connector
+        // already owns the local Raft engine.
+        "network.migrateToSingleServer" => {
+            crate::migrate_to_single_server(ctx.core.data_dir().to_path_buf(), ctx.token.clone())
+                .await
+                .map_err(|error| error.to_string())?;
+            Ok(json!({"ok": true}))
         }
         "catalog.snapshot" => {
             let conn = config::connection_at(
@@ -2146,6 +2173,11 @@ async fn dispatch_local(
             let network_id = field::<String>(&params, "networkId")?;
             let device_id = field::<String>(&params, "deviceId")?;
             let db = config::db_path_in(ctx.core.data_dir()).map_err(|e| e.to_string())?;
+            let topology = config::connection_at(&db).map_err(|e| e.to_string())?;
+            if network::is_single_server(&topology, &network_id).map_err(|e| e.to_string())? {
+                return Err("single_server_topology: the catalog server is fixed".into());
+            }
+            drop(topology);
             let (revision, ids, target_node, target_endpoint) = {
                 let conn = config::connection_at(&db).map_err(|e| e.to_string())?;
                 let revision: i64 = conn
@@ -2887,7 +2919,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn browser_connector_forwards_task_to_assigned_device_and_reuses_it() {
+    async fn catalog_mutation_does_not_depend_on_assigned_executor() {
         let root = std::env::temp_dir().join(format!("swath-peer-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         let a = Core::start(root.join("a"), ConnectorEvents::new()).unwrap();
@@ -2927,8 +2959,8 @@ mod tests {
         let b_title: String = b_conn
             .query_row("SELECT title FROM tasks WHERE id='t'", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(a_title, "before");
-        assert_eq!(b_title, "reconnected without spawn");
+        assert_eq!(a_title, "reconnected without spawn");
+        assert_eq!(b_title, "before");
         let _ = fs::remove_dir_all(root);
     }
 
@@ -3021,8 +3053,8 @@ mod tests {
         catalog(&core, "a");
         let result = dispatch_to_owner(
             &context(core.clone(), "a"),
-            "task.rpc",
-            json!({"op":"renameTask","taskId":"missing","title":"wrong"}),
+            "pi.rpc",
+            json!({"op":"get_state","taskId":"missing","paneId":"pane"}),
             0,
             None,
         )

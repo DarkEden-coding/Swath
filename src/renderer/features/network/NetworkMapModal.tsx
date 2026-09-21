@@ -29,28 +29,6 @@ export function NetworkMapModal({ open, onClose }: NetworkMapModalProps): JSX.El
   const [members, setMembers] = useState<NetworkMember[]>([]);
   const [health, setHealth] = useState<NetworkHealth | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [changingRole, setChangingRole] = useState<string | null>(null);
-
-  const changeRole = async (deviceId: string, promote: boolean) => {
-    if (!networkId) return;
-    setChangingRole(deviceId);
-    setError(null);
-    try {
-      if (promote) await window.swath.network.promote(networkId, deviceId);
-      else await window.swath.network.demote(networkId, deviceId);
-      const [nextMembers, nextHealth] = await Promise.all([
-        window.swath.network.membership(networkId),
-        window.swath.network.health(networkId),
-      ]);
-      setMembers(nextMembers);
-      setHealth(nextHealth);
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
-    } finally {
-      setChangingRole(null);
-    }
-  };
-
   useEffect(() => {
     if (!open) return;
     const close = (event: KeyboardEvent) => event.key === "Escape" && onClose();
@@ -112,7 +90,7 @@ export function NetworkMapModal({ open, onClose }: NetworkMapModalProps): JSX.El
                 {network?.name ?? "Swath network"}
               </h2>
             </div>
-            <p className="text-sm text-swath-muted">Live device mesh · updates every 5 seconds</p>
+            <p className="text-sm text-swath-muted">Devices connected through the shared server · updates every 5 seconds</p>
           </div>
           <div className="flex items-center gap-3">
             {health ? (
@@ -195,7 +173,7 @@ export function NetworkMapModal({ open, onClose }: NetworkMapModalProps): JSX.El
                         fontWeight="700"
                         letterSpacing=".8"
                       >
-                        {node.member?.voter ? "COORDINATOR" : "MESH NODE"}
+                        {node.member?.voter ? "CATALOG SERVER" : "CONNECTED DEVICE"}
                       </text>
                       <text x="-82" y="6" fill="#d0d7de" fontSize="12.5" fontWeight="600">
                         {node.device.displayName}
@@ -248,20 +226,8 @@ export function NetworkMapModal({ open, onClose }: NetworkMapModalProps): JSX.El
                   <span>
                     {node.activeTasks} active task{node.activeTasks === 1 ? "" : "s"}
                   </span>
-                  <span>{node.member?.voter ? "Coordinator" : "Mesh node"}</span>
+                  <span>{node.member?.voter ? "Catalog server" : "Connected device"}</span>
                 </div>
-                <button
-                  type="button"
-                  disabled={changingRole !== null || (!node.member?.voter && !node.healthy)}
-                  onClick={() => void changeRole(node.device.id, !node.member?.voter)}
-                  className="mt-3 rounded-md border border-swath-border px-2.5 py-1 text-[11px] font-medium text-swath-muted hover:border-swath-accent hover:text-swath-accent-strong disabled:cursor-not-allowed disabled:opacity-40"
-                >
-                  {changingRole === node.device.id
-                    ? "Updating…"
-                    : node.member?.voter
-                      ? "Use as mesh node"
-                      : "Promote coordinator"}
-                </button>
               </div>
             ))}
           </div>

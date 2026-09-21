@@ -27,6 +27,27 @@ fn error(code: &str, message: impl Into<String>) -> Value {
     json!({"ok": false, "code": code, "error": message.into()})
 }
 
+/// Operations that mutate or read only the replicated catalog. They must be handled by the
+/// catalog control plane, never routed to the task's executor merely because they carry a taskId.
+pub(crate) fn is_catalog_operation(request: &Value) -> bool {
+    matches!(
+        request.get("op").and_then(Value::as_str),
+        Some(
+            "listCatalog"
+                | "renameProject"
+                | "removeProject"
+                | "renameTask"
+                | "reorderTasks"
+                | "completeTask"
+                | "reactivateTask"
+                | "reorderPanes"
+                | "createPane"
+                | "updatePane"
+                | "removePane"
+        )
+    )
+}
+
 /// Ensures this executor has a private project replica, fetching a bundle from a configured peer
 /// when the original project path is local to another device.
 async fn ensure_local_replica(
@@ -150,30 +171,20 @@ pub(super) async fn catalog_write(
     if response.status != "committed" {
         return Err(response.status);
     }
-    // A forwarded Raft write can be acknowledged before this follower projects the entry. Do not
-    // let a dependent provisioning/read step race its own successful command.
-    // A learner can be several seconds behind while installing a snapshot or reconnecting to the
-    // leader. The write is already committed at this point, so the old two-second deadline both
-    // reported a false failure and encouraged callers to retry an operation that had succeeded.
-    // Keep waiting for the local projection long enough to cover a normal replication catch-up;
-    // dependent operations (notably task provisioning) still retain their read-after-write fence.
-    for _ in 0..300 {
-        let applied = catalog_connection(data_dir)
-            .and_then(|conn| {
-                conn.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM operation_dedup WHERE operation_id=?1)",
-                    [&catalog_operation_id],
-                    |row| row.get::<_, bool>(0),
-                )
-                .map_err(|error| error.to_string())
-            })
-            .unwrap_or(false);
-        if applied {
-            return Ok(response);
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    if service
+        .wait_for_operation(&catalog_operation_id, std::time::Duration::from_secs(15))
+        .await
+        .map_err(|error| serde_json::to_string(&error).unwrap_or(error.message))?
+    {
+        return Ok(response);
     }
-    return Err("catalog_apply_timeout".into());
+    Err(serde_json::json!({
+        "code":"catalog_projection_delayed",
+        "message":"The operation committed, but this device has not projected it yet",
+        "operationId":catalog_operation_id,
+        "retryable":true
+    })
+    .to_string())
 }
 pub(super) fn revision(conn: &rusqlite::Connection, table: &str, id: &str) -> Result<i64, String> {
     conn.query_row(

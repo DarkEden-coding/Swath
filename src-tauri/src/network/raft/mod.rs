@@ -131,6 +131,7 @@ struct State {
 pub struct SqliteStore {
     db: Arc<Mutex<Connection>>,
     network_id: String,
+    applied: Arc<tokio::sync::Notify>,
 }
 impl SqliteStore {
     pub fn open(path: &str, network_id: impl Into<String>) -> anyhow::Result<Self> {
@@ -142,6 +143,7 @@ impl SqliteStore {
         Ok(Self {
             db: Arc::new(Mutex::new(c)),
             network_id: network_id.into(),
+            applied: Arc::new(tokio::sync::Notify::new()),
         })
     }
     fn err<E: std::error::Error + 'static>(e: E) -> StorageError<NodeId> {
@@ -1353,6 +1355,7 @@ impl RaftStateMachine<CatalogType> for SqliteStore {
             }
         }
         self.put_state(&s)?;
+        self.applied.notify_waiters();
         Ok(r)
     }
     async fn get_snapshot_builder(&mut self) -> Self {
@@ -1634,6 +1637,42 @@ pub struct CatalogError {
     pub message: String,
 }
 impl CatalogService {
+    /// Waits until this process has projected a committed operation. Unlike polling, the state
+    /// machine wakes all waiters after an apply batch and the database is checked only at event
+    /// boundaries. A timeout means "committed but this local projection is delayed".
+    pub async fn wait_for_operation(
+        &self,
+        operation_id: &str,
+        timeout: std::time::Duration,
+    ) -> Result<bool, CatalogError> {
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            // Register before checking the receipt so an apply between the query and await cannot
+            // be missed. Notify is only a wake-up edge; the durable receipt remains authoritative.
+            let notified = self.raft.store.applied.notified();
+            let applied = Connection::open(&self.db)
+                .and_then(|conn| {
+                    conn.busy_timeout(std::time::Duration::from_secs(10))?;
+                    conn.query_row(
+                        "SELECT EXISTS(SELECT 1 FROM operation_dedup WHERE operation_id=?1)",
+                        [operation_id],
+                        |row| row.get::<_, bool>(0),
+                    )
+                })
+                .map_err(|error| CatalogError {
+                    code: "catalog_unavailable".into(),
+                    message: error.to_string(),
+                })?;
+            if applied {
+                return Ok(true);
+            }
+            match tokio::time::timeout_at(deadline, notified).await {
+                Ok(_) => {}
+                Err(_) => return Ok(false),
+            }
+        }
+    }
+
     pub async fn open(
         db: impl Into<String>,
         network_id: impl Into<String>,

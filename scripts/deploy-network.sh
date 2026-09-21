@@ -3,14 +3,14 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REMOTE_ROOT="/home/dark/Swath"
-DEPLOY_BRANCH="${SWATH_DEPLOY_BRANCH:-feature/shared-execution}"
+DEPLOY_BRANCH="${SWATH_DEPLOY_BRANCH:-feature/single-server-topology}"
 # Direct Tailscale IPs are used below.  Accept a first connection's host key so a newly enrolled
 # device can participate in a rollout without requiring an interactive SSH prompt; an already
 # known key still cannot change silently.
 SSH_OPTIONS=(-o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new)
 DEPLOY_ALLOW_DIRTY="${SWATH_DEPLOY_ALLOW_DIRTY:-0}"
-MANAGER_NAMES=(power-server PiTwo server-two)
-MANAGER_HOSTS=(100.107.192.39 100.119.37.90 100.99.222.5)
+SERVER_NAME="power-server"
+SERVER_HOST="100.107.192.39"
 SCYTHE_HOST="100.80.230.33"
 TEMP_DIR="$(mktemp -d)"
 
@@ -40,7 +40,7 @@ sync_source() {
     "$ROOT_DIR/" "dark@${host}:${REMOTE_ROOT}/"
 }
 
-build_manager() {
+build_server() {
   local name="$1"
   local host="$2"
   local output="$TEMP_DIR/${name}.log"
@@ -53,7 +53,7 @@ build_manager() {
   tail -n 3 "$output"
 }
 
-install_manager() {
+install_server() {
   local name="$1"
   local host="$2"
   local commit="$3"
@@ -122,32 +122,18 @@ npm run typecheck
 npm run test:unit
 cargo check --manifest-path src-tauri/Cargo.toml --all-targets
 
-log "Synchronizing source to Linux devices"
-for host in "${MANAGER_HOSTS[@]}" "$SCYTHE_HOST"; do
+log "Synchronizing source to the catalog server and desktop executor"
+for host in "$SERVER_HOST" "$SCYTHE_HOST"; do
   sync_source "$host"
 done
 
-log "Building all coordinator binaries without interrupting quorum"
-manager_pids=()
-for index in 0 1 2; do
-  build_manager "${MANAGER_NAMES[$index]}" "${MANAGER_HOSTS[$index]}" &
-  manager_pids+=("$!")
-done
-manager_build_failed=0
-for pid in "${manager_pids[@]}"; do
-  if ! wait "$pid"; then
-    manager_build_failed=1
-  fi
-done
-if [[ "$manager_build_failed" -ne 0 ]]; then
-  echo "At least one coordinator build failed; no coordinator was restarted." >&2
+log "Building the catalog server without interrupting its connector"
+if ! build_server "$SERVER_NAME" "$SERVER_HOST"; then
+  echo "The catalog server build failed; its running service was not restarted." >&2
   exit 1
 fi
 
-# Restart voters one at a time so a deployment never intentionally drops quorum.
-for index in 0 1 2; do
-  install_manager "${MANAGER_NAMES[$index]}" "${MANAGER_HOSTS[$index]}" "$commit"
-done
+install_server "$SERVER_NAME" "$SERVER_HOST" "$commit"
 
 log "Building and installing the Mac and Scythe desktop apps"
 mac_was_running=0
@@ -198,13 +184,9 @@ ssh "${SSH_OPTIONS[@]}" "dark@${SCYTHE_HOST}" \
    printf '%s\n' '$commit' > \"\$HOME/.local/share/swath/deployed-commit\""
 
 log "Final service verification"
-for index in 0 1 2; do
-  name="${MANAGER_NAMES[$index]}"
-  host="${MANAGER_HOSTS[$index]}"
-  ssh "${SSH_OPTIONS[@]}" "dark@${host}" \
-    "systemctl --user is-active --quiet swath-headless && grep -q '/api/raft/write' '$REMOTE_ROOT/src-tauri/src/remote.rs'"
-  echo "$name: active"
-done
+ssh "${SSH_OPTIONS[@]}" "dark@${SERVER_HOST}" \
+  "systemctl --user is-active --quiet swath-headless && grep -q '/api/raft/write' '$REMOTE_ROOT/src-tauri/src/remote.rs'"
+echo "$SERVER_NAME: active"
 ssh "${SSH_OPTIONS[@]}" "dark@${SCYTHE_HOST}" \
   "systemctl --user is-active --quiet swath-desktop && grep -q '/api/raft/write' '$REMOTE_ROOT/src-tauri/src/remote.rs'"
 echo "Scythe-Desktop: active"
