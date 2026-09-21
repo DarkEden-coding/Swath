@@ -13,11 +13,11 @@ const device = (id: string): Device => ({
 });
 
 describe("network graph", () => {
-  it("connects every enrolled device and derives activity state", () => {
+  it("connects executors through the catalog server and derives activity state", () => {
     const devices = [device("one"), device("two"), device("three")];
     const members: NetworkMember[] = devices.map(({ id }) => ({
       deviceId: id,
-      voter: true,
+      voter: id === "one",
       healthy: id !== "three",
     }));
     const tasks = [
@@ -38,8 +38,22 @@ describe("network graph", () => {
     ] satisfies TaskPane[];
 
     const graph = buildNetworkGraph(devices, members, tasks, panes, { pane: "running" });
-    expect(graph.edges).toHaveLength(3);
+    expect(graph.edges).toHaveLength(2);
+    expect(graph.edges.every(({ source }) => source.device.id === "one")).toBe(true);
     expect(graph.nodes.map(({ state }) => state)).toEqual(["running", "available", "offline"]);
     expect(graph.edges.filter(({ healthy }) => healthy)).toHaveLength(1);
+  });
+
+  it("does not invent peer links when membership has no catalog server", () => {
+    const devices = [device("one"), device("two"), device("three")];
+    const members: NetworkMember[] = devices.map(({ id }) => ({
+      deviceId: id,
+      voter: false,
+      healthy: true,
+    }));
+
+    const graph = buildNetworkGraph(devices, members, [], [], {});
+
+    expect(graph.edges).toEqual([]);
   });
 });

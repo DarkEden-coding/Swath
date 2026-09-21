@@ -140,7 +140,7 @@ pub async fn migrate_to_single_server(
     }
     if let Some(error) = last_error {
         return Err(anyhow::anyhow!(
-            "power-server did not become the Raft leader: {error}"
+            "catalog server did not become the Raft leader: {error}"
         ));
     }
 
@@ -277,6 +277,7 @@ pub fn reseed_single_server(data_dir: std::path::PathBuf) -> anyhow::Result<()> 
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod single_server_recovery_tests {
     use super::*;
     use rusqlite::Connection;
@@ -377,11 +378,41 @@ pub async fn run_headless(
         core.clone(),
         connector_events,
     ));
-    remote.start(options).await.map_err(anyhow::Error::msg)?;
-    tokio::signal::ctrl_c().await?;
+    if let Err(error) = remote.start(options).await {
+        // `Core::start` owns the runtime lock and may have started worker threads before the
+        // connector bind fails. Release those resources on every startup path so a service
+        // restart does not inherit a partially initialized runtime.
+        core.shutdown();
+        return Err(anyhow::Error::msg(error));
+    }
+    let signal_result = wait_for_headless_shutdown().await;
     remote.stop().await;
     core.shutdown();
-    Ok(())
+    signal_result
+}
+
+/// Waits for the service manager's termination signal as well as an interactive Ctrl-C.
+///
+/// systemd and other Unix service managers use SIGTERM for a normal stop, so handling only
+/// `ctrl_c` skips connector/Raft shutdown and leaves executor children running until the process
+/// is forcibly reaped. Windows has no Tokio Unix signal stream; Ctrl-C remains the portable
+/// fallback there.
+async fn wait_for_headless_shutdown() -> anyhow::Result<()> {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+
+        let mut sigterm = signal(SignalKind::terminate())?;
+        tokio::select! {
+            result = tokio::signal::ctrl_c() => result.map_err(anyhow::Error::from),
+            _ = sigterm.recv() => Ok(()),
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        tokio::signal::ctrl_c().await.map_err(anyhow::Error::from)
+    }
 }
 
 #[cfg(feature = "desktop")]

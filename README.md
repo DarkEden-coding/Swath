@@ -52,13 +52,20 @@ Run a connector without a display server:
 ```sh
 cd src-tauri
 cargo build --no-default-features --bin swath-headless
-SWATH_CONNECTOR_TOKEN='at-least-16-characters' SWATH_DATA_DIR=/var/lib/swath \
-  cargo run --no-default-features --bin swath-headless
+SWATH_CONNECTOR_TOKEN='at-least-16-characters' \
+SWATH_DATA_DIR="$HOME/.local/share/swath" \
+  ./target/release/swath-headless
 ```
 
-CI can verify the package-free Linux target with `cargo build --no-default-features --bin swath-headless`.
+`SWATH_DATA_DIR` must be an absolute path. The headless process holds an exclusive lock on that
+directory; do not run a desktop instance against the same directory. CI verifies this package-free
+Linux target with `cargo test --all-targets --no-default-features` and
+`cargo build --no-default-features --bin swath-headless`.
 
-Optional `SWATH_CONNECTOR_BIND`, `SWATH_CONNECTOR_PORT`, and `SWATH_CONNECTOR_TAILSCALE_HTTPS=1` configure the connector. The process holds an exclusive lock on `SWATH_DATA_DIR`; a desktop instance using that directory fails rather than starting duplicate shells or Pi processes. Stop the service to terminate its executor children; disconnecting a connector client does not stop them.
+Optional `SWATH_CONNECTOR_BIND`, `SWATH_CONNECTOR_PORT`, `SWATH_CONNECTOR_TAILSCALE_HTTPS=1`,
+`SWATH_CONNECTOR_TAILSCALE_HTTPS_PORT`, and `SWATH_CONNECTOR_ALLOWED_ORIGINS` configure the
+connector. Stop the service to terminate its executor children; disconnecting a connector client
+does not stop them.
 
 ## Tech Stack
 
@@ -149,6 +156,9 @@ npm run dist
 ```
 
 Tauri writes artifacts under `src-tauri/target/release/bundle/`.
+
+For the network catalog-server rollout, see [the deployment guide](docs/deployment.md). It keeps
+machine addresses and operator runbooks in ignored local configuration rather than in Git.
 
 ## Project Structure
 

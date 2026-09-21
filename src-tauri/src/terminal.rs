@@ -41,8 +41,20 @@ struct TerminalSession {
     writer: Mutex<Box<dyn Write + Send>>,
     master: Mutex<Box<dyn MasterPty + Send>>,
     child: Mutex<Box<dyn Child + Send + Sync>>,
+    /// The durable route is executor-local and must be removed when this PTY exits.  Plain
+    /// sessions (created by the legacy/local API) do not have a route to clean up.
+    route: Option<TerminalRoute>,
     replay: Mutex<ReplayBuffer>,
     running: AtomicBool,
+}
+
+#[derive(Clone)]
+#[allow(dead_code)] // Stored with a PTY so explicit restart/route cleanup can retain its fence.
+struct TerminalRoute {
+    db_path: PathBuf,
+    task_id: String,
+    device_id: String,
+    generation: i64,
 }
 
 impl TerminalManager {
@@ -54,13 +66,29 @@ impl TerminalManager {
         }
     }
 
-    /// Replaces any existing session with the same ID and starts a new PTY.
+    /// Ensures that a session with this ID exists.
+    ///
+    /// Session IDs are stable pane identities, so creating the same ID again must not kill the
+    /// process currently attached to that pane.  Call [`Self::restart`] for the explicit,
+    /// destructive replacement operation.
+    #[allow(dead_code)]
     pub fn create(&self, request: TerminalSessionStartRequest) -> Result<()> {
+        self.create_with_route(request, None)
+    }
+
+    fn create_with_route(
+        &self,
+        request: TerminalSessionStartRequest,
+        route: Option<TerminalRoute>,
+    ) -> Result<()> {
         let session_id = request.session_id.clone();
-        self.kill(&session_id).ok();
-        match self.spawn_session(request) {
+        let mut sessions = self.sessions.lock().unwrap();
+        if sessions.contains_key(&session_id) {
+            return Ok(());
+        }
+        match self.spawn_session(request, route) {
             Ok(session) => {
-                self.sessions.lock().unwrap().insert(session_id, session);
+                sessions.insert(session_id, session);
                 Ok(())
             }
             Err(err) => {
@@ -108,19 +136,57 @@ impl TerminalManager {
         )?;
         let session_id = request.session_id.clone();
 
-        // Remove the old fence before stopping its process: a replacement must never leave a
-        // durable route to a shell which has just been killed.  Commit the new fence before
-        // spawning so every process that can emit output has a durable owner.
+        // A create is an ensure operation.  Do not replace a live PTY or retarget its durable
+        // route underneath it.  Reusing the same ID is allowed only for the same executor task
+        // and generation; a different owner must allocate a new session ID.
+        let existing: Option<(String, i64)> = conn
+            .query_row(
+                "SELECT task_id,execution_generation FROM terminal_task_sessions WHERE session_id=?1",
+                [&session_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        if let Some((existing_task, existing_generation)) = existing {
+            if existing_task != task_id || existing_generation != generation {
+                return Err(anyhow!(
+                    "terminal session already belongs to another task or generation"
+                ));
+            }
+            if let Some(session) = self.sessions.lock().unwrap().get(&session_id) {
+                if session.route.is_some() {
+                    return Ok(());
+                }
+                return Err(anyhow!(
+                    "terminal session already exists without a task route"
+                ));
+            }
+        }
+
+        // A local/unscoped session with the same stable ID cannot be safely retargeted to a task.
+        // Keep the live process intact and ask the caller to choose a fresh ID.
+        if self.sessions.lock().unwrap().contains_key(&session_id) {
+            return Err(anyhow!(
+                "terminal session already exists without a task route"
+            ));
+        }
+
+        // Commit the fence before spawning so every process that can emit output has a durable
+        // owner.  An old row with the same task/generation is a recoverable route after a process
+        // restart, so INSERT OR IGNORE gives create its ensure semantics without retargeting it.
         conn.execute(
-            "DELETE FROM terminal_task_sessions WHERE session_id=?1",
-            [&session_id],
-        )?;
-        self.kill(&session_id)?;
-        conn.execute(
-            "INSERT INTO terminal_task_sessions(session_id,task_id,device_id,execution_generation,created_at) VALUES(?1,?2,?3,?4,strftime('%s','now'))",
+            "INSERT OR IGNORE INTO terminal_task_sessions(session_id,task_id,device_id,execution_generation,created_at) VALUES(?1,?2,?3,?4,strftime('%s','now'))",
             params![session_id, task_id, device_id, generation],
         )?;
-        if let Err(error) = self.create(request) {
+        let db_path = config::db_path_in(data_dir).map_err(|e| anyhow!(e))?;
+        if let Err(error) = self.create_with_route(
+            request,
+            Some(TerminalRoute {
+                db_path,
+                task_id,
+                device_id,
+                generation,
+            }),
+        ) {
             // Spawn failure (including a partially-created PTY) must not leave a routable fence.
             let _ = conn.execute(
                 "DELETE FROM terminal_task_sessions WHERE session_id=?1",
@@ -187,6 +253,7 @@ impl TerminalManager {
         let session = self.sessions.lock().unwrap().remove(session_id);
         if let Some(session) = session {
             session.running.store(false, Ordering::SeqCst);
+            cleanup_route(session.route.as_ref(), session_id);
             if let Some(pid) = session.pid {
                 kill_process_tree(pid);
             }
@@ -205,27 +272,55 @@ impl TerminalManager {
 
     pub fn kill_for_task(&self, data_dir: &Path, session_id: &str) -> Result<()> {
         self.authorize_session(data_dir, session_id)?;
-        self.kill(session_id)
+        self.kill(session_id)?;
+        // The process may already have exited while the manager was restarting, leaving only
+        // the durable route behind.  Explicit task-scoped kill is also the cleanup operation for
+        // that stale route.
+        let conn = config::connection_at(&config::db_path_in(data_dir).map_err(|e| anyhow!(e))?)?;
+        conn.execute(
+            "DELETE FROM terminal_task_sessions WHERE session_id=?1",
+            [session_id],
+        )?;
+        Ok(())
     }
 
     /// Attaches to an existing session only. Historical/exited sessions are inspectable but never
     /// restarted by attachment; restart is explicit.
+    #[allow(dead_code)]
     pub fn attach(&self, request: TerminalSessionAttachRequest) -> Result<TerminalSessionStatus> {
-        if let Some(session) = self
-            .sessions
-            .lock()
-            .unwrap()
-            .get(&request.session_id)
-            .cloned()
-        {
+        self.attach_with_replay(request).map(|(status, _)| status)
+    }
+
+    /// Attaches to an existing session and returns its bounded replay to the requesting caller.
+    /// Replay is deliberately not emitted through [`EventPublisher`]: that bus is shared by all
+    /// viewers, so publishing a replay would make one viewer's attach redraw every other viewer.
+    pub fn attach_with_replay(
+        &self,
+        request: TerminalSessionAttachRequest,
+    ) -> Result<(TerminalSessionStatus, String)> {
+        // End the map guard before reading the replay buffer.  `replay_bytes` performs its own
+        // lookup, and keeping this temporary guard alive across the if-body would self-deadlock.
+        let session = {
+            self.sessions
+                .lock()
+                .unwrap()
+                .get(&request.session_id)
+                .cloned()
+        };
+        if let Some(session) = session {
             let running = session.running.load(Ordering::SeqCst);
-            if request.replay.unwrap_or(true) {
-                self.replay_to_app(&request.session_id)?;
-            }
-            return Ok(TerminalSessionStatus {
-                session_id: request.session_id,
-                running,
-            });
+            let replay = if request.replay.unwrap_or(true) {
+                self.replay_bytes(&request.session_id)?
+            } else {
+                String::new()
+            };
+            return Ok((
+                TerminalSessionStatus {
+                    session_id: request.session_id,
+                    running,
+                },
+                replay,
+            ));
         }
         Err(anyhow!(
             "terminal session not found: {}",
@@ -234,23 +329,47 @@ impl TerminalManager {
     }
 
     /// Restarts a session using its original start request.
+    #[allow(dead_code)]
     pub fn restart(&self, session_id: &str) -> Result<TerminalSessionStatus> {
-        let request = self.get(session_id)?.request.clone();
+        let session = self.get(session_id)?;
+        let request = session.request.clone();
+        let route = session.route.clone();
         self.kill(session_id).ok();
-        self.create(request)?;
+        if let Some(route) = &route {
+            let conn = config::connection_at(&route.db_path)?;
+            conn.execute(
+                "INSERT OR IGNORE INTO terminal_task_sessions(session_id,task_id,device_id,execution_generation,created_at) VALUES(?1,?2,?3,?4,strftime('%s','now'))",
+                params![session_id, route.task_id, route.device_id, route.generation],
+            )?;
+        }
+        if let Err(error) = self.create_with_route(request, route.clone()) {
+            cleanup_route(route.as_ref(), session_id);
+            return Err(error);
+        }
         Ok(TerminalSessionStatus {
             session_id: session_id.to_string(),
             running: true,
         })
     }
 
+    #[allow(dead_code)]
     pub fn attach_for_task(
         &self,
         data_dir: &Path,
         request: TerminalSessionAttachRequest,
     ) -> Result<TerminalSessionStatus> {
+        self.attach_for_task_with_replay(data_dir, request)
+            .map(|(status, _)| status)
+    }
+
+    /// Task-authorized variant of [`Self::attach_with_replay`].
+    pub fn attach_for_task_with_replay(
+        &self,
+        data_dir: &Path,
+        request: TerminalSessionAttachRequest,
+    ) -> Result<(TerminalSessionStatus, String)> {
         self.authorize_session(data_dir, &request.session_id)?;
-        self.attach(request)
+        self.attach_with_replay(request)
     }
 
     pub fn restart_for_task(
@@ -259,7 +378,13 @@ impl TerminalManager {
         session_id: &str,
     ) -> Result<TerminalSessionStatus> {
         self.authorize_session(data_dir, session_id)?;
-        self.restart(session_id)
+        let request = self.get(session_id)?.request.clone();
+        self.kill(session_id)?;
+        self.create_for_task(data_dir, request)?;
+        Ok(TerminalSessionStatus {
+            session_id: session_id.to_string(),
+            running: true,
+        })
     }
 
     /// Returns replay to the requesting connector; replay is never broadcast globally.
@@ -351,7 +476,11 @@ impl TerminalManager {
             .ok_or_else(|| anyhow!("terminal session not found: {session_id}"))
     }
 
-    fn spawn_session(&self, request: TerminalSessionStartRequest) -> Result<Arc<TerminalSession>> {
+    fn spawn_session(
+        &self,
+        request: TerminalSessionStartRequest,
+        route: Option<TerminalRoute>,
+    ) -> Result<Arc<TerminalSession>> {
         let pty_system = native_pty_system();
         let pair = pty_system.openpty(PtySize {
             rows: request.rows.max(1),
@@ -374,6 +503,7 @@ impl TerminalManager {
             writer: Mutex::new(writer),
             master: Mutex::new(pair.master),
             child: Mutex::new(child),
+            route,
             replay: Mutex::new(ReplayBuffer::new(TERMINAL_REPLAY_MAX_BYTES)),
             running: AtomicBool::new(true),
         });
@@ -425,7 +555,18 @@ impl TerminalManager {
         thread::spawn(move || {
             while session.running.load(Ordering::SeqCst) {
                 if let Ok(Some(status)) = session.child.lock().unwrap().try_wait() {
-                    session.running.store(false, Ordering::SeqCst);
+                    // `kill` marks the session stopped before signalling the child.  Only the
+                    // watcher which observes a natural exit owns route cleanup and exit delivery;
+                    // this prevents an old watcher from deleting a row belonging to a restarted
+                    // session with the same stable ID.
+                    if session
+                        .running
+                        .compare_exchange(true, false, Ordering::SeqCst, Ordering::SeqCst)
+                        .is_err()
+                    {
+                        break;
+                    }
+                    cleanup_route(session.route.as_ref(), &session.id);
                     let code = status.exit_code() as i32;
                     events.publish(
                         EXIT_EVENT,
@@ -440,20 +581,6 @@ impl TerminalManager {
                 thread::sleep(Duration::from_millis(250));
             }
         });
-    }
-
-    fn replay_to_app(&self, session_id: &str) -> Result<()> {
-        let data = self.replay_bytes(session_id)?;
-        if !data.is_empty() {
-            self.events.publish(
-                DATA_EVENT,
-                value(TerminalDataEvent {
-                    session_id: session_id.to_string(),
-                    data,
-                }),
-            );
-        }
-        Ok(())
     }
 
     fn replay_bytes(&self, session_id: &str) -> Result<String> {
@@ -502,6 +629,20 @@ fn task_cwd(data_dir: &Path, task_id: Option<&str>, generation: Option<i64>) -> 
 
 fn append_replay(session: &TerminalSession, data: &str) {
     session.replay.lock().unwrap().push(data);
+}
+
+/// Removes the executor-local route after a session exits.  Route cleanup is best-effort because
+/// process shutdown must not be held hostage by a database that is unavailable or being closed.
+fn cleanup_route(route: Option<&TerminalRoute>, session_id: &str) {
+    let Some(route) = route else {
+        return;
+    };
+    if let Ok(conn) = config::connection_at(&route.db_path) {
+        let _ = conn.execute(
+            "DELETE FROM terminal_task_sessions WHERE session_id=?1",
+            [session_id],
+        );
+    }
 }
 
 fn build_command(request: &TerminalSessionStartRequest) -> CommandBuilder {
@@ -568,22 +709,145 @@ fn synthetic_iterm_session_id(session_id: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::synthetic_iterm_session_id;
+    use super::{synthetic_iterm_session_id, TerminalManager};
+    use crate::events::EventPublisher;
+    use crate::types::{ShellProfile, TerminalSessionAttachRequest, TerminalSessionStartRequest};
+    use std::sync::{Arc, Mutex};
+    use std::thread;
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    #[derive(Default)]
+    struct RecordingEvents(Mutex<Vec<(String, serde_json::Value)>>);
+
+    impl EventPublisher for RecordingEvents {
+        fn publish(&self, channel: &str, payload: serde_json::Value) {
+            self.0.lock().unwrap().push((channel.to_string(), payload));
+        }
+    }
+
+    fn request(session_id: &str, command: &str) -> TerminalSessionStartRequest {
+        TerminalSessionStartRequest {
+            session_id: session_id.to_string(),
+            task_id: None,
+            pane_id: None,
+            execution_generation: None,
+            cwd: std::env::current_dir().unwrap().display().to_string(),
+            cols: 80,
+            rows: 24,
+            shell_profile: Some(ShellProfile {
+                id: "test".into(),
+                name: "test".into(),
+                command: "/bin/sh".into(),
+                args: vec!["-c".into(), command.into()],
+                env: None,
+            }),
+            env: None,
+            metadata: None,
+        }
+    }
+
+    fn attach_request(session_id: &str, replay: bool) -> TerminalSessionAttachRequest {
+        TerminalSessionAttachRequest {
+            session_id: session_id.to_string(),
+            task_id: None,
+            pane_id: None,
+            execution_generation: None,
+            viewer_id: Some("second-viewer".into()),
+            cwd: std::env::current_dir().unwrap().display().to_string(),
+            cols: 80,
+            rows: 24,
+            shell_profile: None,
+            env: None,
+            metadata: None,
+            replay: Some(replay),
+        }
+    }
 
     #[test]
     fn iterm_session_id_includes_session_id() {
         assert_eq!(synthetic_iterm_session_id("abc-123"), "swath:abc-123");
     }
 
+    #[cfg(unix)]
     #[test]
-    fn attachment_does_not_create_or_toggle_a_session() {
-        let source = include_str!("terminal.rs");
-        let attach = source
-            .split("pub fn attach(")
-            .nth(1)
-            .and_then(|body| body.split("pub fn restart(").next())
+    fn create_is_idempotent_for_a_live_session() {
+        let events = Arc::new(RecordingEvents::default());
+        let manager = TerminalManager::new(events);
+        let first = request("ensure-test", "sleep 10");
+        manager.create(first.clone()).unwrap();
+        let first_pid = manager.get("ensure-test").unwrap().pid;
+        manager.create(first).unwrap();
+        assert_eq!(manager.get("ensure-test").unwrap().pid, first_pid);
+        manager.kill("ensure-test").unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn attach_returns_replay_without_publishing_it() {
+        let events = Arc::new(RecordingEvents::default());
+        let manager = TerminalManager::new(events.clone());
+        manager
+            .create(request("attach-test", "printf replay-marker; sleep 10"))
             .unwrap();
-        assert!(!attach.contains("self.create("));
-        assert!(!attach.contains("set_streaming"));
+
+        let replay = (0..40).find_map(|_| {
+            let replay = manager.replay_bytes("attach-test").unwrap();
+            if replay.contains("replay-marker") {
+                Some(replay)
+            } else {
+                thread::sleep(Duration::from_millis(25));
+                None
+            }
+        });
+        assert!(replay.is_some(), "shell output did not reach replay buffer");
+        let before = events.0.lock().unwrap().len();
+        let (_, attached_replay) = manager
+            .attach_with_replay(attach_request("attach-test", true))
+            .unwrap();
+        assert!(attached_replay.contains("replay-marker"));
+        assert_eq!(events.0.lock().unwrap().len(), before);
+        manager.kill("attach-test").unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn task_route_is_removed_when_process_exits() {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let data_dir = std::env::temp_dir().join(format!("swath-terminal-test-{suffix}"));
+        std::fs::create_dir_all(&data_dir).unwrap();
+        crate::config::initialize(&data_dir).unwrap();
+        let db_path = crate::config::db_path_in(&data_dir).unwrap();
+        let conn = crate::config::connection_at(&db_path).unwrap();
+        conn.execute("INSERT INTO projects(id,network_id,name,default_branch,task_order,revision,created_at) VALUES('p','n','p','main','[]',1,0)", []).unwrap();
+        conn.execute("INSERT INTO tasks(id,project_id,title,assigned_device_id,execution_generation,lifecycle,pane_order,revision,created_at) VALUES('t','p','t','device',1,'active','[]',1,0)", []).unwrap();
+        conn.execute("INSERT INTO device_task_paths(task_id,device_id,path,revision) VALUES('t','device',?1,1)", [data_dir.to_string_lossy().as_ref()]).unwrap();
+        drop(conn);
+
+        let manager = TerminalManager::new(Arc::new(RecordingEvents::default()));
+        let mut start = request("route-test", "exit 0");
+        start.task_id = Some("t".into());
+        start.execution_generation = Some(1);
+        manager.create_for_task(&data_dir, start).unwrap();
+        for _ in 0..80 {
+            let conn = crate::config::connection_at(&db_path).unwrap();
+            let count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM terminal_task_sessions WHERE session_id='route-test'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            if count == 0 {
+                let _ = std::fs::remove_dir_all(&data_dir);
+                return;
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+        manager.kill("route-test").unwrap();
+        let _ = std::fs::remove_dir_all(&data_dir);
+        panic!("terminal task route was not removed after process exit");
     }
 }

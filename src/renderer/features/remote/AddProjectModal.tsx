@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import * as appActions from "../../app/appActions";
 import { useConfigStore } from "../../state/configStore";
 import { useUiStore } from "../../state/uiStore";
 import type { RemoteFolderListing } from "../../../shared/ipc/swath";
+import type { RemoteConnection } from "../../../shared/types/config";
 import { IconClose, IconFolder } from "../shell/icons";
 
 type Source = "local" | "remote";
@@ -11,32 +12,43 @@ export function AddProjectModal(): JSX.Element | null {
   const open = useUiStore((state) => state.addProjectOpen);
   const connections = useConfigStore((state) => state.config?.remoteConnections);
   const machines = useMemo(() => connections ?? [], [connections]);
+
+  if (!open) return null;
+
+  return (
+    <AddProjectModalContent
+      key={machines.map((machine) => machine.id).join("\u0000")}
+      machines={machines}
+    />
+  );
+}
+
+interface AddProjectModalContentProps {
+  machines: RemoteConnection[];
+}
+
+function AddProjectModalContent({
+  machines: configuredMachines,
+}: AddProjectModalContentProps): JSX.Element {
+  const machines = configuredMachines ?? [];
   const [source, setSource] = useState<Source>("local");
-  const [connectionId, setConnectionId] = useState("");
+  const [connectionId, setConnectionId] = useState(machines[0]?.id ?? "");
   const [listing, setListing] = useState<RemoteFolderListing | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
-  useEffect(() => {
-    if (!open) return;
-    setSource("local");
-    setConnectionId(machines[0]?.id ?? "");
-    setListing(null);
-    setError("");
-  }, [open, machines]);
-
-  useEffect(() => {
-    if (!open || source !== "remote" || !connectionId) return;
+  const loadFolders = async (nextConnectionId: string): Promise<void> => {
+    if (!nextConnectionId) return;
     setLoading(true);
     setError("");
-    void window.swath.remote
-      .listFolders(connectionId)
-      .then(setListing)
-      .catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)))
-      .finally(() => setLoading(false));
-  }, [connectionId, open, source]);
-
-  if (!open) return null;
+    try {
+      setListing(await window.swath.remote.listFolders(nextConnectionId));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const browse = async (path: string): Promise<void> => {
     setLoading(true);
@@ -99,7 +111,10 @@ export function AddProjectModal(): JSX.Element | null {
               role="tab"
               aria-selected={source === option}
               className={`rounded-lg px-3 py-2 text-sm font-semibold capitalize ${source === option ? "bg-swath-accent text-white" : "text-swath-muted hover:text-swath-text"}`}
-              onClick={() => setSource(option)}
+              onClick={() => {
+                setSource(option);
+                if (option === "remote") void loadFolders(connectionId);
+              }}
             >
               {option}
             </button>
@@ -148,8 +163,10 @@ export function AddProjectModal(): JSX.Element | null {
                 className="rounded-lg border border-swath-border bg-swath-bg px-3 py-2.5 text-swath-text outline-none focus:border-swath-accent"
                 value={connectionId}
                 onChange={(event) => {
-                  setConnectionId(event.target.value);
+                  const nextConnectionId = event.target.value;
+                  setConnectionId(nextConnectionId);
                   setListing(null);
+                  void loadFolders(nextConnectionId);
                 }}
               >
                 {machines.map((machine) => (

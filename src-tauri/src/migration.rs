@@ -115,8 +115,31 @@ pub fn status(c: &Connection) -> Result<Status> {
             operation_id: None,
         });
     }
-    if let Some((operation_id, state)) = c.query_row("SELECT operation_id,state FROM legacy_import_operations ORDER BY updated_at DESC LIMIT 1", [], |r| Ok((r.get(0)?, r.get(1)?))).optional()? {
-        if state == "complete" { return Ok(Status { needs_migration: false, state, operation_id: Some(operation_id) }); }
+
+    // A conflict is a review state, not a reason to keep rebuilding the migration
+    // preview on every network refresh.  Let the conflict review screen own the
+    // next action; once all conflicts are resolved, approve_proposal_with moves
+    // the operation back to `pending` and the preview becomes available again.
+    let has_unresolved_conflict: bool = c.query_row(
+        "SELECT EXISTS(SELECT 1 FROM legacy_import_conflicts WHERE state <> 'resolved')",
+        [],
+        |r| r.get(0),
+    )?;
+    if has_unresolved_conflict {
+        return Ok(Status {
+            needs_migration: false,
+            state: "conflicted".into(),
+            operation_id: None,
+        });
+    }
+    if let Some((operation_id, state)) = c.query_row(
+        "SELECT operation_id,state FROM legacy_import_operations ORDER BY updated_at DESC,rowid DESC LIMIT 1",
+        [],
+        |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+    ).optional()? {
+        if matches!(state.as_str(), "complete" | "superseded") {
+            return Ok(Status { needs_migration: false, state, operation_id: Some(operation_id) });
+        }
         return Ok(Status { needs_migration: true, state, operation_id: Some(operation_id) });
     }
     let exported: Option<i64> = c
@@ -140,7 +163,32 @@ pub fn status(c: &Connection) -> Result<Status> {
 
 pub fn export(c: &Connection) -> Result<Value> {
     let raw = source(c)?;
-    c.execute("INSERT INTO migration_audit(operation_id,action,detail_json) VALUES('legacy-v2-import','backup_exported',?1)", params![json!({"sourceFingerprint": fingerprint(&raw)}).to_string()])?;
+    let source_fingerprint = fingerprint(&raw);
+    let detail = json!({"sourceFingerprint": source_fingerprint}).to_string();
+    // Export is user-triggered, but repeated clicks/retries should not grow a
+    // full config backup (or the audit log) without bound.
+    let already_backed_up: bool = c.query_row(
+        "SELECT EXISTS(SELECT 1 FROM app_config_backups WHERE reason=?1)",
+        params![format!("migration-export:{source_fingerprint}")],
+        |r| r.get(0),
+    )?;
+    if !already_backed_up {
+        c.execute(
+            "INSERT INTO app_config_backups(json,reason) VALUES(?1,?2)",
+            params![
+                raw.to_string(),
+                format!("migration-export:{source_fingerprint}")
+            ],
+        )?;
+    }
+    let already_audited: bool = c.query_row(
+        "SELECT EXISTS(SELECT 1 FROM migration_audit WHERE operation_id='legacy-v2-import' AND action='backup_exported' AND detail_json=?1)",
+        params![detail],
+        |r| r.get(0),
+    )?;
+    if !already_audited {
+        c.execute("INSERT INTO migration_audit(operation_id,action,detail_json) VALUES('legacy-v2-import','backup_exported',?1)", params![detail])?;
+    }
     Ok(json!({"filename":"swath-legacy-backup.json","content":serde_json::to_string_pretty(&raw)?}))
 }
 
@@ -268,6 +316,20 @@ where
     }
     let tx = c.transaction()?;
     tx.execute("UPDATE legacy_import_conflicts SET state='resolved',audited_at=strftime('%s','now') WHERE stable_key=?1",[&approval.conflict_id])?;
+    // Keep the startup gate on the review screen while any conflict remains.
+    // When the final conflict is approved, the next confirm call can resume the
+    // same import operation instead of being stranded in `conflicted` forever.
+    let unresolved: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM legacy_import_conflicts WHERE state <> 'resolved')",
+        [],
+        |r| r.get(0),
+    )?;
+    if !unresolved {
+        tx.execute(
+            "UPDATE legacy_import_operations SET state='pending',updated_at=strftime('%s','now') WHERE state='conflicted'",
+            [],
+        )?;
+    }
     tx.execute("INSERT INTO migration_audit(operation_id,action,detail_json) VALUES(?1,'conflict_approved',?2)",params![&approval.conflict_id,raw])?;
     tx.commit()?;
     Ok(json!({"conflictId":approval.conflict_id,"state":"resolved"}))
@@ -364,14 +426,6 @@ fn workspace_panes(workspace: &Value) -> Vec<&Value> {
 pub fn preview(c: &Connection, id: &str) -> Result<Preview> {
     let raw = source(c)?;
     let source_fingerprint = fingerprint(&raw);
-    // Preserve an immutable local copy before the user can confirm anything.
-    c.execute(
-        "INSERT OR IGNORE INTO app_config_backups(json,reason) VALUES(?1,?2)",
-        params![
-            raw.to_string(),
-            format!("migration-preview:{id}:{source_fingerprint}")
-        ],
-    )?;
     let mut groups = BTreeMap::new();
     let mut unsupported = vec![];
     let mut workspaces = vec![];
@@ -447,6 +501,8 @@ pub fn preview(c: &Connection, id: &str) -> Result<Preview> {
     Ok(Preview {
         operation_id: id.into(),
         source_fingerprint,
+        // Preview is deliberately read-only.  Keep the legacy hint for API
+        // compatibility; migration.export is the explicit backup action.
         backup_path: format!("app_config_backups/migration-preview:{id}"),
         suggested_mappings,
         workspaces,
@@ -564,22 +620,66 @@ where
             maps.contains_key(id).then(|| json!({"stableKey":format!("workspace:{id}"),"kind":"workspace","importedId":format!("legacy-project:{}:{}", r.operation_id, maps[id].project_key),"original":w}))
         }).collect();
     records.extend(p.unsupported.iter().enumerate().map(|(i, item)| json!({"stableKey":format!("pane:{i}"),"kind":"unsupported_pane","original":item})));
-    // Stable keys are global across import attempts. Identical originals are deduped; divergent
-    // originals are retained on both sides and cannot be imported until explicitly resolved.
-    records.retain(|record| {
+    let existing_unresolved: Vec<String> = {
+        let mut statement = c.prepare(
+            "SELECT stable_key FROM legacy_import_conflicts WHERE state <> 'resolved' ORDER BY stable_key",
+        )?;
+        let rows = statement
+            .query_map([], |row| row.get(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows
+    };
+    if !existing_unresolved.is_empty() {
+        c.execute(
+            "UPDATE legacy_import_operations SET state='conflicted',updated_at=strftime('%s','now') WHERE operation_id=?1",
+            [&r.operation_id],
+        )?;
+        return Err(anyhow!(
+            "migration has unresolved conflicts: {}",
+            existing_unresolved.join(", ")
+        ));
+    }
+    // Stable keys are global across import attempts. Identical originals are safe to replay;
+    // divergent originals must be resolved before *any* catalog projection is imported.
+    let mut blocked_conflicts = Vec::new();
+    for record in &records {
         let key = record["stableKey"].as_str().unwrap_or("");
         let incoming = record["original"].to_string();
-        let prior: Option<String> = c.query_row("SELECT original_json FROM legacy_import_records WHERE stable_key=?1 ORDER BY operation_id LIMIT 1", [key], |row| row.get(0)).optional().unwrap_or(None);
-        let Some(prior) = prior else { return true };
-        let prior_original = serde_json::from_str::<Value>(&prior).ok().and_then(|v| v.get("original").cloned()).map(|v| v.to_string()).unwrap_or(prior);
-        // Keep identical records in the consensus request so a retry produces the exact same
-        // operation hash. The catalog projection itself already inserts them idempotently.
-        if prior_original == incoming { return true; }
+        let prior: Option<String> = c.query_row("SELECT original_json FROM legacy_import_records WHERE stable_key=?1 ORDER BY operation_id LIMIT 1", [key], |row| row.get(0)).optional()?;
+        let Some(prior) = prior else { continue };
+        let prior_original = serde_json::from_str::<Value>(&prior)
+            .ok()
+            .and_then(|v| v.get("original").cloned())
+            .map(|v| v.to_string())
+            .unwrap_or(prior);
+        if prior_original == incoming {
+            continue;
+        }
         let conflict_id = format!("legacy:{}", key);
-        let revision_hash = fingerprint(&json!({"original":prior_original,"incoming":incoming}));
-        let _ = c.execute("INSERT OR IGNORE INTO legacy_import_conflicts(stable_key,original_json,incoming_json,revision_hash) VALUES(?1,?2,?3,?4)", params![conflict_id,prior_original,incoming,revision_hash]);
-        false
-    });
+        let revision_hash = fingerprint(&json!({"original":&prior_original,"incoming":&incoming}));
+        c.execute(
+            "INSERT INTO legacy_import_conflicts(stable_key,original_json,incoming_json,revision_hash) VALUES(?1,?2,?3,?4) ON CONFLICT(stable_key) DO UPDATE SET original_json=excluded.original_json,incoming_json=excluded.incoming_json,revision_hash=excluded.revision_hash,state=CASE WHEN legacy_import_conflicts.revision_hash<>excluded.revision_hash THEN 'unresolved' ELSE legacy_import_conflicts.state END,proposal_json=CASE WHEN legacy_import_conflicts.revision_hash<>excluded.revision_hash THEN NULL ELSE legacy_import_conflicts.proposal_json END",
+            params![conflict_id, prior_original, incoming, revision_hash],
+        )?;
+        let state: String = c.query_row(
+            "SELECT state FROM legacy_import_conflicts WHERE stable_key=?1",
+            [&conflict_id],
+            |row| row.get(0),
+        )?;
+        if state != "resolved" {
+            blocked_conflicts.push(conflict_id);
+        }
+    }
+    if !blocked_conflicts.is_empty() {
+        c.execute(
+            "UPDATE legacy_import_operations SET state='conflicted',updated_at=strftime('%s','now') WHERE operation_id=?1",
+            [&r.operation_id],
+        )?;
+        return Err(anyhow!(
+            "migration has unresolved conflicts: {}",
+            blocked_conflicts.join(", ")
+        ));
+    }
     // This is the migration's consensus fence: no catalog projection is changed before it commits.
     write(crate::network::raft::CatalogRequest::Migration {
         operation_id: fence_operation,
@@ -742,20 +842,24 @@ where
         c.execute("INSERT OR IGNORE INTO legacy_import_unsupported(operation_id,stable_key,original_json,reason) VALUES(?1,?2,?3,'unsupported pane retained')",params![r.operation_id,format!("pane:{i}"),item.to_string()])?;
     }
     // A crashed import may have committed a prefix of its catalog mutations before its local
-    // operation record could be completed. Once a retry succeeds, hide those superseded tasks
-    // and projects through consensus so every device sees one canonical import.
+    // operation record could be completed. Only retire artifacts that are provably untouched:
+    // no panes, activity, transfer/cleanup operation, or device path. In particular, never
+    // hide a task merely because its import operation is old -- a user may have started using it
+    // while the original client was offline.
     let superseded: Vec<String> = {
-        let mut statement = c.prepare("SELECT operation_id FROM legacy_import_operations WHERE source_hash=?1 AND operation_id<>?2 AND state<>'complete'")?;
+        let mut statement = c.prepare("SELECT operation_id FROM legacy_import_operations WHERE network_id=?1 AND source_hash=?2 AND operation_id<>?3 AND state NOT IN ('complete','superseded','conflicted')")?;
         let rows = statement
-            .query_map(params![hash, r.operation_id], |row| row.get(0))?
+            .query_map(params![r.network_id, hash, r.operation_id], |row| {
+                row.get(0)
+            })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         rows
     };
     for old_operation in superseded {
-        let task_prefix = format!("legacy-task:{old_operation}:%");
+        let task_prefix = format!("legacy-task:{old_operation}:");
         let old_tasks: Vec<(String, i64)> = {
             let mut statement = c.prepare(
-                "SELECT id,revision FROM tasks WHERE id LIKE ?1 AND tombstoned_at IS NULL",
+                "SELECT t.id,t.revision FROM tasks t WHERE substr(t.id,1,length(?1))=?1 AND t.tombstoned_at IS NULL AND NOT EXISTS (SELECT 1 FROM task_panes p WHERE p.task_id=t.id AND p.tombstoned_at IS NULL) AND NOT EXISTS (SELECT 1 FROM task_activity a WHERE a.task_id=t.id) AND NOT EXISTS (SELECT 1 FROM task_operations o WHERE o.task_id=t.id AND o.completed_at IS NULL) AND NOT EXISTS (SELECT 1 FROM device_task_paths d WHERE d.task_id=t.id)",
             )?;
             let rows = statement
                 .query_map([&task_prefix], |row| Ok((row.get(0)?, row.get(1)?)))?
@@ -781,10 +885,10 @@ where
                 ));
             }
         }
-        let project_prefix = format!("legacy-project:{old_operation}:%");
+        let project_prefix = format!("legacy-project:{old_operation}:");
         let old_projects: Vec<(String, i64)> = {
             let mut statement = c.prepare(
-                "SELECT id,revision FROM projects WHERE id LIKE ?1 AND tombstoned_at IS NULL",
+                "SELECT p.id,p.revision FROM projects p WHERE substr(p.id,1,length(?1))=?1 AND p.tombstoned_at IS NULL AND NOT EXISTS (SELECT 1 FROM tasks t WHERE t.project_id=p.id AND t.tombstoned_at IS NULL)",
             )?;
             let rows = statement
                 .query_map([&project_prefix], |row| Ok((row.get(0)?, row.get(1)?)))?
@@ -882,6 +986,42 @@ mod tests {
         assert_eq!(
             migration.suggested_mappings[1].project_key,
             "path:/missing#second"
+        );
+    }
+
+    #[test]
+    fn preview_is_read_only_and_repeated_exports_are_idempotent() {
+        let c = database();
+        assert_eq!(
+            c.query_row("SELECT count(*) FROM app_config_backups", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        preview(&c, "op").unwrap();
+        preview(&c, "op").unwrap();
+        assert_eq!(
+            c.query_row("SELECT count(*) FROM app_config_backups", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        export(&c).unwrap();
+        export(&c).unwrap();
+        assert_eq!(
+            c.query_row("SELECT count(*) FROM app_config_backups", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            c.query_row(
+                "SELECT count(*) FROM migration_audit WHERE action='backup_exported'",
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+            .unwrap(),
+            1
         );
     }
     fn proposal() -> Proposal {
@@ -1070,6 +1210,64 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn unresolved_record_conflict_blocks_every_catalog_write() {
+        let mut c = database();
+        let incoming = json!({"id":"w","name":"Incoming","path":"/missing","views":[]});
+        c.execute(
+            "UPDATE app_config SET json=?1 WHERE id=1",
+            [json!({"workspaces":[incoming]}).to_string()],
+        )
+        .unwrap();
+        // This is the record committed by an earlier, partially completed import.
+        c.execute(
+            "INSERT INTO legacy_import_records(operation_id,stable_key,kind,original_json,imported_id) VALUES('old','workspace:w','workspace',?1,'legacy-project:old:p')",
+            [json!({"stableKey":"workspace:w","kind":"workspace","original":{"id":"w","name":"Original","path":"/missing","views":[]}}).to_string()],
+        )
+        .unwrap();
+        let mut request = request();
+        request.operation_id = "new".into();
+        request.source_fingerprint = fingerprint(&source(&c).unwrap());
+        let writes = Arc::new(Mutex::new(Vec::new()));
+        let result = confirm_with(
+            &mut c,
+            request,
+            {
+                let writes = writes.clone();
+                move |request| {
+                    let writes = writes.clone();
+                    async move {
+                        writes.lock().unwrap().push(request);
+                        Ok(committed())
+                    }
+                }
+            },
+            |_, _, _, _| Ok(false),
+        )
+        .await;
+        assert!(result.is_err());
+        assert!(writes.lock().unwrap().is_empty());
+        assert_eq!(
+            c.query_row(
+                "SELECT state FROM legacy_import_operations WHERE operation_id='new'",
+                [],
+                |r| r.get::<_, String>(0),
+            )
+            .unwrap(),
+            "conflicted"
+        );
+        assert_eq!(status(&c).unwrap().state, "conflicted");
+        assert_eq!(
+            c.query_row(
+                "SELECT state FROM legacy_import_conflicts WHERE stable_key='legacy:workspace:w'",
+                [],
+                |r| r.get::<_, String>(0),
+            )
+            .unwrap(),
+            "unresolved"
+        );
+    }
+
+    #[tokio::test]
     async fn import_can_add_legacy_tasks_to_an_existing_project() {
         let mut c = database();
         c.execute("INSERT INTO projects(id,network_id,name,repository_source,default_branch,revision,created_at) VALUES('existing-project','n','W','/existing','main',1,0)", []).unwrap();
@@ -1109,6 +1307,81 @@ mod tests {
             crate::network::raft::CatalogRequest::Project { .. }
         )));
         assert!(writes.iter().any(|request| matches!(request, crate::network::raft::CatalogRequest::Task { payload, .. } if payload["projectId"] == "existing-project")));
+    }
+
+    #[tokio::test]
+    async fn superseded_cleanup_does_not_tombstone_a_task_with_live_state() {
+        let mut c = database();
+        let hash = fingerprint(&source(&c).unwrap());
+        c.execute(
+            "INSERT INTO legacy_import_operations(operation_id,network_id,source_hash,state) VALUES('old','n',?1,'importing')",
+            [&hash],
+        )
+        .unwrap();
+        c.execute(
+            "INSERT INTO projects(id,network_id,name,repository_source,default_branch,revision,created_at) VALUES('legacy-project:old:p','n','Old','/missing','main',1,0)",
+            [],
+        )
+        .unwrap();
+        c.execute(
+            "INSERT INTO tasks(id,project_id,title,assigned_device_id,lifecycle,revision,created_at) VALUES('legacy-task:old:t','legacy-project:old:p','Old','d','active',1,0)",
+            [],
+        )
+        .unwrap();
+        // A pane is durable evidence that the task may be in use. Cleanup must
+        // leave both the task and its project visible network-wide.
+        c.execute(
+            "INSERT INTO task_panes(id,task_id,kind,revision,created_at) VALUES('legacy-pane:old:terminal','legacy-task:old:t','terminal',1,0)",
+            [],
+        )
+        .unwrap();
+        let writes = Arc::new(Mutex::new(Vec::new()));
+        let mut request = request();
+        request.operation_id = "new".into();
+        request.source_fingerprint = hash;
+        confirm_with(
+            &mut c,
+            request,
+            {
+                let writes = writes.clone();
+                move |request| {
+                    let writes = writes.clone();
+                    async move {
+                        writes.lock().unwrap().push(request);
+                        Ok(committed())
+                    }
+                }
+            },
+            |_, _, _, _| Ok(false),
+        )
+        .await
+        .unwrap();
+        let writes = writes.lock().unwrap();
+        assert!(!writes.iter().any(|request| match request {
+            crate::network::raft::CatalogRequest::Task { operation_id, .. }
+            | crate::network::raft::CatalogRequest::Project { operation_id, .. } => {
+                operation_id.contains(":cleanup:")
+            }
+            _ => false,
+        }));
+        assert_eq!(
+            c.query_row(
+                "SELECT tombstoned_at FROM tasks WHERE id='legacy-task:old:t'",
+                [],
+                |r| r.get::<_, Option<i64>>(0),
+            )
+            .unwrap(),
+            None
+        );
+        assert_eq!(
+            c.query_row(
+                "SELECT state FROM legacy_import_operations WHERE operation_id='old'",
+                [],
+                |r| r.get::<_, String>(0),
+            )
+            .unwrap(),
+            "complete"
+        );
     }
 
     #[tokio::test]

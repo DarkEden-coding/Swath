@@ -7,6 +7,10 @@ import { browserLocalState, loadBrowserEventCursor, saveBrowserEventCursor } fro
 type Status = "connected" | "connecting" | "offline";
 type EventChannel = RemoteEvent["channel"];
 
+/** A remote call must not leave a pane waiting forever for a lost response. */
+export const REMOTE_RPC_TIMEOUT_MS = 30_000;
+const REMOTE_SOCKET_OPEN_TIMEOUT_MS = 10_000;
+
 export class RemoteRpcError extends Error {
   constructor(
     message: string,
@@ -19,9 +23,31 @@ export class RemoteRpcError extends Error {
   }
 }
 
+function errorMessage(error: unknown): string {
+  if (error instanceof Error && error.message) return error.message;
+  if (typeof error === "string") return error;
+  try {
+    return JSON.stringify(error);
+  } catch {
+    return String(error);
+  }
+}
+
+function remoteTransportError(
+  code: string,
+  message: string,
+  detail: unknown,
+  retryable = true,
+): RemoteRpcError {
+  return new RemoteRpcError(message, [code], detail, retryable);
+}
+
 /** Converts nested connector/executor/catalog envelopes into one actionable client error. */
 export function remoteRpcError(raw: unknown): RemoteRpcError {
   let detail: unknown = raw;
+  if (raw instanceof Error) {
+    return remoteTransportError("remote_error", raw.message, raw, true);
+  }
   if (typeof raw === "string") {
     try {
       detail = JSON.parse(raw);
@@ -50,7 +76,8 @@ export function remoteRpcError(raw: unknown): RemoteRpcError {
     if (record.error !== undefined) visit(record.error);
   };
   visit(detail);
-  const summary = [codes.join(" → "), message].filter(Boolean).join(": ") || "Remote request failed";
+  const summary =
+    [codes.join(" → "), message].filter(Boolean).join(": ") || "Remote request failed";
   return new RemoteRpcError(summary, codes, detail, retryable);
 }
 
@@ -83,7 +110,11 @@ class RemoteClient {
   private cursorLoaded = false;
   private pending = new Map<
     string,
-    { resolve: (value: unknown) => void; reject: (error: Error) => void }
+    {
+      resolve: (value: unknown) => void;
+      reject: (error: Error) => void;
+      timeout: ReturnType<typeof setTimeout>;
+    }
   >();
   private eventListeners = new Set<(event: RemoteEvent) => void>();
   private statusListeners = new Set<(status: Status) => void>();
@@ -110,64 +141,170 @@ class RemoteClient {
   async open(): Promise<void> {
     if (this.socket?.readyState === WebSocket.OPEN) return;
     if (this.socket?.readyState === WebSocket.CONNECTING) {
-      await new Promise<void>((resolve, reject) => {
-        const socket = this.socket!;
-        socket.addEventListener("open", () => resolve(), { once: true });
-        socket.addEventListener("error", () => reject(new Error("Remote connection failed")), {
-          once: true,
-        });
-      });
+      const socket = this.socket;
+      try {
+        await this.waitForOpen(socket);
+      } catch (error) {
+        throw this.connectionError(error);
+      }
       return;
     }
     this.setStatus("connecting");
     if (!this.cursorLoaded) {
-      this.durableCursor = await loadBrowserEventCursor(this.connection.id);
-      this.cursorLoaded = true;
+      try {
+        this.durableCursor = await loadBrowserEventCursor(this.connection.id);
+        this.cursorLoaded = true;
+      } catch (error) {
+        this.setStatus("offline");
+        throw this.connectionError(error);
+      }
     }
     const protocols = this.connection.token
       ? ["swath-v2", authProtocol(this.connection.token)]
       : ["swath-v2"];
-    const socket = new WebSocket(socketUrl(this.connection.url), protocols);
+    let socket: WebSocket;
+    try {
+      socket = new WebSocket(socketUrl(this.connection.url), protocols);
+    } catch (error) {
+      this.setStatus("offline");
+      throw this.connectionError(error);
+    }
     this.socket = socket;
     socket.addEventListener("message", (event) => this.receive(String(event.data)));
-    socket.addEventListener("close", () => this.closed());
-    await new Promise<void>((resolve, reject) => {
-      socket.addEventListener(
-        "open",
-        () => {
-          this.setStatus("connected");
-          resolve();
-          void this.restoreEventSubscription();
-        },
-        { once: true },
-      );
-      socket.addEventListener(
-        "error",
-        () => reject(new Error(`Could not connect to ${this.connection.url}`)),
-        { once: true },
-      );
+    socket.addEventListener("close", () => this.closed(socket));
+    try {
+      await this.waitForOpen(socket);
+      this.setStatus("connected");
+      void this.restoreEventSubscription();
+    } catch (error) {
+      // A failed WebSocket can remain in CONNECTING for a short time. Clear our
+      // reference immediately so subsequent calls do not wait on a dead socket.
+      const wasCurrentSocket = this.socket === socket;
+      if (wasCurrentSocket) {
+        this.socket = null;
+        this.setStatus("offline");
+        this.scheduleReconnect();
+      }
+      try {
+        socket.close();
+      } catch {
+        // The browser may throw when closing a socket that failed to construct.
+      }
+      throw this.connectionError(error);
+    }
+  }
+
+  private waitForOpen(socket: WebSocket): Promise<void> {
+    if (socket.readyState === WebSocket.OPEN) return Promise.resolve();
+    if (socket.readyState !== WebSocket.CONNECTING) {
+      return Promise.reject(new Error("Remote socket is not connecting"));
+    }
+    return new Promise<void>((resolve, reject) => {
+      let timer: ReturnType<typeof setTimeout> | null = setTimeout(() => {
+        finish(
+          remoteTransportError(
+            "remote_connect_timeout",
+            `Timed out connecting to ${this.connection.url}`,
+            { url: this.connection.url, timeoutMs: REMOTE_SOCKET_OPEN_TIMEOUT_MS },
+          ),
+        );
+      }, REMOTE_SOCKET_OPEN_TIMEOUT_MS);
+
+      const cleanup = () => {
+        if (timer !== null) clearTimeout(timer);
+        timer = null;
+        socket.removeEventListener("open", onOpen);
+        socket.removeEventListener("error", onError);
+        socket.removeEventListener("close", onClose);
+      };
+      const finish = (error?: Error) => {
+        cleanup();
+        if (error) reject(error);
+        else resolve();
+      };
+      const onOpen = () => finish();
+      const onError = () =>
+        finish(
+          remoteTransportError(
+            "remote_connect_failed",
+            `Could not connect to ${this.connection.url}`,
+            { url: this.connection.url },
+          ),
+        );
+      const onClose = () =>
+        finish(
+          remoteTransportError(
+            "remote_disconnected",
+            `Remote connection to ${this.connection.url} closed before it opened`,
+            { url: this.connection.url },
+          ),
+        );
+      socket.addEventListener("open", onOpen, { once: true });
+      socket.addEventListener("error", onError, { once: true });
+      socket.addEventListener("close", onClose, { once: true });
     });
+  }
+
+  private connectionError(error: unknown): RemoteRpcError {
+    if (error instanceof RemoteRpcError) return error;
+    return remoteTransportError(
+      "remote_connect_failed",
+      `Could not connect to ${this.connection.url}: ${errorMessage(error)}`,
+      { url: this.connection.url, cause: error },
+    );
   }
 
   close(): void {
     if (this.retry !== null) window.clearTimeout(this.retry);
     this.retry = null;
-    this.socket?.close();
+    const socket = this.socket;
     this.socket = null;
     this.setStatus("offline");
+    if (socket) {
+      try {
+        socket.close();
+      } catch {
+        // Closing an already-failed socket is best effort.
+      }
+    }
+    this.rejectPending(
+      remoteTransportError(
+        "remote_closed",
+        "Remote connection closed",
+        {
+          url: this.connection.url,
+        },
+        false,
+      ),
+    );
   }
 
-  private closed(): void {
+  private closed(socket: WebSocket): void {
+    // Ignore close events from an old socket after a reconnect or explicit close.
+    if (this.socket !== socket) return;
     this.socket = null;
     this.setStatus("offline");
-    for (const pending of this.pending.values())
-      pending.reject(new Error("Remote device disconnected"));
-    this.pending.clear();
-    if (this.eventListeners.size > 0 && this.retry === null) {
-      this.retry = window.setTimeout(() => {
-        this.retry = null;
-        void this.open().catch(() => undefined);
-      }, 2_000);
+    this.rejectPending(
+      remoteTransportError("remote_disconnected", "Remote device disconnected", {
+        url: this.connection.url,
+      }),
+    );
+    this.scheduleReconnect();
+  }
+
+  private scheduleReconnect(): void {
+    if (this.eventListeners.size === 0 || this.retry !== null) return;
+    this.retry = window.setTimeout(() => {
+      this.retry = null;
+      void this.open().catch(() => undefined);
+    }, 2_000);
+  }
+
+  private rejectPending(error: RemoteRpcError): void {
+    for (const [id, pending] of this.pending) {
+      this.pending.delete(id);
+      clearTimeout(pending.timeout);
+      pending.reject(error);
     }
   }
 
@@ -209,16 +346,78 @@ class RemoteClient {
     const pending = this.pending.get(message.id);
     if (!pending) return;
     this.pending.delete(message.id);
+    clearTimeout(pending.timeout);
     if (message.error) pending.reject(remoteRpcError(message.error));
     else pending.resolve(message.result);
   }
 
   async call<T>(method: RemoteMethod, params?: unknown): Promise<T> {
-    await this.open();
+    try {
+      await this.open();
+    } catch (error) {
+      // Keep call failures actionable and make sure a future call can retry on a
+      // fresh socket after a failed open.
+      throw error instanceof RemoteRpcError
+        ? error
+        : remoteTransportError(
+            "remote_connect_failed",
+            `Could not connect to ${this.connection.url} for ${method}: ${errorMessage(error)}`,
+            { method, url: this.connection.url, cause: error },
+          );
+    }
+
+    const socket = this.socket;
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+      throw remoteTransportError(
+        "remote_not_connected",
+        `Remote connection is not open for ${method}`,
+        { method, url: this.connection.url },
+      );
+    }
     const id = `${this.clientId}:${this.nextId++}`;
+    let payload: string;
+    try {
+      payload = JSON.stringify({ type: "request", id, method, params });
+    } catch (error) {
+      throw remoteTransportError(
+        "remote_encode_failed",
+        `Could not encode remote request ${method}: ${errorMessage(error)}`,
+        { method, url: this.connection.url, cause: error },
+        false,
+      );
+    }
     return await new Promise<T>((resolve, reject) => {
-      this.pending.set(id, { resolve: (value) => resolve(value as T), reject });
-      this.socket!.send(JSON.stringify({ type: "request", id, method, params }));
+      const pending = {
+        resolve: (value: unknown) => resolve(value as T),
+        reject,
+        timeout: setTimeout(() => {
+          if (this.pending.get(id) !== pending) return;
+          this.pending.delete(id);
+          reject(
+            remoteTransportError(
+              "rpc_timeout",
+              `Remote request timed out after ${REMOTE_RPC_TIMEOUT_MS}ms: ${method}`,
+              { method, url: this.connection.url, timeoutMs: REMOTE_RPC_TIMEOUT_MS },
+            ),
+          );
+        }, REMOTE_RPC_TIMEOUT_MS),
+      };
+      this.pending.set(id, pending);
+      try {
+        socket.send(payload);
+      } catch (error) {
+        if (this.pending.get(id) === pending) {
+          this.pending.delete(id);
+          clearTimeout(pending.timeout);
+        }
+        reject(
+          remoteTransportError(
+            "remote_send_failed",
+            `Could not send remote request ${method}: ${errorMessage(error)}`,
+            { method, url: this.connection.url, cause: error },
+          ),
+        );
+      }
     });
   }
 }

@@ -1,10 +1,10 @@
 use crate::types::*;
 use anyhow::{anyhow, Context, Result};
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 use std::{
     collections::{HashMap, HashSet},
     fs,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{Mutex, OnceLock},
 };
 
@@ -70,6 +70,10 @@ pub fn connection_at(file: &std::path::Path) -> Result<Connection> {
 /// Initializes all durable storage for a headless or desktop runtime.
 pub fn initialize(data_dir: &std::path::Path) -> Result<()> {
     let file = db_path_in(data_dir)?;
+    // `Core::start` calls initialize before any other database access.  Perform the legacy
+    // migration here, while the destination file is still absent; otherwise opening an empty
+    // database first would make the old database look already migrated and strand its config.
+    migrate_legacy_sqlite_db(&file)?;
     connection_at(&file).map(|_| ())
 }
 
@@ -85,7 +89,7 @@ pub fn record_runtime_interruption(data_dir: &std::path::Path) -> Result<()> {
 }
 
 /// Copies a legacy database into the current app data directory when needed.
-fn migrate_legacy_sqlite_db(new_path: &PathBuf) -> Result<()> {
+fn migrate_legacy_sqlite_db(new_path: &Path) -> Result<()> {
     if new_path.exists() {
         return Ok(());
     }
@@ -93,11 +97,72 @@ fn migrate_legacy_sqlite_db(new_path: &PathBuf) -> Result<()> {
         return Ok(());
     };
     let old_db = old_path.join(DB_FILE);
-    if old_db.exists() {
-        if let Some(parent) = new_path.parent() {
-            fs::create_dir_all(parent)?;
+    if old_db.exists() && old_db != new_path {
+        copy_sqlite_database(&old_db, new_path)?;
+    }
+    Ok(())
+}
+
+/// Copies a SQLite database through SQLite itself rather than copying only the main file.
+///
+/// A database in WAL mode can have committed pages in its `-wal` sidecar.  Copying just the
+/// main file (the old implementation) can therefore produce a truncated or apparently empty
+/// database.  `VACUUM INTO` takes a consistent read snapshot, includes WAL pages, and leaves the
+/// source untouched.  The temporary file and final rename also ensure readers never observe a
+/// partially-created destination.
+fn copy_sqlite_database(source_path: &Path, destination_path: &Path) -> Result<()> {
+    if destination_path.exists() {
+        return Ok(());
+    }
+    if let Some(parent) = destination_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let source = Connection::open_with_flags(source_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .with_context(|| format!("failed to open legacy database {}", source_path.display()))?;
+    let unique = format!(
+        ".{}.migration-{}-{}",
+        destination_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or(DB_FILE),
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|value| value.as_nanos())
+            .unwrap_or_default()
+    );
+    let temporary_path = destination_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(unique);
+    let _ = fs::remove_file(&temporary_path);
+    let temporary_name = temporary_path.to_string_lossy().into_owned();
+    let copy_result = source
+        .execute("VACUUM INTO ?1", [temporary_name.as_str()])
+        .with_context(|| format!("failed to copy legacy database {}", source_path.display()));
+    drop(source);
+    if let Err(error) = copy_result {
+        let _ = fs::remove_file(&temporary_path);
+        return Err(error);
+    }
+
+    // Another process may have won the migration race while this snapshot was being made.
+    if destination_path.exists() {
+        let _ = fs::remove_file(&temporary_path);
+        return Ok(());
+    }
+    if let Err(error) = fs::rename(&temporary_path, destination_path) {
+        if destination_path.exists() {
+            let _ = fs::remove_file(&temporary_path);
+            return Ok(());
         }
-        fs::copy(old_db, new_path)?;
+        let _ = fs::remove_file(&temporary_path);
+        return Err(error).with_context(|| {
+            format!(
+                "failed to install migrated database {}",
+                destination_path.display()
+            )
+        });
     }
     Ok(())
 }
@@ -220,6 +285,15 @@ pub fn save_at(data_dir: &std::path::Path, config: &AppConfig) -> Result<()> {
 }
 
 fn save_to_connection(conn: &Connection, config: &AppConfig) -> Result<()> {
+    // The legacy JSON is the source of truth until the user explicitly confirms an import.
+    // A renderer save (including an automatic sanitization repair) must not be able to replace
+    // that source wholesale before the migration preview/backup flow has run.
+    let migration_status = crate::migration::status(conn)?;
+    if migration_status.needs_migration || migration_status.state == "conflicted" {
+        return Err(anyhow!(
+            "legacy configuration is read-only until migration is explicitly confirmed"
+        ));
+    }
     let migrated: Option<i64> = conn
         .query_row(
             "SELECT 1 FROM legacy_import_operations WHERE state='complete' LIMIT 1",
@@ -385,6 +459,17 @@ pub fn default_shell_profiles() -> Vec<ShellProfile> {
 mod tests {
     use super::*;
 
+    fn unique_test_dir(label: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "swath-{label}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ))
+    }
+
     #[test]
     fn local_interface_state_survives_restart_with_history_and_pane_state() {
         let dir = std::env::temp_dir().join(format!("swath-local-state-{}", std::process::id()));
@@ -514,5 +599,80 @@ mod tests {
             config.active_workspace_id.as_deref(),
             Some("remote:project")
         );
+    }
+
+    #[test]
+    fn legacy_sqlite_copy_includes_wal_backed_rows() {
+        let dir = unique_test_dir("legacy-copy");
+        let source_path = dir.join("legacy").join(DB_FILE);
+        let destination_path = dir.join("current").join(DB_FILE);
+        fs::create_dir_all(source_path.parent().unwrap()).unwrap();
+        let source = Connection::open(&source_path).unwrap();
+        source
+            .execute_batch(
+                "PRAGMA journal_mode=WAL;
+                 CREATE TABLE retained (value TEXT NOT NULL);
+                 INSERT INTO retained(value) VALUES ('from-wal');",
+            )
+            .unwrap();
+        // Keep the WAL pages outstanding so a raw fs::copy of the main file would lose the row.
+        let wal_path = PathBuf::from(format!("{}-wal", source_path.display()));
+        assert!(wal_path.exists());
+        drop(source);
+
+        copy_sqlite_database(&source_path, &destination_path).unwrap();
+        let destination = Connection::open(&destination_path).unwrap();
+        let value: String = destination
+            .query_row("SELECT value FROM retained", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(value, "from-wal");
+        drop(destination);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn legacy_config_cannot_be_overwritten_before_explicit_import() {
+        let conn = Connection::open_in_memory().unwrap();
+        network::migrate(&conn).unwrap();
+        task_store::migrate(&conn).unwrap();
+        crate::migration::migrate(&conn).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE app_config (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                json TEXT NOT NULL,
+                updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+            )",
+        )
+        .unwrap();
+        let original = serde_json::json!({
+            "version": 2,
+            "workspaces": [{
+                "id": "legacy",
+                "name": "Legacy",
+                "path": "/legacy",
+                "views": [],
+                "activeViewId": "",
+                "createdAt": 0,
+                "updatedAt": 0
+            }],
+            "activeWorkspaceId": "legacy",
+            "settings": default_settings()
+        });
+        conn.execute(
+            "INSERT INTO app_config(id,json) VALUES(1,?1)",
+            [original.to_string()],
+        )
+        .unwrap();
+
+        let mut replacement = default_config();
+        replacement.settings.font_size = 99.0;
+        let error = save_to_connection(&conn, &replacement).unwrap_err();
+        assert!(error.to_string().contains("read-only"));
+        let persisted: String = conn
+            .query_row("SELECT json FROM app_config WHERE id=1", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(persisted, original.to_string());
     }
 }

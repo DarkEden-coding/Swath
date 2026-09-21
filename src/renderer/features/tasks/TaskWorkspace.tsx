@@ -18,14 +18,32 @@ export function piSessionMetadata(
 }
 
 /** Minimal legacy shape required by registered pane renderers; task ownership stays separate. */
+type TaskRendererProjection = { workspace: Workspace; view: WorkspaceView };
+
 export function taskRendererProjection(
-  task: { id: string; title: string },
+  task: { id: string; title: string; lifecycle?: undefined },
   panes: { id: string; kind: string; title: string | null; sessionId?: string | null }[],
   cwd: string,
   focusedPaneId?: string | null,
   legacyWorkspace?: Workspace | null,
   activeViewId?: string | null,
-): { workspace: Workspace; view: WorkspaceView } {
+): TaskRendererProjection;
+export function taskRendererProjection(
+  task: { id: string; title: string; lifecycle: "active" | "completed" },
+  panes: { id: string; kind: string; title: string | null; sessionId?: string | null }[],
+  cwd: string,
+  focusedPaneId?: string | null,
+  legacyWorkspace?: Workspace | null,
+  activeViewId?: string | null,
+): TaskRendererProjection | null;
+export function taskRendererProjection(
+  task: { id: string; title: string; lifecycle?: "active" | "completed" },
+  panes: { id: string; kind: string; title: string | null; sessionId?: string | null }[],
+  cwd: string,
+  focusedPaneId?: string | null,
+  legacyWorkspace?: Workspace | null,
+  activeViewId?: string | null,
+): TaskRendererProjection | null {
   if (legacyWorkspace?.views.length) {
     const paneByLegacyId = new Map(
       panes.flatMap((pane) => [
@@ -97,7 +115,7 @@ export function taskRendererProjection(
         );
       return position(left) - position(right);
     });
-    if (!views.length) {
+    if (!views.length && task.lifecycle !== "completed") {
       const empty = {
         type: "pane" as const,
         id: `${task.id}:empty`,
@@ -112,6 +130,7 @@ export function taskRendererProjection(
         activePaneId: empty.id,
       });
     }
+    if (!views.length) return null;
     const view = views.find((item) => item.id === activeViewId) ?? views[0]!;
     return {
       workspace: {
@@ -142,7 +161,7 @@ export function taskRendererProjection(
     layout: pane,
     activePaneId: pane.id,
   }));
-  if (!views.length) {
+  if (!views.length && task.lifecycle !== "completed") {
     const empty = { type: "pane" as const, id: `${task.id}:empty`, kind: "terminal" as const, cwd };
     views.push({
       id: `task-view:${empty.id}`,
@@ -152,6 +171,7 @@ export function taskRendererProjection(
       activePaneId: empty.id,
     });
   }
+  if (!views.length) return null;
   const view =
     views.find((item) => item.id === activeViewId || item.activePaneId === focusedPaneId) ??
     views[0]!;
@@ -209,6 +229,54 @@ function rpcOk(value: unknown): boolean {
   return !!value && typeof value === "object" && (value as { ok?: unknown }).ok === true;
 }
 
+/** Turns host/remote task replies into a useful message instead of exposing raw JSON. */
+export function taskRpcError(value: unknown, fallback = "Task operation failed"): string | null {
+  if (value instanceof Error) return taskRpcError(value.message, fallback);
+  if (typeof value === "string") {
+    const text = value.trim();
+    if (!text) return fallback;
+    try {
+      return taskRpcError(JSON.parse(text), fallback) ?? text;
+    } catch {
+      return text;
+    }
+  }
+  if (!value || typeof value !== "object") return null;
+  const reply = value as { ok?: unknown; code?: unknown; error?: unknown; message?: unknown };
+  if (reply.ok === true) return null;
+  const detail =
+    reply.error != null
+      ? taskRpcError(reply.error, fallback)
+      : typeof reply.message === "string" && reply.message
+        ? reply.message
+        : null;
+  if (reply.ok === false || reply.code != null || detail) {
+    const code = typeof reply.code === "string" && reply.code ? reply.code : null;
+    return [code, detail].filter(Boolean).join(": ") || fallback;
+  }
+  return null;
+}
+
+export function taskCreationError(value: unknown): string {
+  if (value instanceof Error) return taskCreationError(value.message);
+  if (typeof value === "string") {
+    const text = value.trim();
+    if (!text) return "Unable to create task";
+    try {
+      return taskCreationError(JSON.parse(text));
+    } catch {
+      return text;
+    }
+  }
+  if (value && typeof value === "object") {
+    const reply = value as { error?: unknown; message?: unknown; code?: unknown };
+    if (reply.error != null) return taskCreationError(reply.error);
+    if (typeof reply.message === "string" && reply.message) return reply.message;
+    if (typeof reply.code === "string" && reply.code) return reply.code;
+  }
+  return "Unable to create task";
+}
+
 export function CreateTaskDialog({ onClose }: { onClose: () => void }): JSX.Element {
   const { catalog, devices, local, networkId, refresh } = useTaskStore();
   const project = catalog.projects.find((item) => item.id === local.activeProjectId);
@@ -243,18 +311,12 @@ export function CreateTaskDialog({ onClose }: { onClose: () => void }): JSX.Elem
             })
             .then((reply) => {
               if (!rpcOk(reply)) {
-                const detail =
-                  reply && typeof reply === "object" && "message" in reply
-                    ? String((reply as { message?: unknown }).message ?? "")
-                    : "";
-                setError(detail || "Unable to create task");
+                setError(taskCreationError(reply));
                 return;
               }
               return refresh().then(onClose);
             })
-            .catch((reason) =>
-              setError(reason instanceof Error ? reason.message : "Unable to create task"),
-            );
+            .catch((reason) => setError(taskCreationError(reason)));
         }}
       >
         <h2 className="mb-3 text-sm font-semibold text-swath-text">Create task</h2>
@@ -333,21 +395,35 @@ function TransferDialog({
   const [secretApproval, setSecretApproval] = useState(false);
   const transfer = async () => {
     if (!agentsStopped || !serverConfirmed) return;
-    const p: any = await window.swath.tasks.rpc({
-      op: "transferPreflight",
-      taskId,
-      destinationDeviceId,
-      ...(secretApproval ? { secretApproval: true } : {}),
-    });
-    if (!p?.ok) return setMessage(p?.error ?? "Preflight failed");
-    const r: any = await window.swath.tasks.rpc({
-      op: "transferConfirm",
-      operationId: p.operationId,
-      agentsStopped: true,
-      serverConfirmed: true,
-    });
-    setMessage(r?.ok ? "Transfer complete" : (r?.error ?? "Transfer failed"));
-    if (r?.ok) onDone();
+    try {
+      const p = await window.swath.tasks.rpc({
+        op: "transferPreflight",
+        taskId,
+        destinationDeviceId,
+        ...(secretApproval ? { secretApproval: true } : {}),
+      });
+      const preflightError = taskRpcError(p, "Preflight failed");
+      if (preflightError) return setMessage(preflightError);
+      const operationId =
+        p &&
+        typeof p === "object" &&
+        typeof (p as { operationId?: unknown }).operationId === "string"
+          ? (p as { operationId: string }).operationId
+          : "";
+      if (!operationId) return setMessage("Preflight did not return an operation id");
+      const r = await window.swath.tasks.rpc({
+        op: "transferConfirm",
+        operationId,
+        agentsStopped: true,
+        serverConfirmed: true,
+      });
+      const confirmError = taskRpcError(r, "Transfer failed");
+      if (confirmError) return setMessage(confirmError);
+      setMessage("Transfer complete");
+      onDone();
+    } catch (error) {
+      setMessage(taskRpcError(error, "Transfer failed") ?? "Transfer failed");
+    }
   };
   return (
     <div
@@ -430,15 +506,21 @@ function CleanupDialog({
   const [message, setMessage] = useState("");
   const token = previewToken;
   const confirm = async () => {
-    const r: any = await window.swath.tasks.rpc({
-      op: "cleanupConfirm",
-      taskId,
-      previewToken: token,
-      agentsStopped: true,
-      serverConfirmed: true,
-    });
-    setMessage(r?.ok ? "Cleanup complete" : (r?.error ?? "Cleanup failed"));
-    if (r?.ok) onDone();
+    try {
+      const r = await window.swath.tasks.rpc({
+        op: "cleanupConfirm",
+        taskId,
+        previewToken: token,
+        agentsStopped: true,
+        serverConfirmed: true,
+      });
+      const error = taskRpcError(r, "Cleanup failed");
+      if (error) return setMessage(error);
+      setMessage("Cleanup complete");
+      onDone();
+    } catch (error) {
+      setMessage(taskRpcError(error, "Cleanup failed") ?? "Cleanup failed");
+    }
   };
   return (
     <div
@@ -485,8 +567,26 @@ export function TaskWorkspace(): JSX.Element {
     null;
   const panes = useMemo(() => {
     if (!task) return [];
+    const availablePaneIds = new Set(
+      catalog.panes.filter((pane) => pane.taskId === task.id).map((pane) => pane.id),
+    );
+    const serverPaneIds = new Set(task.paneOrder);
     const localOrder = local.paneOrderByTask[task.id] ?? [];
-    const ids = [...localOrder, ...task.paneOrder.filter((id) => !localOrder.includes(id))];
+    // Local order is only an optimistic overlay. Ignore deleted/unknown ids and de-duplicate it
+    // before appending the current server order, so a stale drag cannot resurrect a pane.
+    const seen = new Set<string>();
+    const ids = [
+      ...localOrder.filter(
+        (id) =>
+          serverPaneIds.has(id) &&
+          availablePaneIds.has(id) &&
+          !seen.has(id) &&
+          (seen.add(id), true),
+      ),
+      ...task.paneOrder.filter(
+        (id) => availablePaneIds.has(id) && !seen.has(id) && (seen.add(id), true),
+      ),
+    ];
     return (
       ids
         .map((id) => catalog.panes.find((pane) => pane.id === id))
@@ -510,10 +610,22 @@ export function TaskWorkspace(): JSX.Element {
   useEffect(() => {
     if (!task || local.historicalTaskId) return;
     let active = true;
-    void window.swath.tasks.rpc({ op: "getTask", taskId: task.id }).then((reply: any) => {
-      const path = typeof reply?.worktreePath === "string" ? reply.worktreePath.trim() : "";
-      if (active && path) setTaskPaths((paths) => ({ ...paths, [task.id]: path }));
-    });
+    void window.swath.tasks
+      .rpc({ op: "getTask", taskId: task.id })
+      .then((reply) => {
+        const error = taskRpcError(reply, "Could not load task worktree");
+        if (error) throw new Error(error);
+        const path =
+          reply &&
+          typeof reply === "object" &&
+          typeof (reply as { worktreePath?: unknown }).worktreePath === "string"
+            ? (reply as { worktreePath: string }).worktreePath.trim()
+            : "";
+        if (active && path) setTaskPaths((paths) => ({ ...paths, [task.id]: path }));
+      })
+      .catch((error: unknown) => {
+        if (active) reportError("Loading task worktree", error);
+      });
     return () => {
       active = false;
     };
@@ -559,7 +671,8 @@ export function TaskWorkspace(): JSX.Element {
     void window.swath.tasks
       .rpc(request)
       .then((reply) => {
-        if (!rpcOk(reply)) throw new Error(JSON.stringify(reply));
+        const error = taskRpcError(reply);
+        if (error) throw new Error(error);
       })
       .catch((error: unknown) => reportError(`Task ${request.op}`, error))
       .finally(
@@ -593,7 +706,8 @@ export function TaskWorkspace(): JSX.Element {
           void window.swath.tasks
             .rpc({ op: "createPane", taskId, kind })
             .then(async (reply) => {
-              if (!rpcOk(reply)) return;
+              const error = taskRpcError(reply, "Could not create task pane");
+              if (error) throw new Error(error);
               await refresh();
               const paneId = (reply as { paneId?: string }).paneId;
               if (paneId)
@@ -638,10 +752,20 @@ export function TaskWorkspace(): JSX.Element {
                 onClick={() =>
                   void window.swath.tasks
                     .rpc({ op: "cleanupPreview", taskId: task.id })
-                    .then(
-                      (r: any) =>
-                        r?.ok && setCleanup({ token: r.previewToken, preview: r.preview }),
-                    )
+                    .then((r: unknown) => {
+                      const error = taskRpcError(r, "Could not prepare cleanup");
+                      if (error) throw new Error(error);
+                      if (
+                        r &&
+                        typeof r === "object" &&
+                        typeof (r as { previewToken?: unknown }).previewToken === "string"
+                      )
+                        setCleanup({
+                          token: (r as { previewToken: string }).previewToken,
+                          preview: (r as { preview?: unknown }).preview,
+                        });
+                    })
+                    .catch((error: unknown) => reportError("Preparing task cleanup", error))
                 }
               >
                 Cleanup
@@ -649,14 +773,17 @@ export function TaskWorkspace(): JSX.Element {
               {task.lifecycle === "completed" ? (
                 <button
                   className="rounded px-2 py-1 text-xs text-swath-good hover:bg-swath-bg"
-                  onClick={() =>
+                  onClick={() => {
                     void window.swath.tasks
                       .rpc({ op: "reactivateTask", taskId: task.id })
-                      .then(async () => {
+                      .then(async (reply) => {
+                        const error = taskRpcError(reply, "Could not resume task");
+                        if (error) throw new Error(error);
                         await refresh();
                         selectTask(task.id);
                       })
-                  }
+                      .catch((error: unknown) => reportError("Resuming task", error));
+                  }}
                 >
                   Resume
                 </button>

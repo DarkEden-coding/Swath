@@ -195,9 +195,7 @@ function ProjectItem({
   onRemove: () => Promise<void>;
 }): JSX.Element {
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null),
-    [editing, setEditing] = useState(false),
-    [draft, setDraft] = useState(project.name);
-  useEffect(() => setDraft(project.name), [project.name]);
+    [editing, setEditing] = useState(false);
   useEffect(() => {
     if (!menu) return;
     const close = () => setMenu(null),
@@ -249,23 +247,14 @@ function ProjectItem({
           <IconSparkle width={15} height={15} className="shrink-0 text-swath-accent" />
         ) : null}
         {editing ? (
-          <input
-            autoFocus
-            value={draft}
-            onClick={(event) => event.stopPropagation()}
-            onChange={(event) => setDraft(event.target.value)}
-            onBlur={() => {
+          <ProjectNameEditor
+            key={project.name}
+            projectName={project.name}
+            onCancel={() => setEditing(false)}
+            onRename={async (name) => {
               setEditing(false);
-              if (draft.trim() && draft.trim() !== project.name) void onRename(draft.trim());
+              if (name.trim() && name.trim() !== project.name) await onRename(name.trim());
             }}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") event.currentTarget.blur();
-              if (event.key === "Escape") {
-                setDraft(project.name);
-                setEditing(false);
-              }
-            }}
-            className="min-w-0 flex-1 rounded border border-swath-border bg-swath-bg px-1.5 py-0.5 text-[13px] text-swath-text outline-none focus:border-swath-accent"
           />
         ) : (
           <span className={`min-w-0 flex-1 truncate text-[13px] ${group ? "font-semibold" : ""}`}>
@@ -324,5 +313,37 @@ function ProjectItem({
         </div>
       ) : null}
     </div>
+  );
+}
+
+function ProjectNameEditor({
+  projectName,
+  onCancel,
+  onRename,
+}: {
+  projectName: string;
+  onCancel: () => void;
+  onRename: (name: string) => Promise<void>;
+}): JSX.Element {
+  const [draft, setDraft] = useState(projectName);
+  return (
+    <input
+      autoFocus
+      value={draft}
+      onClick={(event) => event.stopPropagation()}
+      onChange={(event) => setDraft(event.target.value)}
+      onBlur={() => {
+        onCancel();
+        void onRename(draft);
+      }}
+      onKeyDown={(event) => {
+        if (event.key === "Enter") event.currentTarget.blur();
+        if (event.key === "Escape") {
+          setDraft(projectName);
+          onCancel();
+        }
+      }}
+      className="min-w-0 flex-1 rounded border border-swath-border bg-swath-bg px-1.5 py-0.5 text-[13px] text-swath-text outline-none focus:border-swath-accent"
+    />
   );
 }

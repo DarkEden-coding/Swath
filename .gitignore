@@ -10,4 +10,15 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 .env
+.env.*
+*.env
+!*.env.example
+
+# Deployment operator configuration and machine-specific runbooks.
+scripts/deploy.env
+/DEPLOYMENT.md
+/DEPLOYMENT.local.md
+
+# Local deployment recovery artifacts.
+deploy-backups/
 package-lock.json

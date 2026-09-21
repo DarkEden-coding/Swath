@@ -109,7 +109,14 @@ export function FileBrowserPane({
   };
 
   useEffect(() => {
-    void loadDirs([ROOT]).catch(() => setError("Unable to read workspace folder"));
+    const loadRoot = async (): Promise<void> => {
+      try {
+        await loadDirs([ROOT]);
+      } catch {
+        setError("Unable to read workspace folder");
+      }
+    };
+    void loadRoot();
   }, [loadDirs]);
 
   const toggleDir = (path: string): void => {

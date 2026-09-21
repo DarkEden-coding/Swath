@@ -7,14 +7,17 @@
 use crate::{config, events::EventPublisher, terminal::process::kill_process_tree};
 use rusqlite::{params, OptionalExtension};
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Arc, Mutex,
+};
 
 /// Event channel carrying `{ paneId, line }` stdout records and `{ paneId, exit }` notices.
 const PI_EVENT: &str = "pi:event";
@@ -26,10 +29,14 @@ const STDERR_MAX_BYTES: usize = 64 * 1024;
 const PI_SUDO_EXTENSION: &str = include_str!("pi_sudo.ts");
 const PI_SECRETS_EXTENSION: &str = include_str!("pi_secrets.ts");
 
+const DEFAULT_SESSION_ID: &str = "default";
+static EXTENSION_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
 type PiResult = Result<Value, String>;
 
 struct PiProcess {
     pid: u32,
+    session_id: String,
     child: Child,
     stdin: Option<ChildStdin>,
     stderr: Arc<Mutex<String>>,
@@ -40,17 +47,82 @@ pub struct PiManager {
     events: Arc<dyn EventPublisher>,
     data_dir: PathBuf,
     procs: Mutex<HashMap<String, PiProcess>>,
+    /// Prevents two concurrent ensure calls from spawning two children for one pane while the
+    /// process itself is being prepared outside the process-map lock.
+    starting: Mutex<HashSet<String>>,
+    extensions: Result<(PathBuf, PathBuf), String>,
     #[cfg(test)]
     test_calls: Mutex<Option<Vec<Value>>>,
+}
+
+fn atomic_write(path: &Path, contents: &str) -> Result<(), String> {
+    if fs::read_to_string(path).ok().as_deref() == Some(contents) {
+        return Ok(());
+    }
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("extension path has no parent: {}", path.display()))?;
+    fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    let suffix = EXTENSION_TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let filename = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("extension");
+    let temporary = parent.join(format!(
+        ".{}.tmp-{}-{}",
+        filename,
+        std::process::id(),
+        suffix
+    ));
+    let result = (|| {
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)
+            .map_err(|error| error.to_string())?;
+        file.write_all(contents.as_bytes())
+            .and_then(|_| file.sync_all())
+            .map_err(|error| error.to_string())?;
+        fs::rename(&temporary, path).map_err(|error| error.to_string())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result
+}
+
+fn prepare_extensions(data_dir: &Path) -> Result<(PathBuf, PathBuf), String> {
+    let directory = data_dir.join("pi-extensions");
+    let sudo = directory.join("swath-pi-sudo.ts");
+    let secrets = directory.join("swath-pi-secrets.ts");
+    atomic_write(&sudo, PI_SUDO_EXTENSION)?;
+    atomic_write(&secrets, PI_SECRETS_EXTENSION)?;
+    Ok((sudo, secrets))
+}
+
+fn session_arg(args: &[String]) -> Option<String> {
+    args.windows(2)
+        .find(|pair| pair[0] == "--session" && !pair[1].starts_with('-'))
+        .map(|pair| pair[1].clone())
+        .or_else(|| {
+            args.iter().find_map(|arg| {
+                arg.strip_prefix("--session=")
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string)
+            })
+        })
 }
 
 impl PiManager {
     /// Creates a Pi manager using the runtime event publisher.
     pub fn new(events: Arc<dyn EventPublisher>, data_dir: PathBuf) -> Self {
+        let extensions = prepare_extensions(&data_dir);
         Self {
             events,
             data_dir,
             procs: Mutex::new(HashMap::new()),
+            starting: Mutex::new(HashSet::new()),
+            extensions,
             #[cfg(test)]
             test_calls: Mutex::new(None),
         }
@@ -90,7 +162,7 @@ impl PiManager {
             .map_err(|e| e.to_string())?;
         let procs = self.procs.lock().map_err(|_| "pi state poisoned")?;
         Ok(
-            json!({"processes": panes.into_iter().filter_map(|pane| procs.get(&pane).map(|proc| json!({"paneId":pane,"pid":proc.pid}))).collect::<Vec<_>>() }),
+            json!({"processes": panes.into_iter().filter_map(|pane| procs.get(&pane).map(|proc| json!({"paneId":pane,"pid":proc.pid,"sessionId":proc.session_id}))).collect::<Vec<_>>() }),
         )
     }
 
@@ -131,123 +203,152 @@ impl PiManager {
         task_id: &str,
         generation: i64,
     ) -> PiResult {
-        let mut procs = self.procs.lock().map_err(|_| "pi state poisoned")?;
-        if let Some(process) = procs.get_mut(pane_id) {
-            match process.child.try_wait() {
-                Ok(None) => {
-                    return Ok(json!({ "ok": true, "attached": true, "pid": process.pid }));
-                }
-                Ok(Some(status)) => {
-                    let stderr = process
-                        .stderr
-                        .lock()
-                        .map(|text| text.clone())
-                        .unwrap_or_default();
-                    procs.remove(pane_id);
-                    if !stderr.trim().is_empty() {
-                        return Err(format!(
-                            "pi exited during startup ({status}): {}",
-                            stderr.trim()
-                        ));
+        // Inspect and remove an exited child while holding the map lock, then release it before
+        // touching the filesystem or spawning. `starting` closes the resulting check/spawn race.
+        {
+            let mut procs = self.procs.lock().map_err(|_| "pi state poisoned")?;
+            if let Some(process) = procs.get_mut(pane_id) {
+                match process.child.try_wait() {
+                    Ok(None) => {
+                        return Ok(json!({ "ok": true, "attached": true, "pid": process.pid }));
                     }
+                    Ok(Some(status)) => {
+                        let stderr = process
+                            .stderr
+                            .lock()
+                            .map(|text| text.clone())
+                            .unwrap_or_default();
+                        procs.remove(pane_id);
+                        if !stderr.trim().is_empty() {
+                            return Err(format!(
+                                "pi exited during startup ({status}): {}",
+                                stderr.trim()
+                            ));
+                        }
+                    }
+                    Err(error) => return Err(format!("Unable to inspect pi process: {error}")),
                 }
-                Err(error) => return Err(format!("Unable to inspect pi process: {error}")),
+            }
+        }
+        {
+            let mut starting = self.starting.lock().map_err(|_| "pi state poisoned")?;
+            if !starting.insert(pane_id.to_string()) {
+                return Err("pi startup already in progress for pane".to_string());
             }
         }
 
-        let temp_dir = std::env::temp_dir();
-        let sudo_extension = temp_dir.join("swath-pi-sudo.ts");
-        let secrets_extension = temp_dir.join("swath-pi-secrets.ts");
-        fs::write(&sudo_extension, PI_SUDO_EXTENSION)
-            .map_err(|err| format!("Unable to prepare Pi sudo integration: {err}"))?;
-        fs::write(&secrets_extension, PI_SECRETS_EXTENSION)
-            .map_err(|err| format!("Unable to prepare Pi secrets integration: {err}"))?;
+        let result: Result<PiProcess, String> = (|| -> Result<PiProcess, String> {
+            let (sudo_extension, secrets_extension) =
+                self.extensions.as_ref().map_err(|error| error.clone())?;
+            let session_id =
+                session_arg(extra_args).unwrap_or_else(|| DEFAULT_SESSION_ID.to_string());
 
-        let mut command = pi_command();
-        command
-            .arg("--mode")
-            .arg("rpc")
-            .arg("--extension")
-            .arg(sudo_extension)
-            .arg("--extension")
-            .arg(secrets_extension)
-            .args(extra_args)
-            .current_dir(cwd)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        command.env("SWATH_PI_AGENT", "1");
-        if let Some(path) = LOGIN_PATH.as_ref() {
-            command.env("PATH", path);
-        }
+            let mut command = pi_command();
+            command
+                .arg("--mode")
+                .arg("rpc")
+                .arg("--extension")
+                .arg(sudo_extension)
+                .arg("--extension")
+                .arg(secrets_extension)
+                .args(extra_args)
+                .current_dir(cwd)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            command.env("SWATH_PI_AGENT", "1");
+            if let Some(path) = LOGIN_PATH.as_ref() {
+                command.env("PATH", path);
+            }
 
-        let mut child = command.spawn().map_err(|err| {
-            format!("Unable to start pi (is it installed and on your shell PATH?): {err}")
-        })?;
+            let mut child = command.spawn().map_err(|err| {
+                format!("Unable to start pi (is it installed and on your shell PATH?): {err}")
+            })?;
 
-        let pid = child.id();
-        let stdin = child.stdin.take();
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| "pi stdout was not captured".to_string())?;
-        let stderr_pipe = child
-            .stderr
-            .take()
-            .ok_or_else(|| "pi stderr was not captured".to_string())?;
-        let stderr = Arc::new(Mutex::new(String::new()));
+            let pid = child.id();
+            let stdin = child.stdin.take();
+            let Some(stdout) = child.stdout.take() else {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err("pi stdout was not captured".to_string());
+            };
+            let Some(stderr_pipe) = child.stderr.take() else {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err("pi stderr was not captured".to_string());
+            };
+            let stderr = Arc::new(Mutex::new(String::new()));
 
-        // stdout: one JSON record per line. `BufRead::lines()` splits on `\n` only, which is
-        // what the RPC framing rules require (U+2028/U+2029 are legal inside JSON strings).
-        {
-            let events = self.events.clone();
-            let pane_id = pane_id.to_string();
-            let data_dir = self.data_dir.clone();
-            let task_id = task_id.to_string();
-            std::thread::spawn(move || {
-                let reader = BufReader::new(stdout);
-                for line in reader.lines() {
-                    let Ok(line) = line else { break };
-                    if line.is_empty() {
-                        continue;
+            // stdout: one JSON record per line. `BufRead::lines()` splits on `\n` only, which is
+            // what the RPC framing rules require (U+2028/U+2029 are legal inside JSON strings).
+            {
+                let events = self.events.clone();
+                let pane_id = pane_id.to_string();
+                let data_dir = self.data_dir.clone();
+                let task_id = task_id.to_string();
+                let session_id = session_id.clone();
+                std::thread::spawn(move || {
+                    let reader = BufReader::new(stdout);
+                    for line in reader.lines() {
+                        let Ok(line) = line else { break };
+                        if line.is_empty() {
+                            continue;
+                        }
+                        // Token deltas are deliberately not persisted; completed events are append-only.
+                        if let Ok(event) = serde_json::from_str::<Value>(&line) {
+                            // A live stream can expose both a provisional `message` and its
+                            // durable `message_end`; persist only the terminal event. JSONL
+                            // imports retain `message` records because those files have no
+                            // corresponding `message_end` entry.
+                            if event.get("type").and_then(Value::as_str) != Some("message") {
+                                let _ = crate::pi_session_store::record(
+                                    &data_dir,
+                                    &task_id,
+                                    &pane_id,
+                                    generation,
+                                    &session_id,
+                                    &event,
+                                );
+                            }
+                        }
+                        events.publish(PI_EVENT, json!({ "paneId": &pane_id, "line": line }));
                     }
-                    // Token deltas are deliberately not persisted; completed events are append-only.
-                    if let Ok(event) = serde_json::from_str::<Value>(&line) {
-                        let _ = crate::pi_session_store::record(
-                            &data_dir, &task_id, &pane_id, generation, &event,
-                        );
-                    }
-                    events.publish(PI_EVENT, json!({ "paneId": &pane_id, "line": line }));
-                }
-                events.publish(PI_EVENT, json!({ "paneId": &pane_id, "exit": true }));
-            });
-        }
+                    events.publish(PI_EVENT, json!({ "paneId": &pane_id, "exit": true }));
+                });
+            }
 
-        // stderr: retained for crash reporting, never forwarded as protocol data.
-        {
-            let stderr = Arc::clone(&stderr);
-            std::thread::spawn(move || {
-                let reader = BufReader::new(stderr_pipe);
-                for line in reader.lines() {
-                    let Ok(line) = line else { break };
-                    let Ok(mut buf) = stderr.lock() else { break };
-                    if buf.len() < STDERR_MAX_BYTES {
-                        buf.push_str(&line);
-                        buf.push('\n');
+            // stderr: retained for crash reporting, never forwarded as protocol data.
+            {
+                let stderr = Arc::clone(&stderr);
+                std::thread::spawn(move || {
+                    let reader = BufReader::new(stderr_pipe);
+                    for line in reader.lines() {
+                        let Ok(line) = line else { break };
+                        let Ok(mut buf) = stderr.lock() else { break };
+                        if buf.len() < STDERR_MAX_BYTES {
+                            buf.push_str(&line);
+                            buf.push('\n');
+                        }
                     }
-                }
-            });
-        }
+                });
+            }
 
-        procs.insert(
-            pane_id.to_string(),
-            PiProcess {
+            Ok(PiProcess {
                 pid,
+                session_id,
                 child,
                 stdin,
                 stderr,
-            },
-        );
+            })
+        })();
+
+        if let Ok(mut starting) = self.starting.lock() {
+            starting.remove(pane_id);
+        }
+        let process = result?;
+        let pid = process.pid;
+        let mut procs = self.procs.lock().map_err(|_| "pi state poisoned")?;
+        procs.insert(pane_id.to_string(), process);
         Ok(json!({ "ok": true, "attached": false, "pid": pid }))
     }
 
@@ -671,11 +772,12 @@ pub fn rpc_at(data_dir: &Path, manager: &PiManager, request: Value) -> PiResult 
         .unwrap_or_default();
     // History is intentionally available without a worktree or a running executor.
     if op == "history" {
-        return crate::pi_session_store::history(
+        return crate::pi_session_store::history_for_session(
             data_dir,
             task_id,
             pane_id,
             generation,
+            request.get("sessionId").and_then(Value::as_str),
             request.get("cursor").and_then(Value::as_i64),
         );
     }
@@ -714,17 +816,16 @@ pub fn rpc_at(data_dir: &Path, manager: &PiManager, request: Value) -> PiResult 
             "files": walk_group_files(Path::new(&cwd), &[])
         })),
         "sessions" => {
-            if let Ok(entries) = fs::read_dir(&cwd) {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if path.extension().is_some_and(|ext| ext == "jsonl") {
-                        let _ = crate::pi_session_store::import_jsonl(
-                            data_dir, task_id, pane_id, generation, &path,
-                        );
-                    }
-                }
+            let dir = request
+                .get("dir")
+                .and_then(Value::as_str)
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| "pi sessions requires dir".to_string())?;
+            let path = Path::new(dir);
+            if !path.is_dir() {
+                return Err("pi session directory is not available".to_string());
             }
-            Ok(json!({ "sessions": list_sessions(Path::new(&cwd)) }))
+            Ok(json!({ "sessions": list_sessions(path) }))
         }
         "" => Err("Invalid pi request: missing op".into()),
         other => Err(format!("Unknown pi operation: {other}")),
@@ -771,6 +872,32 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
+    #[test]
+    fn session_identity_is_taken_only_from_start_arguments() {
+        assert_eq!(
+            session_arg(&["--session".into(), "/tmp/a.jsonl".into()]).as_deref(),
+            Some("/tmp/a.jsonl")
+        );
+        assert_eq!(
+            session_arg(&["--session=/tmp/b.jsonl".into()]).as_deref(),
+            Some("/tmp/b.jsonl")
+        );
+        assert_eq!(session_arg(&["--session".into(), "--name".into()]), None);
+    }
+
+    #[test]
+    fn extensions_are_private_to_the_manager_data_directory() {
+        let root = std::env::temp_dir().join(format!("swath-pi-ext-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let manager = PiManager::new(crate::events::ConnectorEvents::new(), root.clone());
+        let (sudo, secrets) = manager.extensions.as_ref().unwrap();
+        assert!(sudo.starts_with(&root));
+        assert!(secrets.starts_with(&root));
+        assert_eq!(fs::read_to_string(sudo).unwrap(), PI_SUDO_EXTENSION);
+        assert_eq!(fs::read_to_string(secrets).unwrap(), PI_SECRETS_EXTENSION);
+        let _ = fs::remove_dir_all(root);
+    }
+
     /// `@` completion on a group's shared agent has to reach the group's other folders, and a
     /// mention only resolves there when it is absolute.
     #[test]
@@ -803,7 +930,9 @@ mod tests {
             .unwrap();
         assert!(ensure.contains("attached"));
         assert!(!ensure.contains("self.kill(pane_id)?"));
-        assert_eq!(ensure.matches("self.procs.lock").count(), 1);
+        // The map is checked before spawn and populated after it; the lock is deliberately not
+        // held across filesystem writes or `command.spawn`.
+        assert!(ensure.matches("self.procs.lock").count() >= 2);
         assert!(ensure.find("self.procs.lock").unwrap() < ensure.find("command.spawn").unwrap());
     }
 
@@ -839,6 +968,7 @@ mod tests {
             "pane".into(),
             PiProcess {
                 pid,
+                session_id: DEFAULT_SESSION_ID.to_string(),
                 child,
                 stdin,
                 stderr,

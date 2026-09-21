@@ -26,13 +26,7 @@ import {
 import { reportError } from "../../../lib/errorLog";
 import { piPaneCache, resumedSessions, spawnedPanes, mountPiPaneEventCache } from "./piPaneCache";
 import { reportStreaming } from "./piActivity";
-import {
-  applyPiHistory,
-  loadPiHistory,
-  savePiHistory,
-  type CachedPiHistory,
-  type PiHistoryStatus,
-} from "./piHistoryCache";
+import { loadPiHistoryForPane, syncPiHistory, type PiHistoryStatus } from "./piHistoryCache";
 
 type Action =
   | { type: "line"; line: string }
@@ -42,6 +36,27 @@ type Action =
   | { type: "dismissNotice"; id: string }
   | { type: "hydrate"; state: PiPaneState }
   | { type: "reset" };
+
+function errorMessage(error: unknown): string {
+  if (error instanceof Error && error.message) return error.message;
+  if (typeof error === "string" && error.trim()) return error;
+  if (typeof error === "object" && error !== null) {
+    try {
+      const encoded = JSON.stringify(error);
+      if (encoded && encoded !== "{}") return encoded;
+    } catch {
+      // Fall through to the stable generic message below.
+    }
+  }
+  return String(error || "Unknown Pi RPC error");
+}
+
+function rpcFailure(result: unknown): string | null {
+  if (typeof result !== "object" || result === null || !("ok" in result)) return null;
+  if ((result as { ok?: unknown }).ok !== false) return null;
+  const detail = (result as { error?: unknown }).error;
+  return detail === undefined ? "Pi RPC request failed" : errorMessage(detail);
+}
 
 function reducer(state: PiPaneState, action: Action): PiPaneState {
   switch (action.type) {
@@ -60,7 +75,9 @@ function reducer(state: PiPaneState, action: Action): PiPaneState {
     case "dismissNotice":
       return dismissNotice(state, action.id);
     case "hydrate":
-      return action.state;
+      // History is an offline fallback. Once the live executor has emitted a transcript (or is
+      // actively streaming), a late sync response must never replace it with a stale partition.
+      return state.entries.length > 0 || state.isStreaming ? state : action.state;
     case "reset":
       return initialPiPaneState();
     default:
@@ -132,13 +149,19 @@ export function prewarmPiAgent(
   ];
   void window.swath.pi
     .rpc({ op: "spawn", paneId, cwd, args })
-    .then(() =>
-      window.swath.pi.rpc({
+    .then((result) => {
+      const failure = rpcFailure(result);
+      if (failure) throw new Error(failure);
+      return window.swath.pi.rpc({
         op: "send",
         paneId,
         line: JSON.stringify({ type: "prompt", message: start.task }),
-      }),
-    )
+      });
+    })
+    .then((result) => {
+      const failure = rpcFailure(result);
+      if (failure) throw new Error(failure);
+    })
     .catch(() => spawnedPanes.delete(paneId));
 }
 
@@ -153,24 +176,30 @@ export function usePiAgent(
   taskExecution?: Omit<PiExecutionTarget, "paneId"> & { networkId?: string; readOnly?: boolean },
 ): PiAgentController {
   useEffect(() => mountPiPaneEventCache(paneId), [paneId]);
+  const hasTaskExecution = Boolean(taskExecution);
+  const taskId = taskExecution?.taskId;
+  const networkId = taskExecution?.networkId;
+  const executionGeneration = taskExecution?.executionGeneration;
+  const readOnly = taskExecution?.readOnly;
   const target = useMemo(
     () => ({
       paneId,
-      ...(taskExecution
+      ...(hasTaskExecution
         ? {
-            taskId: taskExecution.taskId,
-            networkId: taskExecution.networkId,
-            executionGeneration: taskExecution.executionGeneration,
-            readOnly: taskExecution.readOnly,
+            taskId,
+            networkId,
+            executionGeneration,
+            readOnly,
           }
         : {}),
     }),
     [
       paneId,
-      taskExecution?.executionGeneration,
-      taskExecution?.networkId,
-      taskExecution?.readOnly,
-      taskExecution?.taskId,
+      hasTaskExecution,
+      taskId,
+      networkId,
+      executionGeneration,
+      readOnly,
     ],
   );
 
@@ -206,19 +235,23 @@ export function usePiAgent(
 
   const send = useCallback(
     (command: PiCommandMessage) => {
-      if (taskExecution?.readOnly) return;
+      if (readOnly) return;
       const operation =
         command.type === "prompt" || command.type === "follow_up"
           ? { operationId: crypto.randomUUID() }
           : {};
       void window.swath.pi
         .rpc({ op: "send", ...target, ...operation, line: JSON.stringify(command) })
+        .then((result) => {
+          const failure = rpcFailure(result);
+          if (failure) throw new Error(failure);
+        })
         .catch((error: unknown) => {
           spawnedPanes.delete(paneId);
-          dispatch({ type: "error", message: String(error) });
+          dispatch({ type: "error", message: errorMessage(error) });
         });
     },
-    [target, taskExecution?.readOnly],
+    [paneId, readOnly, target],
   );
 
   /** The startup handshake for a freshly spawned child. */
@@ -286,10 +319,10 @@ export function usePiAgent(
       .then((result) => {
         // The host rejects on failure, but a transport that resolves with `{ ok: false }`
         // (the browser fixture) must not leave the pane silently stuck on "Starting pi…".
-        const failure = result as { ok?: boolean; error?: string } | null;
-        if (failure && failure.ok === false) {
+        const failure = rpcFailure(result);
+        if (failure) {
           spawnedPanes.delete(paneId);
-          dispatch({ type: "error", message: failure.error ?? "Unable to start pi" });
+          dispatch({ type: "error", message: failure });
           return;
         }
         requestFullState();
@@ -300,7 +333,7 @@ export function usePiAgent(
       })
       .catch((error: unknown) => {
         spawnedPanes.delete(paneId);
-        dispatch({ type: "error", message: String(error) });
+        dispatch({ type: "error", message: errorMessage(error) });
       });
   }, [
     cwd,
@@ -339,7 +372,7 @@ export function usePiAgent(
         handleLine(eventPaneId, line, exited);
       } catch (error) {
         reportError("pi event handler", error);
-        dispatch({ type: "error", message: String(error) });
+        dispatch({ type: "error", message: errorMessage(error) });
       }
     });
 
@@ -401,7 +434,9 @@ export function usePiAgent(
   useEffect(() => {
     if (!taskExecution?.taskId) return;
     let active = true;
-    setHistoryReady(false);
+    queueMicrotask(() => {
+      if (active) setHistoryReady(false);
+    });
     const scope = {
       networkId: taskExecution.networkId ?? "",
       taskId: taskExecution.taskId,
@@ -409,41 +444,44 @@ export function usePiAgent(
       sessionId: initialSessionFile ?? "default",
       executionGeneration: taskExecution.executionGeneration ?? 0,
     };
-    const hydrate = (cached: CachedPiHistory): void => {
+    const hydrate = (cached: Awaited<ReturnType<typeof loadPiHistoryForPane>>): void => {
+      if (!cached) return;
       let restored = initialPiPaneState();
       for (const record of cached.records) restored = reducePiEvent(restored, record.event);
       dispatch({ type: "hydrate", state: restored });
     };
     void (async () => {
-      let cached: CachedPiHistory | null = null;
+      let cached = null as Awaited<ReturnType<typeof loadPiHistoryForPane>>;
       try {
         // Render the local partition first; the network request only catches it up afterwards.
-        if (scope.networkId) cached = await loadPiHistory(scope);
+        if (scope.networkId) cached = await loadPiHistoryForPane(scope);
         if (cached && active) {
           hydrate(cached);
           setHistory({ status: "local", cursor: cached.cursor, conflicts: [] });
         }
         // Replication is independent of Pi process control: completed/offline inspection never
         // routes through `pi.rpc(history)`, which could otherwise ensure a child.
-        let reply = await window.swath.sync.changes(scope.networkId, cached?.cursor ?? null);
-        if (reply.code === "cursor_expired")
-          reply = await window.swath.sync.snapshot(scope.networkId);
-        const replyScope = { ...scope, networkId: reply.networkId };
-        if (!cached && scope.networkId !== reply.networkId)
-          cached = await loadPiHistory(replyScope);
-        const next = applyPiHistory(cached, reply, replyScope);
-        await savePiHistory({ ...next, status: "pending" });
+        await syncPiHistory(scope);
+        const next = scope.networkId ? await loadPiHistoryForPane(scope) : null;
         if (active) {
-          hydrate(next);
-          setHistory({ status: "pending", cursor: next.cursor, conflicts: [] });
+          if (next) hydrate(next);
+          setHistory({
+            status: "synced",
+            cursor: next?.cursor ?? cached?.cursor ?? null,
+            conflicts: [],
+          });
         }
-        const ack = await window.swath.sync.ack(reply.networkId, next.cursor);
-        if (!ack.ok) return;
-        const conflicts = await window.swath.sync.conflicts(reply.networkId);
-        await savePiHistory(next);
+        const conflicts = scope.networkId
+          ? await window.swath.sync.conflicts(scope.networkId)
+          : { conflicts: [] };
         if (active)
-          setHistory({ status: next.status, cursor: next.cursor, conflicts: conflicts.conflicts });
-      } catch {
+          setHistory({
+            status: "synced",
+            cursor: next?.cursor ?? cached?.cursor ?? null,
+            conflicts: conflicts.conflicts,
+          });
+      } catch (error) {
+        reportError("Syncing Pi history", error);
         if (cached && active) setHistory({ status: "local", cursor: cached.cursor, conflicts: [] });
         else if (active) setHistory({ status: "unavailable", cursor: null, conflicts: [] });
       } finally {
@@ -488,7 +526,8 @@ export function usePiAgent(
         window.clearInterval(timer);
         dispatch({
           type: "error",
-          message: "Pi started, but its state did not arrive. Check the executor connection, then Restart pi.",
+          message:
+            "Pi started, but its state did not arrive. Check the executor connection, then Restart pi.",
         });
         return;
       }

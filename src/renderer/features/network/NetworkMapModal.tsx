@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import type { Network, NetworkHealth, NetworkMember } from "../../../shared/types";
+import type { Network, NetworkMember } from "../../../shared/types";
 import { useTaskStore } from "../../state/taskStore";
 import { IconClose } from "../shell/icons";
 import { usePiActivityStore } from "../tabTypes/piAgent/piActivity";
@@ -23,11 +23,16 @@ function stateLabel(node: NetworkGraphNode): string {
 }
 
 export function NetworkMapModal({ open, onClose }: NetworkMapModalProps): JSX.Element | null {
-  const { catalog, devices, networkId } = useTaskStore();
+  const {
+    catalog,
+    devices,
+    members: catalogMembers,
+    networkId,
+    refresh: refreshCatalog,
+  } = useTaskStore();
   const activity = usePiActivityStore((state) => state.activity);
   const [network, setNetwork] = useState<Network | null>(null);
   const [members, setMembers] = useState<NetworkMember[]>([]);
-  const [health, setHealth] = useState<NetworkHealth | null>(null);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
     if (!open) return;
@@ -41,15 +46,14 @@ export function NetworkMapModal({ open, onClose }: NetworkMapModalProps): JSX.El
     let active = true;
     const refresh = async () => {
       try {
-        const [snapshot, nextMembers, nextHealth] = await Promise.all([
+        const [snapshot, nextMembers] = await Promise.all([
           window.swath.network.current(),
           window.swath.network.membership(networkId),
-          window.swath.network.health(networkId),
+          refreshCatalog(),
         ]);
         if (!active) return;
         setNetwork(snapshot?.network ?? null);
         setMembers(nextMembers);
-        setHealth(nextHealth);
         setError(null);
       } catch (cause) {
         if (active)
@@ -62,11 +66,23 @@ export function NetworkMapModal({ open, onClose }: NetworkMapModalProps): JSX.El
       active = false;
       window.clearInterval(timer);
     };
-  }, [networkId, open]);
+  }, [networkId, open, refreshCatalog]);
 
+  const authoritativeMembers = useMemo(() => {
+    const live = new Map(members.map((member) => [member.deviceId, member]));
+    return devices.map((device) => {
+      const catalogMember = catalogMembers.find((member) => member.deviceId === device.id);
+      const observed = live.get(device.id);
+      return {
+        deviceId: device.id,
+        voter: catalogMember?.voter ?? false,
+        healthy: observed?.healthy ?? catalogMember?.healthy ?? false,
+      };
+    });
+  }, [catalogMembers, devices, members]);
   const graph = useMemo(
-    () => buildNetworkGraph(devices, members, catalog.tasks, catalog.panes, activity),
-    [activity, catalog.panes, catalog.tasks, devices, members],
+    () => buildNetworkGraph(devices, authoritativeMembers, catalog.tasks, catalog.panes, activity),
+    [activity, authoritativeMembers, catalog.panes, catalog.tasks, devices],
   );
   if (!open) return null;
 
@@ -90,17 +106,11 @@ export function NetworkMapModal({ open, onClose }: NetworkMapModalProps): JSX.El
                 {network?.name ?? "Swath network"}
               </h2>
             </div>
-            <p className="text-sm text-swath-muted">Devices connected through the shared server · updates every 5 seconds</p>
+            <p className="text-sm text-swath-muted">
+              Devices connected through the shared server · updates every 5 seconds
+            </p>
           </div>
           <div className="flex items-center gap-3">
-            {health ? (
-              <span
-                className={`rounded-full border px-3 py-1 text-xs font-medium ${health.quorum ? "border-[rgba(63,185,80,0.35)] text-swath-good" : "border-[rgba(248,81,73,0.4)] text-swath-danger"}`}
-              >
-                {health.quorum ? "Quorum healthy" : "Quorum unavailable"} · {health.healthyVoters}/
-                {health.voters} voters
-              </span>
-            ) : null}
             <button
               type="button"
               aria-label="Close network map"
@@ -150,7 +160,6 @@ export function NetworkMapModal({ open, onClose }: NetworkMapModalProps): JSX.El
                 ))}
                 {graph.nodes.map((node) => {
                   const color = stateColor[node.state];
-                  const leader = health?.leaderId === node.device.id;
                   return (
                     <g key={node.device.id} transform={`translate(${node.x} ${node.y})`}>
                       <rect
@@ -181,17 +190,6 @@ export function NetworkMapModal({ open, onClose }: NetworkMapModalProps): JSX.El
                       <text x="-82" y="25" fill={color} fontSize="10.5">
                         {stateLabel(node)}
                       </text>
-                      {leader ? (
-                        <text
-                          y="-51"
-                          textAnchor="middle"
-                          fill="#58a6ff"
-                          fontSize="10"
-                          fontWeight="700"
-                        >
-                          LEADER
-                        </text>
-                      ) : null}
                     </g>
                   );
                 })}

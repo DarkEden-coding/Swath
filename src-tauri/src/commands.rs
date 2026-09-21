@@ -1,10 +1,42 @@
 use crate::types::*;
-use crate::{ask_images, config, files, git, migration, network, platform, AppState};
+use crate::{ask_images, config, migration, network, platform, AppState};
 use futures_util::future::join_all;
 use rusqlite::{params, OptionalExtension};
 use tauri::{AppHandle, Manager, State, Window};
 
 pub type CommandResult<T> = Result<T, String>;
+
+/// Returns whether an RPC carries an identity that the connector can resolve to a task.
+///
+/// The cwd in renderer payloads is intentionally not trusted: only the task owner knows the
+/// authoritative worktree path and current execution generation.  Keep pane/session identities
+/// here for compatibility with the connector's existing task-address resolution, but never allow
+/// an entirely unscoped request to fall through to a local filesystem operation.
+fn request_has_execution_scope(request: &serde_json::Value) -> bool {
+    ["taskId", "paneId", "sessionId"].iter().any(|field| {
+        request
+            .get(*field)
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|value| !value.trim().is_empty())
+    })
+}
+
+fn scope_required_error(method: &str) -> String {
+    serde_json::json!({
+        "code": "task_scope_required",
+        "method": method,
+        "message": "task scope is required for this operation"
+    })
+    .to_string()
+}
+
+fn enrollment_error(code: &str) -> String {
+    serde_json::json!({ "code": code }).to_string()
+}
+
+fn enrollment_http_error(code: &str, status: reqwest::StatusCode) -> String {
+    serde_json::json!({ "code": code, "status": status.as_u16() }).to_string()
+}
 
 #[tauri::command]
 pub fn platform() -> String {
@@ -225,17 +257,13 @@ pub async fn git_rpc(
     request: serde_json::Value,
 ) -> CommandResult<serde_json::Value> {
     let state = app.state::<AppState>();
-    if request.get("taskId").is_some()
-        || request.get("paneId").is_some()
-        || request.get("sessionId").is_some()
-    {
+    if request_has_execution_scope(&request) {
         return state.remote.dispatch("git.rpc", request).await;
     }
-    tauri::async_runtime::spawn_blocking(move || {
-        git::rpc(&app, request).map_err(|err| err.to_string())
-    })
-    .await
-    .map_err(|err| err.to_string())?
+    // A renderer-supplied cwd is only a display hint for task-scoped RPCs.  Running the
+    // legacy local implementation here lets an unscoped renderer request operate on any
+    // directory readable by the desktop process, bypassing ownership, generation, and fences.
+    Err(scope_required_error("git.rpc"))
 }
 
 #[tauri::command]
@@ -250,15 +278,12 @@ pub async fn files_rpc(
     state: State<'_, AppState>,
     request: serde_json::Value,
 ) -> CommandResult<serde_json::Value> {
-    if request.get("taskId").is_some()
-        || request.get("paneId").is_some()
-        || request.get("sessionId").is_some()
-    {
+    if request_has_execution_scope(&request) {
         return state.remote.dispatch("files.rpc", request).await;
     }
-    tauri::async_runtime::spawn_blocking(move || files::rpc(request))
-        .await
-        .map_err(|err| err.to_string())?
+    // Keep the command fail-closed.  The local cwd fallback was an ownership bypass for both
+    // reads and mutations, including retired and frozen task worktrees.
+    Err(scope_required_error("files.rpc"))
 }
 
 #[tauri::command]
@@ -444,7 +469,7 @@ pub async fn network_request_join(
     enrollment_secret: String,
 ) -> CommandResult<serde_json::Value> {
     if enrollment_secret.len() < 16 {
-        return Err("enrollment secret must be at least 16 characters".into());
+        return Err(enrollment_error("enrollment_secret_too_short"));
     }
     let conn = network_connection(&state)?;
     let endpoint = endpoint.trim_end_matches('/');
@@ -460,19 +485,19 @@ pub async fn network_request_join(
         return Ok(serde_json::json!({"enrollmentId":enrollment_id,"state":"pending"}));
     }
     let enrollment_id = network::random_id(&conn, "enroll").map_err(|e| e.to_string())?;
-    let coordinator =
-        reqwest::Url::parse(endpoint).map_err(|_| "invalid coordinator endpoint".to_string())?;
+    let coordinator = reqwest::Url::parse(endpoint)
+        .map_err(|_| enrollment_error("invalid_coordinator_endpoint"))?;
     if coordinator.scheme() != "https"
         && !matches!(
             coordinator.host_str(),
             Some("127.0.0.1" | "localhost" | "::1")
         )
     {
-        return Err("coordinator must use HTTPS (HTTP is only allowed for loopback tests)".into());
+        return Err(enrollment_error("coordinator_https_required"));
     }
     let connector = state.remote.status();
     if !connector.running {
-        return Err("connector must be running before requesting enrollment".into());
+        return Err(enrollment_error("connector_not_running"));
     }
     let connector_endpoint = connector.https_url.unwrap_or_else(|| {
         format!(
@@ -482,11 +507,11 @@ pub async fn network_request_join(
         )
     });
     let joining = reqwest::Url::parse(&connector_endpoint)
-        .map_err(|_| "invalid local connector endpoint".to_string())?;
+        .map_err(|_| enrollment_error("invalid_connector_endpoint"))?;
     if joining.scheme() != "https"
         && !matches!(joining.host_str(), Some("127.0.0.1" | "localhost" | "::1"))
     {
-        return Err("joining connector must be reachable via Tailscale HTTPS (HTTP is only allowed for loopback tests)".into());
+        return Err(enrollment_error("connector_https_required"));
     }
     let node_id: i64 = conn
         .query_row("SELECT abs(random())", [], |r| r.get(0))
@@ -496,13 +521,24 @@ pub async fn network_request_join(
         .and_then(|v| v.into_string().ok())
         .unwrap_or_else(|| "swath-device".into());
     let metadata = serde_json::json!({"displayName":hostname,"hostname":hostname,"platform":std::env::consts::OS});
-    let response = reqwest::Client::new().post(format!("{endpoint}/api/enrollment/request"))
+    // Bound both connection establishment and the complete response.  Enrollment is a UI
+    // operation and must not leave the command (or its caller) waiting forever on a peer.
+    let client = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(3))
+        .timeout(std::time::Duration::from_secs(10))
+        // Do not follow a coordinator redirect to an unvalidated host or scheme.
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|_| enrollment_error("http_client_unavailable"))?;
+    let response = client.post(format!("{endpoint}/api/enrollment/request"))
         .json(&serde_json::json!({"networkId":network_id,"enrollmentId":enrollment_id,"secret":enrollment_secret,"nodeId":node_id,"connectorEndpoint":connector_endpoint,"metadata":metadata}))
-        .send().await.map_err(|e| format!("coordinator_unreachable: {e}"))?;
+        .send().await.map_err(|_| enrollment_error("coordinator_unreachable"))?;
     if !response.status().is_success() {
-        return Err(format!(
-            "join_request_rejected: {}",
-            response.text().await.unwrap_or_default()
+        // Never return the coordinator response body: it is untrusted and may contain secrets,
+        // internal paths, or arbitrarily large attacker-controlled text.
+        return Err(enrollment_http_error(
+            "join_request_rejected",
+            response.status(),
         ));
     }
     // This is a device-local pending credential, not catalog state. It survives restart so the
@@ -892,4 +928,52 @@ pub async fn remote_server_stop(state: State<'_, AppState>) -> CommandResult<()>
 #[tauri::command]
 pub fn remote_server_status(state: State<'_, AppState>) -> crate::remote::RemoteServerStatus {
     state.remote.status()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn execution_scope_requires_a_non_empty_identity() {
+        assert!(!request_has_execution_scope(&serde_json::json!({
+            "op": "readText",
+            "cwd": "/tmp/worktree"
+        })));
+        assert!(!request_has_execution_scope(&serde_json::json!({
+            "taskId": "   ",
+            "paneId": null,
+            "sessionId": 42
+        })));
+        assert!(request_has_execution_scope(
+            &serde_json::json!({ "taskId": "task-1" })
+        ));
+        assert!(request_has_execution_scope(
+            &serde_json::json!({ "paneId": "pane-1" })
+        ));
+        assert!(request_has_execution_scope(
+            &serde_json::json!({ "sessionId": "session-1" })
+        ));
+    }
+
+    #[test]
+    fn scope_errors_are_structured_without_request_details() {
+        let error: serde_json::Value =
+            serde_json::from_str(&scope_required_error("files.rpc")).unwrap();
+        assert_eq!(error["code"], "task_scope_required");
+        assert_eq!(error["method"], "files.rpc");
+        assert!(error.get("cwd").is_none());
+    }
+
+    #[test]
+    fn enrollment_http_errors_keep_only_safe_status_metadata() {
+        let error: serde_json::Value = serde_json::from_str(&enrollment_http_error(
+            "join_request_rejected",
+            reqwest::StatusCode::BAD_REQUEST,
+        ))
+        .unwrap();
+        assert_eq!(error["code"], "join_request_rejected");
+        assert_eq!(error["status"], 400);
+        assert!(error.get("body").is_none());
+    }
 }

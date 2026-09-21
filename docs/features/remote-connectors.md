@@ -1,8 +1,10 @@
 # Remote connectors
 
-Swath can expose one running desktop instance to other Swath apps and web browsers. The connector
-is designed for a private Tailscale network, but still requires a bearer token so another process
-on the tailnet cannot silently take over a shell.
+Swath can expose a running desktop executor or the always-on catalog server to other Swath apps
+and web browsers. The connector is designed for a private Tailscale network, but still requires a
+bearer token so another process on the tailnet cannot silently take over a shell. Shared catalog
+writes are committed by the configured catalog server; desktop devices execute work and are not
+catalog voters.
 
 ## Host a device
 
@@ -23,10 +25,11 @@ HttpOnly, SameSite cookie and immediately redirects to `/`, keeping the token ou
 navigation. Static hashed assets are cached; the HTML entrypoint is not.
 
 Server-oriented installs can auto-start without opening Settings by defining
-`SWATH_CONNECTOR_TOKEN` and, optionally, `SWATH_CONNECTOR_BIND` (default `127.0.0.1`) and
-`SWATH_CONNECTOR_PORT` (default `7878`) before launching Swath. Set
-`SWATH_CONNECTOR_TAILSCALE_HTTPS=1` to configure Tailscale Serve automatically. The equivalent
-manual command is:
+`SWATH_CONNECTOR_TOKEN` and an absolute `SWATH_DATA_DIR` before launching the headless binary.
+`SWATH_CONNECTOR_BIND` (default `127.0.0.1`) and `SWATH_CONNECTOR_PORT` (default `7878`) configure
+the listener. Set `SWATH_CONNECTOR_TAILSCALE_HTTPS=1` to configure Tailscale Serve automatically;
+`SWATH_CONNECTOR_TAILSCALE_HTTPS_PORT` selects a non-default HTTPS port and
+`SWATH_CONNECTOR_ALLOWED_ORIGINS` restricts browser origins. The equivalent manual command is:
 
 ```sh
 tailscale serve --bg --yes --https=443 http://127.0.0.1:7878
@@ -59,3 +62,11 @@ batched. Reconnect uses a two-second backoff while consumers are subscribed.
 Tailscale Serve terminates HTTPS at the local Tailscale daemon, then proxies over loopback to Swath.
 The public internet cannot reach the service; this is Serve, not Funnel. Swath's token remains
 mandatory because tailnet membership alone does not authorize terminal access.
+
+## Enrollment and catalog authority
+
+New executors enroll through the catalog server and receive device-scoped connector capabilities.
+Keep enrollment credentials in the device-local environment/configuration; never put them in this
+documentation or a deployment commit. If the catalog server is unavailable, existing desktop
+sessions may continue locally, but shared catalog writes and the hosted web UI are unavailable
+until the server recovers.

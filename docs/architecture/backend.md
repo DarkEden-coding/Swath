@@ -1,12 +1,17 @@
 # Backend architecture
 
-This is the Rust/Tauri side of the app.
+This is the Rust/Tauri side of the app. The same Rust library also powers the package-free
+`swath-headless` binary used by a network catalog server.
 
 ## Startup
 
 - `src-tauri/src/main.rs` starts the library.
 - `src-tauri/src/lib.rs` builds the Tauri app, registers plugins, installs the menu, and manages `AppState`.
 - `AppState` currently owns `TerminalManager`.
+- `src-tauri/src/runtime.rs` owns the shared `Core`, configured data directory, connector, and
+  executor lifecycle. `src-tauri/src/headless.rs` starts this runtime without a display.
+- Network/catalog modules persist the single-server catalog and route authenticated executor
+  requests. Desktop processes are clients/executors; they are not coordinators.
 
 ## Commands
 
@@ -24,6 +29,8 @@ This is the Rust/Tauri side of the app.
 - `src-tauri/src/config.rs` stores `AppConfig` in `swath.sqlite3`.
 - It normalizes missing defaults and migrates older config paths.
 - This is the source of truth for workspaces, views, panes, settings, and shell profiles.
+- The network catalog uses the same configured data directory. Headless deployments must provide
+  an absolute `SWATH_DATA_DIR`; deployment defaults use `$HOME/.local/share/swath`.
 
 ## Terminal runtime
 

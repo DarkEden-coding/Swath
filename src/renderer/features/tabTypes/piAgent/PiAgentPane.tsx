@@ -39,6 +39,34 @@ import type { PiNotice } from "./eventReducer";
 const BOTTOM_TOLERANCE_PX = 2;
 const USER_SCROLL_INTENT_MS = 250;
 
+function taskRpcError(reply: unknown): string | null {
+  if (typeof reply !== "object" || reply === null || !("ok" in reply)) return null;
+  if ((reply as { ok?: unknown }).ok !== false) return null;
+  const detail = (reply as { error?: unknown }).error;
+  if (typeof detail === "string" && detail.trim()) return detail;
+  try {
+    return detail === undefined ? "Task operation failed" : JSON.stringify(detail);
+  } catch {
+    return "Task operation failed";
+  }
+}
+
+function reportTaskRpcError(operation: string, error: unknown): void {
+  if (error instanceof Error) {
+    reportError(operation, error);
+    return;
+  }
+  if (typeof error === "string" && error.trim()) {
+    reportError(operation, new Error(error));
+    return;
+  }
+  try {
+    reportError(operation, new Error(JSON.stringify(error) || "Task operation failed"));
+  } catch {
+    reportError(operation, new Error("Task operation failed"));
+  }
+}
+
 /** Uses the first task line as a readable tab name when no explicit title was provided. */
 function agentTabTitle(request: PiAgentTabRequest): string {
   return request.title?.trim() || request.task.trim().split(/\r?\n/, 1)[0]!.slice(0, 60) || "Agent";
@@ -135,7 +163,12 @@ export function PiAgentPane({
             kind: "piAgent",
             title: agentTabTitle(request),
           })
-          .then(() => useTaskStore.getState().refresh());
+          .then((reply) => {
+            const error = taskRpcError(reply);
+            if (error) throw new Error(error);
+            return useTaskStore.getState().refresh();
+          })
+          .catch((error: unknown) => reportTaskRpcError("Creating Pi task pane", error));
       } else {
         appActions.createPiAgentTab(workspace.id, agentTabTitle(request), {
           prompt: request.task,
@@ -163,9 +196,15 @@ export function PiAgentPane({
           : "History unavailable";
   const [showHistoryStatus, setShowHistoryStatus] = useState(true);
   useEffect(() => {
-    setShowHistoryStatus(true);
+    let active = true;
+    queueMicrotask(() => {
+      if (active) setShowHistoryStatus(true);
+    });
     const timer = window.setTimeout(() => setShowHistoryStatus(false), 1_000);
-    return () => window.clearTimeout(timer);
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
+    };
   }, [historyLabel]);
   const sessionFile = state.state?.sessionFile;
   const sessionPersistenceRef = useRef<string | null>(null);
@@ -184,18 +223,14 @@ export function PiAgentPane({
             operationId: `pane-session:${paneId}:${sessionFile}`,
           })
           .then((reply) => {
-            if (
-              reply &&
-              typeof reply === "object" &&
-              "ok" in reply &&
-              (reply as { ok?: unknown }).ok === true
-            )
-              return useTaskStore.getState().refresh();
+            const error = taskRpcError(reply);
+            if (error) throw new Error(error);
+            return useTaskStore.getState().refresh();
           })
           .catch((error: unknown) => {
             // Session persistence is bookkeeping, not process health. Keep the live pane stable
             // if the replicated catalog is briefly locked or behind its leader.
-            reportError("Persisting Pi session", error);
+            reportTaskRpcError("Persisting Pi session", error);
           });
       } else {
         appActions.setPanePiSessionFile(workspace.id, view.id, paneId, sessionFile);
@@ -443,21 +478,36 @@ export function PiAgentPane({
           if (taskExecution?.taskId)
             void window.swath.tasks
               .rpc({ op: "createPane", taskId: taskExecution.taskId, kind: kind ?? "terminal" })
-              .then(() => useTaskStore.getState().refresh());
+              .then((reply) => {
+                const error = taskRpcError(reply);
+                if (error) throw new Error(error);
+                return useTaskStore.getState().refresh();
+              })
+              .catch((error: unknown) => reportTaskRpcError("Splitting task pane", error));
           else appActions.splitPane(workspace.id, view.id, paneId, "vertical", kind);
         }}
         onSplitDown={(kind) => {
           if (taskExecution?.taskId)
             void window.swath.tasks
               .rpc({ op: "createPane", taskId: taskExecution.taskId, kind: kind ?? "terminal" })
-              .then(() => useTaskStore.getState().refresh());
+              .then((reply) => {
+                const error = taskRpcError(reply);
+                if (error) throw new Error(error);
+                return useTaskStore.getState().refresh();
+              })
+              .catch((error: unknown) => reportTaskRpcError("Splitting task pane", error));
           else appActions.splitPane(workspace.id, view.id, paneId, "horizontal", kind);
         }}
         onClose={() => {
           if (taskExecution?.taskId)
             void window.swath.tasks
               .rpc({ op: "removePane", taskId: taskExecution.taskId, paneId })
-              .then(() => useTaskStore.getState().refresh());
+              .then((reply) => {
+                const error = taskRpcError(reply);
+                if (error) throw new Error(error);
+                return useTaskStore.getState().refresh();
+              })
+              .catch((error: unknown) => reportTaskRpcError("Removing task pane", error));
           else appActions.closePane(workspace.id, view.id, paneId);
         }}
       >
@@ -577,30 +627,32 @@ export function PiAgentPane({
               <div className="border-t border-swath-border py-3 text-xs text-swath-muted">
                 Read-only task — resume it to send Pi messages.
               </div>
-            ) : <Composer
-              paneId={paneId}
-              cwd={cwd}
-              commands={commands}
-              streaming={state.isStreaming}
-              thinkingLevel={state.state?.thinkingLevel}
-              value={draft}
-              images={images}
-              pastes={pastes}
-              onChange={setDraft}
-              onImagesChange={setImages}
-              onPastesChange={setPastes}
-              onSubmit={(message, images) => {
-                pinToBottom();
-                if (!images.length && runUiCommand(message)) {
+            ) : (
+              <Composer
+                paneId={paneId}
+                cwd={cwd}
+                commands={commands}
+                streaming={state.isStreaming}
+                thinkingLevel={state.state?.thinkingLevel}
+                value={draft}
+                images={images}
+                pastes={pastes}
+                onChange={setDraft}
+                onImagesChange={setImages}
+                onPastesChange={setPastes}
+                onSubmit={(message, images) => {
+                  pinToBottom();
+                  if (!images.length && runUiCommand(message)) {
+                    setDraft("");
+                    return;
+                  }
+                  agent.prompt(message, images);
                   setDraft("");
-                  return;
-                }
-                agent.prompt(message, images);
-                setDraft("");
-              }}
-              onCycleModel={cycleScopedModel}
-              onCycleThinking={agent.cycleThinking}
-            />}
+                }}
+                onCycleModel={cycleScopedModel}
+                onCycleThinking={agent.cycleThinking}
+              />
+            )}
 
             {renderWidgets(widgetsBelow)}
 

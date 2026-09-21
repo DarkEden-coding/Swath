@@ -135,7 +135,6 @@ export function GitManagerPane({ workspace, view, pane }: PaneComponentProps): J
 
   useEffect(() => {
     if (!isActive) return;
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     void refresh({ fetch: true });
     const interval = window.setInterval(() => void refreshGraph(), REMOTE_REFRESH_INTERVAL_MS);
     return () => window.clearInterval(interval);

@@ -6,7 +6,7 @@ import {
   imagePreviewSource,
   imagesForText,
 } from "./Composer";
-import { makePastes, tokenSpanAfter, tokenSpanBefore } from "./placeholders";
+import { tokenSpanBefore } from "./placeholders";
 import type { AttachedImage } from "./piPaneCache";
 
 const png = (data: string) => ({ type: "image" as const, data, mimeType: "image/png" });

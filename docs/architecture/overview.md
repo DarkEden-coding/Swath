@@ -6,6 +6,12 @@ Swath is split into three layers:
 - `src/renderer/` — React UI, stores, domain actions, feature components, and browser/Tauri adapters.
 - `src-tauri/` — Rust backend for config, PTY terminals, dialogs, clipboard, menu, and git.
 
+In network deployments, `runtime::Core` owns the configured data directory and coordinates the
+catalog/network runtime. A headless build runs the same core without Tauri or a display and is
+used for the always-on catalog server; desktop builds add the Tauri shell and local UI. The
+catalog server is a single durable authority in the current topology, while desktop devices are
+clients/executors. `SWATH_DATA_DIR` must be absolute for headless operation.
+
 ## Runtime flow
 
 1. `src/renderer/main.tsx` loads CSS, attaches `window.swath`, and renders `<App />`.
@@ -15,6 +21,10 @@ Swath is split into three layers:
 5. `LayoutRenderer` walks the split tree and renders each pane.
 6. `paneRegistry` resolves `PaneKind` to the correct pane component.
 7. Pane components call app actions and `window.swath.*` services for side effects.
+
+For a headless process, startup instead loads connector configuration, opens the SQLite catalog,
+starts the network/replication runtime, and serves authenticated connector and catalog RPCs. See
+[the backend notes](./backend.md) and [the deployment guide](../deployment.md).
 
 ## Where code lives
 

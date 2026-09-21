@@ -1,4 +1,11 @@
-import { Fragment, useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
+import {
+  Fragment,
+  useEffect,
+  useRef,
+  useState,
+  type MutableRefObject,
+  type PointerEvent as ReactPointerEvent,
+} from "react";
 import { createPortal } from "react-dom";
 import type { PaneKind, ViewHealth, Workspace } from "../../../../shared/types";
 import * as appActions from "../../../app/appActions";
@@ -149,9 +156,13 @@ export function TaskTabBar({
   });
 
   useEffect(() => {
+    // The title bar is mounted by a parent; resolve its portal target after commit.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setTitleBarTarget(document.getElementById("swath-titlebar-tasks"));
   }, []);
   useEffect(() => {
+    // Keep the active task expanded when selection changes outside this tab bar.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     if (activeTaskId) setExpandedTaskId(activeTaskId);
   }, [activeTaskId]);
   useEffect(() => {
@@ -357,6 +368,7 @@ export function ViewTabBar({
   const [showTypeSelector, setShowTypeSelector] = useState(false);
   const selectorRef = useRef<HTMLDivElement>(null);
   const tabStripRef = useRef<HTMLDivElement>(null);
+  const suppressViewClick = useRef(false);
   const reorder = useReorderDrag({
     axis: "horizontal",
     itemCount: workspace.views.length,
@@ -404,6 +416,8 @@ export function ViewTabBar({
             <WorkspaceViewButton
               id={tab.id}
               title={tab.title}
+              index={index}
+              itemCount={workspace.views.length}
               health={tab.health}
               piPaneIds={piPaneIdsOfView(tab)}
               active={workspace.activeViewId === tab.id}
@@ -415,7 +429,18 @@ export function ViewTabBar({
               }}
               onClose={() => appActions.closeView(workspace.id, tab.id)}
               onRename={(nextTitle) => appActions.renameView(workspace.id, tab.id, nextTitle)}
-              onMouseDragStart={(event) => reorder.startPointerDrag(event, tab.id)}
+              onReorder={(from, to) => appActions.moveView(workspace.id, from, to)}
+              onPointerDown={(event) => {
+                suppressViewClick.current = false;
+                reorder.startCapturedPointerDrag(event, tab.id);
+              }}
+              onPointerMove={reorder.moveCapturedPointerDrag}
+              onPointerUp={(event) => {
+                suppressViewClick.current = reorder.endCapturedPointerDrag(event);
+              }}
+              onPointerCancel={reorder.cancelCapturedPointerDrag}
+              onLostPointerCapture={reorder.cancelCapturedPointerDrag}
+              suppressClickRef={suppressViewClick}
             />
           </Fragment>
         ))}
@@ -478,6 +503,8 @@ function TabDropIndicator(): JSX.Element {
 interface WorkspaceViewButtonProps {
   id: string;
   title: string;
+  index: number;
+  itemCount: number;
   health?: ViewHealth;
   /** Pi agent panes in this tab; non-empty tabs get the agent lifecycle indicator. */
   piPaneIds: string[];
@@ -487,12 +514,20 @@ interface WorkspaceViewButtonProps {
   onSelect: () => void;
   onClose: () => void;
   onRename: (title: string) => void;
-  onMouseDragStart: (event: ReactMouseEvent<HTMLDivElement>) => void;
+  onReorder: (fromIndex: number, toIndex: number) => void;
+  onPointerDown: (event: ReactPointerEvent<HTMLDivElement>) => void;
+  onPointerMove: (event: ReactPointerEvent<HTMLDivElement>) => void;
+  onPointerUp: (event: ReactPointerEvent<HTMLDivElement>) => void;
+  onPointerCancel: () => void;
+  onLostPointerCapture: () => void;
+  suppressClickRef: MutableRefObject<boolean>;
 }
 
 function WorkspaceViewButton({
   id,
   title,
+  index,
+  itemCount,
   health,
   piPaneIds,
   active,
@@ -501,7 +536,13 @@ function WorkspaceViewButton({
   onSelect,
   onClose,
   onRename,
-  onMouseDragStart,
+  onReorder,
+  onPointerDown,
+  onPointerMove,
+  onPointerUp,
+  onPointerCancel,
+  onLostPointerCapture,
+  suppressClickRef,
 }: WorkspaceViewButtonProps): JSX.Element {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(title);
@@ -516,17 +557,37 @@ function WorkspaceViewButton({
       tabIndex={0}
       aria-selected={active}
       aria-grabbed={dragging}
+      aria-keyshortcuts="Alt+ArrowLeft Alt+ArrowRight"
       data-view-id={id}
-      className={`flex min-w-[140px] max-w-[240px] shrink-0 cursor-grab items-center gap-2 border-0 border-r border-swath-border py-0 pl-3 pr-2.5 [-webkit-app-region:no-drag] [app-region:no-drag] active:cursor-grabbing ${dragging ? "opacity-60" : ""} ${tabActive}`}
-      onClick={onSelect}
+      className={`flex min-w-[140px] max-w-[240px] shrink-0 cursor-grab touch-none select-none items-center gap-2 border-0 border-r border-swath-border py-0 pl-3 pr-2.5 [-webkit-app-region:no-drag] [app-region:no-drag] active:cursor-grabbing ${dragging ? "opacity-60" : ""} ${tabActive}`}
+      onClick={() => {
+        if (suppressClickRef.current) {
+          suppressClickRef.current = false;
+          return;
+        }
+        onSelect();
+      }}
       onDoubleClick={() => setEditing(true)}
       onKeyDown={(event) => {
+        if (event.altKey && (event.key === "ArrowLeft" || event.key === "ArrowRight")) {
+          const direction = event.key === "ArrowLeft" ? -1 : 1;
+          const to = index + direction;
+          if (to >= 0 && to < itemCount) {
+            event.preventDefault();
+            onReorder(index, to);
+          }
+          return;
+        }
         if (event.key === "Enter" || event.key === " ") {
           event.preventDefault();
           onSelect();
         }
       }}
-      onMouseDown={onMouseDragStart}
+      onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
+      onPointerUp={onPointerUp}
+      onPointerCancel={onPointerCancel}
+      onLostPointerCapture={onLostPointerCapture}
     >
       {piPaneIds.length > 0 ? (
         <PiTabIndicator paneIds={piPaneIds} />
@@ -539,6 +600,7 @@ function WorkspaceViewButton({
           value={draft}
           autoFocus
           onClick={(event) => event.stopPropagation()}
+          onPointerDown={(event) => event.stopPropagation()}
           onMouseDown={(event) => event.stopPropagation()}
           onChange={(event) => setDraft(event.target.value)}
           onBlur={() => {
@@ -561,6 +623,7 @@ function WorkspaceViewButton({
           type="button"
           aria-label={`Close ${title}`}
           className="ml-auto grid size-[18px] cursor-pointer place-items-center rounded-md border-0 bg-transparent p-0 text-swath-muted-2 [-webkit-app-region:no-drag] [app-region:no-drag] hover:bg-[#303847] hover:text-white"
+          onPointerDown={(event) => event.stopPropagation()}
           onMouseDown={(event) => event.stopPropagation()}
           onClick={(event) => {
             event.stopPropagation();

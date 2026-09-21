@@ -10,6 +10,7 @@
 - [Terminal pane](./features/terminal.md)
 - [Git manager pane](./features/git-manager.md)
 - [Maintenance guide](./maintenance.md)
+- [Deployment guide](./deployment.md)
 - [Adding pane and tab types](./adding-pane-types.md)
 
 ## Folder indexes

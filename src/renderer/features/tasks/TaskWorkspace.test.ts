@@ -4,7 +4,32 @@ import {
   reorderedPaneIds,
   reorderedTaskViewPaneIds,
   taskRendererProjection,
+  taskCreationError,
+  taskRpcError,
 } from "./TaskWorkspace";
+
+describe("taskCreationError", () => {
+  it("shows server rejection details instead of a generic failure", () => {
+    expect(taskCreationError({ ok: false, error: "Project has no Git source" })).toBe(
+      "Project has no Git source",
+    );
+    expect(
+      taskCreationError('{"code":"catalog_unavailable","message":"Catalog is unavailable"}'),
+    ).toBe("Catalog is unavailable");
+  });
+});
+
+describe("taskRpcError", () => {
+  it("unwraps structured and JSON-encoded host errors", () => {
+    expect(taskRpcError({ ok: false, code: "revision_conflict", error: "Refresh and retry" })).toBe(
+      "revision_conflict: Refresh and retry",
+    );
+    expect(taskRpcError('{"ok":false,"code":"unavailable","message":"Offline"}')).toBe(
+      "unavailable: Offline",
+    );
+    expect(taskRpcError({ ok: true })).toBeNull();
+  });
+});
 
 describe("piSessionMetadata", () => {
   it("does not pass a migrated pane id to pi as --session", () => {
@@ -28,6 +53,16 @@ describe("reorderedPaneIds", () => {
 });
 
 describe("taskRendererProjection", () => {
+  it("does not invent an executor pane for a completed task without transcript panes", () => {
+    expect(
+      taskRendererProjection(
+        { id: "done", title: "Done", lifecycle: "completed" },
+        [],
+        "/worktrees/done",
+      ),
+    ).toBeNull();
+  });
+
   it("builds registered pane leaves with the task worktree, not placeholder panes", () => {
     const { workspace, view } = taskRendererProjection(
       { id: "task-1", title: "Task" },

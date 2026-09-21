@@ -18,7 +18,7 @@ use openraft::{
     BasicNode, Config, Entry, EntryPayload, LogId, LogState, Raft, RaftSnapshotBuilder, Snapshot,
     SnapshotMeta, StorageError, StorageIOError, StoredMembership, TokioRuntime, Vote,
 };
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, ErrorCode, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
 pub type NodeId = u64;
@@ -325,18 +325,22 @@ enum SnapshotCell {
     Blob(Vec<u8>),
 }
 
-// Consensus-owned projections only. Device-local routing, credentials, paths, runtime state,
+// Consensus-owned projections only. Credentials, device-local transport state, runtime state,
 // event delivery progress and preferences deliberately never cross a snapshot boundary.
 const SNAPSHOT_TABLES: &[&str] = &[
     "networks",
     "devices",
     "coordinator_members",
     "git_replicas",
-    "enrollment_credentials",
     "raft_node_members",
     "projects",
     "tasks",
     "task_panes",
+    // These tables are written by the state machine and must travel with the task rows.
+    "task_provisioning",
+    "device_task_paths",
+    "task_cleanup_receipts",
+    "pi_session_metadata",
     "sessions",
     "operation_dedup",
     "tombstones",
@@ -344,7 +348,10 @@ const SNAPSHOT_TABLES: &[&str] = &[
     "migration_conflict_resolutions",
 ];
 
-fn snapshot_catalog(conn: &Connection) -> Result<Vec<SnapshotTable>, rusqlite::Error> {
+fn snapshot_catalog(
+    conn: &Connection,
+    network_id: &str,
+) -> Result<Vec<SnapshotTable>, rusqlite::Error> {
     let mut result = Vec::new();
     for &name in SNAPSHOT_TABLES {
         let exists: bool = conn.query_row(
@@ -355,14 +362,49 @@ fn snapshot_catalog(conn: &Connection) -> Result<Vec<SnapshotTable>, rusqlite::E
         if !exists {
             continue;
         }
-        let mut statement = conn.prepare(&format!("SELECT * FROM {name}"))?;
+        let scoped_query = match name {
+            "networks" => Some(format!("SELECT * FROM {name} WHERE id=?1")),
+            "devices"
+            | "coordinator_members"
+            | "git_replicas"
+            | "raft_node_members"
+            | "projects"
+            | "migration_conflict_resolutions" => {
+                Some(format!("SELECT * FROM {name} WHERE network_id=?1"))
+            }
+            "tasks" => Some(format!(
+                "SELECT * FROM {name} WHERE project_id IN (SELECT id FROM projects WHERE network_id=?1)"
+            )),
+            "task_panes" | "sessions" => Some(format!(
+                "SELECT * FROM {name} WHERE task_id IN (SELECT t.id FROM tasks t JOIN projects p ON p.id=t.project_id WHERE p.network_id=?1)"
+            )),
+            "task_provisioning" | "device_task_paths" | "task_cleanup_receipts" => {
+                Some(format!(
+                    "SELECT * FROM {name} WHERE task_id IN (SELECT t.id FROM tasks t JOIN projects p ON p.id=t.project_id WHERE p.network_id=?1)"
+                ))
+            }
+            "pi_session_metadata" => Some(format!(
+                "SELECT * FROM {name} WHERE pane_id IN (SELECT pane.id FROM task_panes pane JOIN tasks t ON t.id=pane.task_id JOIN projects p ON p.id=t.project_id WHERE p.network_id=?1)"
+            )),
+            // These legacy/global tables predate a network_id column. Operation IDs and
+            // tombstone record IDs are globally unique in the catalog, so retain them as-is.
+            _ => None,
+        };
+        let fallback_query = format!("SELECT * FROM {name}");
+        let query = scoped_query.as_deref().unwrap_or(&fallback_query);
+        let mut statement = conn.prepare(query)?;
         let columns = statement
             .column_names()
             .iter()
             .map(|value| (*value).to_owned())
             .collect::<Vec<_>>();
+        let bind_params = if scoped_query.is_some() {
+            vec![network_id]
+        } else {
+            Vec::new()
+        };
         let rows = statement
-            .query_map([], |row| {
+            .query_map(rusqlite::params_from_iter(bind_params), |row| {
                 (0..columns.len())
                     .map(|index| {
                         use rusqlite::types::ValueRef;
@@ -390,12 +432,74 @@ fn snapshot_catalog(conn: &Connection) -> Result<Vec<SnapshotTable>, rusqlite::E
 
 fn restore_catalog(
     conn: &mut Connection,
+    network_id: &str,
     catalog: &[SnapshotTable],
 ) -> Result<(), rusqlite::Error> {
     let tx = conn.transaction()?;
+    // pi_session_metadata and the migration tables are created lazily by their projections.
+    // A fresh learner can therefore receive them before it has applied the entry that creates
+    // the table. Create the known lazy schemas before replaying snapshot rows.
+    for table in catalog {
+        match table.name.as_str() {
+            "pi_session_metadata" => tx.execute_batch(
+                "CREATE TABLE IF NOT EXISTS pi_session_metadata (
+                   pane_id TEXT PRIMARY KEY, session_id TEXT NOT NULL,
+                   metadata_json TEXT NOT NULL, created_at INTEGER NOT NULL
+                 )",
+            )?,
+            "legacy_import_records" => tx.execute_batch(
+                "CREATE TABLE IF NOT EXISTS legacy_import_records (
+                   operation_id TEXT NOT NULL, stable_key TEXT NOT NULL,
+                   kind TEXT NOT NULL, original_json TEXT NOT NULL,
+                   imported_id TEXT, PRIMARY KEY(operation_id, stable_key)
+                 )",
+            )?,
+            "migration_conflict_resolutions" => tx.execute_batch(
+                "CREATE TABLE IF NOT EXISTS migration_conflict_resolutions (
+                   conflict_id TEXT PRIMARY KEY, revision_hash TEXT NOT NULL,
+                   source_record_ids_json TEXT NOT NULL, action TEXT NOT NULL,
+                   mapping_json TEXT NOT NULL, diff_json TEXT NOT NULL,
+                   network_id TEXT NOT NULL, resolved_at INTEGER NOT NULL
+                 )",
+            )?,
+            _ => {}
+        }
+    }
     for table in catalog.iter().rev() {
         if SNAPSHOT_TABLES.contains(&table.name.as_str()) {
-            tx.execute(&format!("DELETE FROM {}", table.name), [])?;
+            let delete = match table.name.as_str() {
+                "networks" => format!("DELETE FROM {} WHERE id=?1", table.name),
+                "devices"
+                | "coordinator_members"
+                | "git_replicas"
+                | "raft_node_members"
+                | "projects"
+                | "migration_conflict_resolutions" => {
+                    format!("DELETE FROM {} WHERE network_id=?1", table.name)
+                }
+                "tasks" => format!(
+                    "DELETE FROM {} WHERE project_id IN (SELECT id FROM projects WHERE network_id=?1)",
+                    table.name
+                ),
+                "task_panes" | "sessions" => format!(
+                    "DELETE FROM {} WHERE task_id IN (SELECT t.id FROM tasks t JOIN projects p ON p.id=t.project_id WHERE p.network_id=?1)",
+                    table.name
+                ),
+                "task_provisioning" | "device_task_paths" | "task_cleanup_receipts" => format!(
+                    "DELETE FROM {} WHERE task_id IN (SELECT t.id FROM tasks t JOIN projects p ON p.id=t.project_id WHERE p.network_id=?1)",
+                    table.name
+                ),
+                "pi_session_metadata" => format!(
+                    "DELETE FROM {} WHERE pane_id IN (SELECT pane.id FROM task_panes pane JOIN tasks t ON t.id=pane.task_id JOIN projects p ON p.id=t.project_id WHERE p.network_id=?1)",
+                    table.name
+                ),
+                _ => format!("DELETE FROM {}", table.name),
+            };
+            if delete.contains("?1") {
+                tx.execute(&delete, params![network_id])?;
+            } else {
+                tx.execute(&delete, [])?;
+            }
         }
     }
     for table in catalog {
@@ -431,7 +535,8 @@ fn restore_catalog(
 impl RaftSnapshotBuilder<CatalogType> for SqliteStore {
     async fn build_snapshot(&mut self) -> Result<Snapshot<CatalogType>, StorageError<NodeId>> {
         let s = self.state()?;
-        let catalog = snapshot_catalog(&self.db.lock().unwrap()).map_err(Self::err)?;
+        let catalog =
+            snapshot_catalog(&self.db.lock().unwrap(), &self.network_id).map_err(Self::err)?;
         let b = serde_json::to_vec(&SnapshotBlob {
             last: s.last,
             membership: s.membership.clone(),
@@ -477,6 +582,10 @@ fn conflict() -> CatalogResponse {
 }
 fn committed(value: serde_json::Value, revision: i64) -> CatalogResponse {
     CatalogResponse::result(value, Some(revision))
+}
+
+fn is_catalog_constraint(error: &rusqlite::Error) -> bool {
+    error.sqlite_error_code() == Some(ErrorCode::ConstraintViolation)
 }
 
 fn apply_catalog_projection(
@@ -772,7 +881,7 @@ fn project_mutation(
                 .collect();
             if duplicates.is_empty()
                 || duplicates.len() != raw_duplicates.len()
-                || duplicates.iter().any(|duplicate| *duplicate == id)
+                || duplicates.contains(&id)
                 || duplicates
                     .iter()
                     .enumerate()
@@ -1350,14 +1459,38 @@ impl RaftStateMachine<CatalogType> for SqliteStore {
                     };
                     let mut c = self.db.lock().unwrap();
                     let tx = c.transaction().map_err(Self::err)?;
-                    let response = apply_catalog_projection(
+                    // Projection branches intentionally perform several writes before their
+                    // final optimistic fence. Isolate each entry so a conflict, validation
+                    // response, or input constraint cannot leave those earlier writes visible.
+                    tx.execute_batch("SAVEPOINT catalog_apply")
+                        .map_err(Self::err)?;
+                    let response = match apply_catalog_projection(
                         &tx,
                         kind,
                         &operation_id,
                         expected_revision,
                         &payload,
-                    )
-                    .map_err(Self::err)?;
+                    ) {
+                        Ok(response) => response,
+                        Err(error) if is_catalog_constraint(&error) => {
+                            // Duplicate IDs, malformed references, and other constraints are
+                            // request errors. They must not poison Raft apply and be replayed as
+                            // a fatal storage error on every restart.
+                            invalid("invalid_request")
+                        }
+                        Err(error) => {
+                            let _ = tx
+                                .execute_batch("ROLLBACK TO catalog_apply; RELEASE catalog_apply");
+                            return Err(Self::err(error));
+                        }
+                    };
+                    if response.status == "committed" {
+                        tx.execute_batch("RELEASE catalog_apply")
+                            .map_err(Self::err)?;
+                    } else {
+                        tx.execute_batch("ROLLBACK TO catalog_apply; RELEASE catalog_apply")
+                            .map_err(Self::err)?;
+                    }
                     tx.commit().map_err(Self::err)?;
                     r.push(response);
                 }
@@ -1405,7 +1538,8 @@ impl RaftStateMachine<CatalogType> for SqliteStore {
         let payload = x.into_inner();
         let b: SnapshotBlob = serde_json::from_slice(&payload).map_err(Self::err)?;
         if !b.catalog.is_empty() {
-            restore_catalog(&mut self.db.lock().unwrap(), &b.catalog).map_err(Self::err)?;
+            restore_catalog(&mut self.db.lock().unwrap(), &self.network_id, &b.catalog)
+                .map_err(Self::err)?;
         }
         self.put_state(&State {
             last: m.last_log_id,
@@ -2345,6 +2479,41 @@ mod raft_tests {
             "revision_conflict"
         );
         assert_eq!(node.client_write(CatalogRequest::Task { operation_id: "task:create".into(), expected_revision: 1, payload: serde_json::json!({"action":"create","taskId":"t","projectId":"p","title":"Task","deviceId":"d","baseCommit":"abc","worktreePath":"/tmp/t"}) }).await.unwrap().data.revision, Some(1));
+        let stale_provision = node
+            .client_write(CatalogRequest::Task {
+                operation_id: "task:provision-stale".into(),
+                expected_revision: 99,
+                payload: serde_json::json!({
+                    "action":"provision_ready",
+                    "taskId":"t",
+                    "paneId":"stale-pane"
+                }),
+            })
+            .await
+            .unwrap()
+            .data;
+        assert_eq!(stale_provision.status, "revision_conflict");
+        {
+            let conn = node.store.db.lock().unwrap();
+            assert_eq!(
+                conn.query_row(
+                    "SELECT state FROM task_provisioning WHERE task_id='t'",
+                    [],
+                    |row| row.get::<_, String>(0)
+                )
+                .unwrap(),
+                "pending"
+            );
+            assert_eq!(
+                conn.query_row(
+                    "SELECT COUNT(*) FROM task_panes WHERE id='stale-pane'",
+                    [],
+                    |row| row.get::<_, i64>(0)
+                )
+                .unwrap(),
+                0
+            );
+        }
         assert_eq!(
             node.client_write(CatalogRequest::Task {
                 operation_id: "task:order".into(),
@@ -2423,6 +2592,36 @@ mod raft_tests {
             node.client_write(request).await.unwrap().data.status,
             "committed"
         );
+        let duplicate = node
+            .client_write(CatalogRequest::Device {
+                operation_id: "join:duplicate".into(),
+                expected_revision: 0,
+                payload: serde_json::json!({
+                    "action":"join_request",
+                    "networkId":"enroll",
+                    "enrollmentId":"one",
+                    "secret":"0123456789abcdef",
+                    "nodeId":103,
+                    "connectorEndpoint":"http://127.0.0.1:9998"
+                }),
+            })
+            .await
+            .unwrap()
+            .data;
+        assert_eq!(duplicate.status, "invalid_request");
+        assert_eq!(
+            node.store
+                .db
+                .lock()
+                .unwrap()
+                .query_row(
+                    "SELECT COUNT(*) FROM operation_dedup WHERE operation_id='join:duplicate'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            0
+        );
         let approve = CatalogRequest::Device {
             operation_id: "approve:one".into(),
             expected_revision: 0,
@@ -2467,13 +2666,26 @@ mod raft_tests {
         let mut source = SqliteStore::open(&path(base), "snapshot-catalog").unwrap();
         {
             let conn = source.db.lock().unwrap();
-            conn.execute("INSERT INTO projects(id,network_id,name,default_branch,revision,created_at) VALUES('project','network','Project','main',3,1)", []).unwrap();
+            conn.execute("INSERT INTO networks(id,name,schema_version,revision,created_at) VALUES('snapshot-catalog','Snapshot',2,1,1)", []).unwrap();
+            conn.execute("INSERT INTO projects(id,network_id,name,default_branch,revision,created_at) VALUES('project','snapshot-catalog','Project','main',3,1)", []).unwrap();
+            conn.execute("INSERT INTO tasks(id,project_id,title,assigned_device_id,lifecycle,pane_order,revision,created_at) VALUES('task','project','Task','device','active','[]',2,1)", []).unwrap();
+            conn.execute("INSERT INTO task_panes(id,task_id,kind,title,revision,created_at) VALUES('pane','task','piAgent','Pi',1,1)", []).unwrap();
+            conn.execute("INSERT INTO task_provisioning(task_id,base_commit,worktree_path,state,created_at) VALUES('task','abc','/tmp/task','ready',1)", []).unwrap();
+            conn.execute("INSERT INTO device_task_paths(task_id,device_id,path,revision) VALUES('task','device','/tmp/task',1)", []).unwrap();
+            conn.execute("INSERT INTO task_cleanup_receipts(task_id,retained_commit,known_losses_json,result_json,cleaned_at) VALUES('task','def','[]','{}',1)", []).unwrap();
+            conn.execute_batch("CREATE TABLE pi_session_metadata (pane_id TEXT PRIMARY KEY, session_id TEXT NOT NULL, metadata_json TEXT NOT NULL, created_at INTEGER NOT NULL); INSERT INTO pi_session_metadata(pane_id,session_id,metadata_json,created_at) VALUES('pane','session','{}',1);") .unwrap();
+            conn.execute("INSERT INTO enrollment_credentials(enrollment_id,network_id,secret,created_at) VALUES('secret-enrollment','snapshot-catalog','do-not-replicate',1)", []).unwrap();
             conn.execute("INSERT INTO operation_dedup(operation_id,operation_kind,request_hash,result_json,created_at) VALUES('operation','project','hash','{}',1)", []).unwrap();
             conn.execute("INSERT INTO tombstones(record_type,record_id,revision,deleted_at) VALUES('pane','old-pane',2,1)", []).unwrap();
         }
         let snapshot = source.build_snapshot().await.unwrap();
         let meta = snapshot.meta.clone();
         let mut target = SqliteStore::open(&path(base + 1), "snapshot-catalog").unwrap();
+        {
+            let conn = target.db.lock().unwrap();
+            conn.execute("INSERT INTO networks(id,name,schema_version,revision,created_at) VALUES('other','Other',2,1,1)", []).unwrap();
+            conn.execute("INSERT INTO projects(id,network_id,name,default_branch,revision,created_at) VALUES('other-project','other','Other Project','main',1,1)", []).unwrap();
+        }
         target
             .install_snapshot(&meta, snapshot.snapshot)
             .await
@@ -2487,6 +2699,15 @@ mod raft_tests {
             )
             .unwrap(),
             3
+        );
+        assert_eq!(
+            conn.query_row(
+                "SELECT COUNT(*) FROM projects WHERE id='other-project' AND network_id='other'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            1
         );
         assert_eq!(
             conn.query_row(
@@ -2505,6 +2726,48 @@ mod raft_tests {
             )
             .unwrap(),
             1
+        );
+        assert_eq!(
+            conn.query_row(
+                "SELECT state FROM task_provisioning WHERE task_id='task'",
+                [],
+                |row| row.get::<_, String>(0)
+            )
+            .unwrap(),
+            "ready"
+        );
+        assert_eq!(
+            conn.query_row(
+                "SELECT path FROM device_task_paths WHERE task_id='task'",
+                [],
+                |row| row.get::<_, String>(0)
+            )
+            .unwrap(),
+            "/tmp/task"
+        );
+        assert_eq!(
+            conn.query_row(
+                "SELECT retained_commit FROM task_cleanup_receipts WHERE task_id='task'",
+                [],
+                |row| row.get::<_, String>(0)
+            )
+            .unwrap(),
+            "def"
+        );
+        assert_eq!(
+            conn.query_row(
+                "SELECT metadata_json FROM pi_session_metadata WHERE pane_id='pane'",
+                [],
+                |row| row.get::<_, String>(0)
+            )
+            .unwrap(),
+            "{}"
+        );
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM enrollment_credentials", [], |row| row
+                .get::<_, i64>(0),)
+                .unwrap(),
+            0
         );
     }
 

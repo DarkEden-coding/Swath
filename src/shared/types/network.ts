@@ -5,7 +5,7 @@ export type DeviceId = string;
 export interface Network {
   id: NetworkId;
   name: string;
-  schemaVersion: 1;
+  schemaVersion: 2;
   revision: number;
   createdAt: number;
 }
@@ -30,7 +30,6 @@ export interface NetworkMember {
 
 export interface NetworkHealth {
   networkId: NetworkId;
-  leaderId?: DeviceId;
   voters: number;
   healthyVoters: number;
   required: number;

@@ -68,7 +68,13 @@ export function NetworkStartupGate({
     }
   }, [onReady]);
   useEffect(() => {
-    void check();
+    let active = true;
+    queueMicrotask(() => {
+      if (active) void check();
+    });
+    return () => {
+      active = false;
+    };
   }, [check]);
   useEffect(() => {
     if (snapshot !== null) return;

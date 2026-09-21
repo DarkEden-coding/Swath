@@ -45,6 +45,12 @@ use tokio::{
 };
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
+const MAX_PEER_BODY_BYTES: usize = 8 * 1024 * 1024;
+const HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
+const HTTP_REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
+const RELAY_INITIAL_BACKOFF: Duration = Duration::from_millis(250);
+const RELAY_MAX_BACKOFF: Duration = Duration::from_secs(5);
+
 #[derive(RustEmbed)]
 #[folder = "../dist"]
 struct WebAssets;
@@ -68,6 +74,14 @@ pub struct RemoteServerOptions {
 
 fn default_tailscale_https_port() -> u16 {
     443
+}
+
+fn shared_http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .connect_timeout(HTTP_CONNECT_TIMEOUT)
+        .timeout(HTTP_REQUEST_TIMEOUT)
+        .build()
+        .expect("the shared connector HTTP client must be constructible")
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -98,7 +112,17 @@ pub struct RemoteServerManager {
     core: Arc<Core>,
     machine_id: String,
     running: Mutex<Option<RunningServer>>,
+    // Keep the dispatch context alive even when the HTTP listener is stopped. Native Tauri
+    // commands still need the durable session routes, peer relays, and catalog credentials.
+    context: Mutex<ServerContext>,
     events: Arc<ConnectorEvents>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct SessionRoute {
+    task_id: Option<String>,
+    device_id: String,
+    execution_generation: Option<i64>,
 }
 
 #[derive(Clone)]
@@ -109,11 +133,12 @@ struct ServerContext {
     machine_id: String,
     // This is the catalog identity, never the mutable hostname advertised to browsers.
     device_id: Option<String>,
-    session_tasks: Arc<Mutex<HashMap<String, String>>>,
+    session_tasks: Arc<Mutex<HashMap<String, SessionRoute>>>,
     events: Arc<ConnectorEvents>,
     peer_relays: Arc<Mutex<HashMap<String, mpsc::Sender<Value>>>>,
     allowed_origins: Vec<String>,
     raft: Option<Arc<network::raft::CatalogRaft>>,
+    http_client: reqwest::Client,
 }
 
 #[derive(Deserialize)]
@@ -269,8 +294,21 @@ impl RemoteServerManager {
             .and_then(|conn| network::stable_device_id(&conn))
             .unwrap_or_else(|_| "dev_unavailable".into());
         Self {
-            machine_id,
+            machine_id: machine_id.clone(),
             running: Mutex::new(None),
+            context: Mutex::new(ServerContext {
+                core: core.clone(),
+                token: String::new(),
+                connector_endpoint: "http://127.0.0.1:0".into(),
+                machine_id: machine_id.clone(),
+                device_id: local_device_id(&core),
+                session_tasks: Arc::new(Mutex::new(HashMap::new())),
+                events: events.clone(),
+                peer_relays: Arc::new(Mutex::new(HashMap::new())),
+                allowed_origins: vec![],
+                raft: None,
+                http_client: shared_http_client(),
+            }),
             events,
             core,
         }
@@ -342,7 +380,15 @@ impl RemoteServerManager {
             peer_relays: Arc::new(Mutex::new(HashMap::new())),
             allowed_origins: options.allowed_origins.clone(),
             raft: open_catalog_raft(&self.core, &options.token, &raft_address).await?,
+            http_client: self.context.lock().unwrap().http_client.clone(),
         };
+        // Preserve in-memory session routing and relay ownership across listener restarts while
+        // refreshing the credential/endpoint/raft handles for this serving generation.
+        let previous = self.context.lock().unwrap().clone();
+        let mut context = context;
+        context.session_tasks = previous.session_tasks;
+        context.peer_relays = previous.peer_relays;
+        *self.context.lock().unwrap() = context.clone();
         let raft = context.raft.clone();
         spawn_durable_event_writer(context.clone());
         let router = Router::new()
@@ -353,7 +399,7 @@ impl RemoteServerManager {
             // scoped to authenticated peer RPC instead of disabling request limits globally.
             .route(
                 "/api/peer/rpc",
-                post(peer_rpc).layer(DefaultBodyLimit::max(8 * 1024 * 1024)),
+                post(peer_rpc).layer(DefaultBodyLimit::max(MAX_PEER_BODY_BYTES)),
             )
             .route("/api/project/{project_id}/bundle", get(project_bundle))
             .route("/api/enrollment/request", post(enrollment_request))
@@ -402,18 +448,7 @@ impl RemoteServerManager {
             .unwrap()
             .as_ref()
             .map(|server| server.context.clone())
-            .unwrap_or_else(|| ServerContext {
-                core: self.core.clone(),
-                token: String::new(),
-                connector_endpoint: "http://127.0.0.1:0".into(),
-                machine_id: self.machine_id.clone(),
-                device_id: local_device_id(&self.core),
-                session_tasks: Arc::new(Mutex::new(HashMap::new())),
-                events: self.events.clone(),
-                peer_relays: Arc::new(Mutex::new(HashMap::new())),
-                allowed_origins: vec![],
-                raft: None,
-            });
+            .unwrap_or_else(|| self.context.lock().unwrap().clone());
         dispatch_to_owner(&context, method, params, 0, None).await
     }
 
@@ -424,6 +459,7 @@ impl RemoteServerManager {
             if let Some(raft) = server.raft {
                 raft.shutdown().await;
             }
+            self.context.lock().unwrap().raft = None;
             if server.options.tailscale_https {
                 let serve_port = format!("--https={}", server.options.tailscale_https_port);
                 let _ = run_tailscale(&["serve", serve_port.as_str(), "off"]);
@@ -812,7 +848,9 @@ async fn register_local_learner_endpoint(ctx: ServerContext) {
         }
     }
     for (endpoint, credential) in peers {
-        let response = reqwest::Client::new()
+        let response = ctx
+            .http_client
+            .clone()
             .post(format!(
                 "{}/api/raft/learner-endpoint",
                 endpoint.trim_end_matches('/')
@@ -974,7 +1012,9 @@ async fn socket(
     {
         return (StatusCode::UPGRADE_REQUIRED, "Swath protocol v2 required").into_response();
     }
-    ws.protocols(["swath-v2"])
+    ws.max_message_size(MAX_PEER_BODY_BYTES)
+        .max_frame_size(MAX_PEER_BODY_BYTES)
+        .protocols(["swath-v2"])
         .on_upgrade(move |socket| serve_socket(socket, ctx))
 }
 
@@ -1330,22 +1370,37 @@ fn task_device(
     let conn =
         config::connection_at(&config::db_path_in(ctx.core.data_dir()).map_err(|e| e.to_string())?)
             .map_err(|e| e.to_string())?;
-    let task_id = params
-        .get("taskId")
+    // A live terminal session is already bound to the executor that created it. Resolve that
+    // typed route before consulting the mutable task assignment: session-only terminal calls
+    // must not accidentally reinterpret a device id as a task id.
+    let session_route = params
+        .get("sessionId")
         .and_then(Value::as_str)
-        .map(str::to_owned)
-        .or_else(|| {
-            let session = params.get("sessionId").and_then(Value::as_str)?;
+        .and_then(|session| {
             conn.query_row(
-                "SELECT task_id FROM terminal_task_sessions WHERE session_id=?1",
+                "SELECT task_id,device_id,execution_generation FROM terminal_task_sessions WHERE session_id=?1",
                 [session],
-                |r| r.get(0),
+                |r| {
+                    Ok(SessionRoute {
+                        task_id: r.get(0)?,
+                        device_id: r.get(1)?,
+                        execution_generation: r.get(2)?,
+                    })
+                },
             )
             .optional()
             .ok()
             .flatten()
             .or_else(|| ctx.session_tasks.lock().unwrap().get(session).cloned())
-        })
+        });
+    if let Some(route) = session_route.as_ref() {
+        return Ok(Some(route.device_id.clone()));
+    }
+    let task_id = params
+        .get("taskId")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .or_else(|| session_route.and_then(|route| route.task_id))
         .or_else(|| {
             params
                 .get("paneId")
@@ -1377,14 +1432,29 @@ fn task_device(
                 })
         });
     if let Some(task_id) = task_id {
-        return conn
+        let owner = conn
             .query_row(
                 "SELECT assigned_device_id FROM tasks WHERE id=?1 AND tombstoned_at IS NULL",
                 [&task_id],
                 |r| r.get(0),
             )
             .optional()
-            .map_err(|e| e.to_string());
+            .map_err(|e| e.to_string())?;
+        if owner.is_some() {
+            return Ok(owner);
+        }
+        // A catalog write may have committed while this executor missed its projection. Allow
+        // an explicitly addressed retry to reach that executor; it verifies server ownership
+        // before copying the pending task locally.
+        if method == "task.rpc"
+            && params.get("op").and_then(Value::as_str) == Some("retryProvision")
+        {
+            return Ok(params
+                .get("deviceId")
+                .and_then(Value::as_str)
+                .map(str::to_owned));
+        }
+        return Ok(None);
     }
     // Provisioning is an execution request even though the task does not exist yet.
     if method == "task.rpc" && params.get("op").and_then(Value::as_str) == Some("createTask") {
@@ -1402,6 +1472,57 @@ fn task_addressed(method: &str, params: &Value) -> bool {
         || params.get("paneId").is_some()
         || (method == "task.rpc" && params.get("operationId").is_some())
         || (method == "task.rpc" && params.get("op").and_then(Value::as_str) == Some("createTask"))
+}
+
+fn validate_session_generation(ctx: &ServerContext, params: &Value) -> Result<(), String> {
+    let Some(session) = params.get("sessionId").and_then(Value::as_str) else {
+        return Ok(());
+    };
+    let conn = config::connection_at(
+        &config::db_path_in(ctx.core.data_dir()).map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| error.to_string())?;
+    let route = conn
+        .query_row(
+            "SELECT task_id,device_id,execution_generation FROM terminal_task_sessions WHERE session_id=?1",
+            [session],
+            |r| {
+                Ok(SessionRoute {
+                    task_id: r.get(0)?,
+                    device_id: r.get(1)?,
+                    execution_generation: r.get(2)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(|error| error.to_string())?
+        .or_else(|| ctx.session_tasks.lock().unwrap().get(session).cloned());
+    let Some(route) = route else {
+        return Ok(());
+    };
+    let Some(expected) = route.execution_generation else {
+        return Ok(());
+    };
+    let Some(task_id) = route.task_id else {
+        return Ok(());
+    };
+    let current: Option<i64> = conn
+        .query_row(
+            "SELECT execution_generation FROM tasks WHERE id=?1 AND tombstoned_at IS NULL",
+            [&task_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| error.to_string())?;
+    if current.is_some_and(|current| current != expected) {
+        return Err(json!({
+            "code":"stale_generation",
+            "taskId":task_id,
+            "expected":current
+        })
+        .to_string());
+    }
+    Ok(())
 }
 
 fn ensure_peer_relay(ctx: &ServerContext, target: &str, params: &Value) {
@@ -1429,6 +1550,7 @@ fn ensure_peer_relay(ctx: &ServerContext, target: &str, params: &Value) {
     let target = target.to_owned();
     tokio::spawn(async move {
         let mut subscriptions: HashMap<String, Value> = HashMap::new();
+        let mut backoff = RELAY_INITIAL_BACKOFF;
         loop {
             let peer = config::connection_at(&match config::db_path_in(ctx.core.data_dir()) {
                 Ok(path) => path,
@@ -1446,7 +1568,9 @@ fn ensure_peer_relay(ctx: &ServerContext, target: &str, params: &Value) {
                 .flatten()
             });
             let Some((endpoint, credential)) = peer else {
-                break;
+                sleep(backoff).await;
+                backoff = (backoff * 2).min(RELAY_MAX_BACKOFF);
+                continue;
             };
             let url = format!("{}/api/socket", endpoint.trim_end_matches('/'))
                 .replacen("http://", "ws://", 1)
@@ -1454,7 +1578,8 @@ fn ensure_peer_relay(ctx: &ServerContext, target: &str, params: &Value) {
             let mut request = match url.into_client_request() {
                 Ok(request) => request,
                 Err(_) => {
-                    sleep(Duration::from_millis(250)).await;
+                    sleep(backoff).await;
+                    backoff = (backoff * 2).min(RELAY_MAX_BACKOFF);
                     continue;
                 }
             };
@@ -1467,10 +1592,17 @@ fn ensure_peer_relay(ctx: &ServerContext, target: &str, params: &Value) {
                     .headers_mut()
                     .insert(header::SEC_WEBSOCKET_PROTOCOL, value);
             }
-            let Ok((socket, _)) = tokio_tungstenite::connect_async(request).await else {
-                sleep(Duration::from_millis(250)).await;
+            let Ok(Ok((socket, _))) = tokio::time::timeout(
+                HTTP_CONNECT_TIMEOUT,
+                tokio_tungstenite::connect_async(request),
+            )
+            .await
+            else {
+                sleep(backoff).await;
+                backoff = (backoff * 2).min(RELAY_MAX_BACKOFF);
                 continue;
             };
+            backoff = RELAY_INITIAL_BACKOFF;
             let (mut output, mut input) = socket.split();
             for update in subscriptions.values() {
                 if output
@@ -1501,7 +1633,7 @@ fn ensure_peer_relay(ctx: &ServerContext, target: &str, params: &Value) {
                         None => return,
                     },
                     incoming = input.next() => match incoming {
-                        Some(Ok(tokio_tungstenite::tungstenite::Message::Text(event))) => {
+                        Some(Ok(tokio_tungstenite::tungstenite::Message::Text(event))) if event.len() <= MAX_PEER_BODY_BYTES => {
                             if let Ok(value) = serde_json::from_str::<Value>(&event) {
                                 if let (Some(channel), Some(payload)) = (value.get("channel").and_then(Value::as_str), value.get("payload")) {
                                     if matches!(channel, "terminal:data" | "terminal:exit" | "pi:event" | "git:data") { ctx.core.events.publish(channel, payload.clone()); }
@@ -1528,12 +1660,14 @@ fn ensure_peer_relay(ctx: &ServerContext, target: &str, params: &Value) {
                                 }
                             }
                         }
+                        Some(Ok(tokio_tungstenite::tungstenite::Message::Text(_))) => break,
                         Some(Ok(_)) => {},
                         _ => break,
                     },
                 }
             }
-            sleep(Duration::from_millis(250)).await;
+            sleep(backoff).await;
+            backoff = (backoff * 2).min(RELAY_MAX_BACKOFF);
         }
     });
 }
@@ -1577,12 +1711,26 @@ async fn peer_call(
         );
     };
     let url = format!("{}/api/peer/rpc", endpoint.trim_end_matches('/'));
-    let response = reqwest::Client::new()
+    let request_body = serde_json::to_vec(&json!({
+        "method": method, "params": params, "targetDeviceId": target, "hop": hop + 1
+    }))
+    .map_err(|error| {
+        json!({"code":"peer_protocol_error","message":error.to_string()}).to_string()
+    })?;
+    if request_body.len() > MAX_PEER_BODY_BYTES {
+        return Err(json!({
+            "code":"peer_request_too_large",
+            "targetDeviceId":target,
+            "httpStatus":StatusCode::PAYLOAD_TOO_LARGE.as_u16(),
+            "retryable":false
+        })
+        .to_string());
+    }
+    let response = ctx.http_client.clone()
         .post(url)
         .bearer_auth(credential)
-        .json(&json!({
-            "method": method, "params": params, "targetDeviceId": target, "hop": hop + 1
-        }))
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(request_body)
         .send()
         .await
         .map_err(|e| {
@@ -1590,9 +1738,32 @@ async fn peer_call(
                 .to_string()
         })?;
     let status = response.status();
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_PEER_BODY_BYTES as u64)
+    {
+        return Err(json!({
+            "code":"peer_response_too_large",
+            "targetDeviceId":target,
+            "method":method,
+            "httpStatus":status.as_u16(),
+            "retryable":false
+        })
+        .to_string());
+    }
     let body = response.bytes().await.map_err(|e| {
-        json!({"code":"executor_unreachable","targetDeviceId":target,"method":method,"httpStatus":status.as_u16(),"message":e.to_string()}).to_string()
+        json!({"code":unavailable_code,"stage":stage,"targetDeviceId":target,"method":method,"httpStatus":status.as_u16(),"message":e.to_string(),"retryable":true}).to_string()
     })?;
+    if body.len() > MAX_PEER_BODY_BYTES {
+        return Err(json!({
+            "code":"peer_response_too_large",
+            "targetDeviceId":target,
+            "method":method,
+            "httpStatus":status.as_u16(),
+            "retryable":false
+        })
+        .to_string());
+    }
     let value: Value = serde_json::from_slice(&body).map_err(|_| {
         // An empty proxy 502/503/504 means this connector could not reach the executor. It is
         // not an application failure on that executor and should be shown as device health.
@@ -1609,7 +1780,17 @@ async fn peer_call(
         json!({"code":code,"stage":stage,"targetDeviceId":target,"method":method,"httpStatus":status.as_u16(),"bodyKind":if body.is_empty() { "empty" } else { "non_json" },"retryable":!status.is_success()}).to_string()
     })?;
     if !status.is_success() {
-        return Err(json!({"code":value.get("code").and_then(Value::as_str).unwrap_or(if catalog_request { "catalog_server_unavailable" } else { "executor_unavailable" }),"stage":stage,"targetDeviceId":target,"method":method,"httpStatus":status.as_u16(),"retryable":status.is_server_error(),"error":value}).to_string());
+        let code = value
+            .get("error")
+            .and_then(|error| error.get("code"))
+            .and_then(Value::as_str)
+            .or_else(|| value.get("code").and_then(Value::as_str))
+            .unwrap_or(if catalog_request {
+                "catalog_server_unavailable"
+            } else {
+                "executor_unavailable"
+            });
+        return Err(json!({"code":code,"stage":stage,"targetDeviceId":target,"method":method,"httpStatus":status.as_u16(),"retryable":status.is_server_error(),"error":value}).to_string());
     }
     value.get("result").cloned().ok_or_else(|| {
         value
@@ -1649,10 +1830,7 @@ async fn live_network_membership(
         .into_iter()
         .map(|(id, endpoint, credential)| (id, (endpoint, credential)))
         .collect::<HashMap<_, _>>();
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(3))
-        .build()
-        .map_err(|e| e.to_string())?;
+    let client = ctx.http_client.clone();
     Ok(join_all(members.into_iter().map(|mut member| {
         let client = client.clone();
         let local = ctx.device_id.as_deref() == Some(member.device_id.as_str());
@@ -1753,12 +1931,24 @@ async fn peer_rpc(
     .await
     {
         Ok(result) => (StatusCode::OK, Json(json!({"result":result}))),
-        Err(error) => (
-            StatusCode::BAD_GATEWAY,
-            Json(
-                json!({"error":serde_json::from_str::<Value>(&error).unwrap_or(json!({"code":"executor_unreachable","message":error}))}),
-            ),
-        ),
+        Err(error) => {
+            let value = serde_json::from_str::<Value>(&error)
+                .unwrap_or_else(|_| json!({"code":"internal_error","message":error}));
+            let status = peer_error_status(&value);
+            (status, Json(json!({"error":value})))
+        }
+    }
+}
+
+fn peer_error_status(error: &Value) -> StatusCode {
+    match error.get("code").and_then(Value::as_str).unwrap_or("") {
+        "unauthorized" => StatusCode::UNAUTHORIZED,
+        "forwarding_loop" => StatusCode::LOOP_DETECTED,
+        "peer_request_too_large" | "peer_response_too_large" => StatusCode::PAYLOAD_TOO_LARGE,
+        "unknown_executor" => StatusCode::NOT_FOUND,
+        "stale_generation" => StatusCode::CONFLICT,
+        "invalid_request" | "peer_protocol_error" => StatusCode::BAD_REQUEST,
+        _ => StatusCode::BAD_GATEWAY,
     }
 }
 
@@ -1787,7 +1977,7 @@ async fn discover_fixed_server(data_dir: &std::path::Path) -> Result<Option<Stri
         .collect::<Result<_, _>>()
         .map_err(|error| error.to_string())?;
     drop(conn);
-    let client = reqwest::Client::new();
+    let client = shared_http_client();
     let candidates = join_all(peers.into_iter().map(|(device_id, endpoint)| {
         let client = client.clone();
         let network_id = network_id.clone();
@@ -1847,6 +2037,7 @@ async fn dispatch_to_owner(
     if method == "transfer.stage" {
         return dispatch_local(ctx, method, params).await;
     }
+    validate_session_generation(ctx, &params)?;
     // Catalog metadata is a control-plane concern. In the fixed-server topology it goes directly
     // to that server; in a legacy topology any local catalog replica can forward it to the leader.
     // It must never depend on the assigned executor being online.
@@ -1893,10 +2084,17 @@ async fn dispatch_to_owner(
     }
     if method == "terminal.create" || method == "terminal.attach" {
         if let Some(session) = params.get("sessionId").and_then(Value::as_str) {
-            ctx.session_tasks
-                .lock()
-                .unwrap()
-                .insert(session.to_owned(), owner.clone());
+            ctx.session_tasks.lock().unwrap().insert(
+                session.to_owned(),
+                SessionRoute {
+                    task_id: params
+                        .get("taskId")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned),
+                    device_id: owner.clone(),
+                    execution_generation: params.get("executionGeneration").and_then(Value::as_i64),
+                },
+            );
             // The executor persists create ownership in the same transaction as PTY spawn.
             // Do not pre-write it here: a failed spawn must leave no routable stale session.
         }
@@ -2000,16 +2198,21 @@ async fn dispatch_local(
                 .map_err(|e| e.to_string())?;
             Ok(Value::Null)
         }
-        "terminal.attach" => serde_json::to_value(
-            ctx.core
+        "terminal.attach" => {
+            let (status, replay) = ctx
+                .core
                 .terminal
-                .attach_for_task(
+                .attach_for_task_with_replay(
                     ctx.core.data_dir(),
                     serde_json::from_value(params).map_err(|e| e.to_string())?,
                 )
-                .map_err(|e| e.to_string())?,
-        )
-        .map_err(|e| e.to_string()),
+                .map_err(|e| e.to_string())?;
+            Ok(json!({
+                "sessionId": status.session_id,
+                "running": status.running,
+                "replay": replay,
+            }))
+        }
         "terminal.restart" => serde_json::to_value(
             ctx.core
                 .terminal
@@ -2296,7 +2499,7 @@ async fn dispatch_local(
                 .ok()
                 .and_then(|v| v.into_string().ok())
                 .unwrap_or_else(|| "swath-device".into());
-            let response = reqwest::Client::new().post(format!("{}/api/enrollment/request", endpoint.trim_end_matches('/'))).json(&json!({"networkId":network_id,"enrollmentId":enrollment_id,"secret":secret,"nodeId":node_id,"connectorEndpoint":ctx.connector_endpoint,"metadata":{"displayName":host,"hostname":host,"platform":std::env::consts::OS}})).send().await.map_err(|e|format!("coordinator_unreachable: {e}"))?;
+            let response = ctx.http_client.clone().post(format!("{}/api/enrollment/request", endpoint.trim_end_matches('/'))).json(&json!({"networkId":network_id,"enrollmentId":enrollment_id,"secret":secret,"nodeId":node_id,"connectorEndpoint":ctx.connector_endpoint,"metadata":{"displayName":host,"hostname":host,"platform":std::env::consts::OS}})).send().await.map_err(|e|format!("coordinator_unreachable: {e}"))?;
             if !response.status().is_success() {
                 return Err(format!(
                     "join_request_rejected: {}",
@@ -2806,7 +3009,7 @@ async fn preview_proxy_inner(
                 endpoint.trim_end_matches('/')
             )
         };
-        let client = reqwest::Client::new();
+        let client = ctx.http_client.clone();
         let mut outbound = client
             .request(reqwest::Method::from_bytes(method.as_bytes()).unwrap(), url)
             .bearer_auth(credential);
@@ -3026,6 +3229,7 @@ mod tests {
             peer_relays: Arc::new(Mutex::new(HashMap::new())),
             allowed_origins: vec![],
             raft: None,
+            http_client: shared_http_client(),
         }
     }
 
@@ -3165,6 +3369,91 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
+    #[test]
+    fn peer_errors_keep_application_status_classes() {
+        assert_eq!(
+            peer_error_status(&json!({"code":"unauthorized"})),
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            peer_error_status(&json!({"code":"forwarding_loop"})),
+            StatusCode::LOOP_DETECTED
+        );
+        assert_eq!(
+            peer_error_status(&json!({"code":"unknown_executor"})),
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            peer_error_status(&json!({"code":"stale_generation"})),
+            StatusCode::CONFLICT
+        );
+        assert_eq!(
+            peer_error_status(&json!({"code":"executor_unreachable"})),
+            StatusCode::BAD_GATEWAY
+        );
+    }
+
+    #[test]
+    fn native_dispatch_uses_persistent_context_after_connector_stop() {
+        let root =
+            std::env::temp_dir().join(format!("swath-persistent-context-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let core = Core::start(root.clone(), ConnectorEvents::new()).unwrap();
+        catalog(&core, "a");
+        let manager = RemoteServerManager::new(core, ConnectorEvents::new());
+        manager
+            .context
+            .lock()
+            .unwrap()
+            .session_tasks
+            .lock()
+            .unwrap()
+            .insert(
+                "shell".into(),
+                SessionRoute {
+                    task_id: Some("t".into()),
+                    device_id: "a".into(),
+                    execution_generation: Some(1),
+                },
+            );
+        let context = manager.context.lock().unwrap().clone();
+        assert_eq!(
+            task_device(&context, "terminal.write", &json!({"sessionId":"shell"})).unwrap(),
+            Some("a".into())
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn peer_request_body_limit_is_enforced_before_network_io() {
+        let root =
+            std::env::temp_dir().join(format!("swath-peer-body-limit-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let core = Core::start(root.clone(), ConnectorEvents::new()).unwrap();
+        catalog(&core, "a");
+        let conn = config::connection_at(&config::db_path_in(core.data_dir()).unwrap()).unwrap();
+        conn.execute(
+            "INSERT INTO device_connectors(device_id,endpoint,credential) VALUES('b','http://127.0.0.1:1','test')",
+            [],
+        )
+        .unwrap();
+        let oversized = "x".repeat(MAX_PEER_BODY_BYTES);
+        let error = peer_call(
+            &context(core, "a"),
+            "b",
+            "task.rpc",
+            json!({"taskId":"t","payload":oversized}),
+            0,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(
+            serde_json::from_str::<Value>(&error).unwrap()["code"],
+            "peer_request_too_large"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
     #[tokio::test]
     async fn fixed_server_catalog_mutation_bypasses_assigned_executor() {
         let root = std::env::temp_dir().join(format!("swath-peer-{}", std::process::id()));
@@ -3288,6 +3577,8 @@ mod tests {
         catalog(&core, "a");
         let conn = config::connection_at(&config::db_path_in(core.data_dir()).unwrap()).unwrap();
         conn.execute("INSERT INTO terminal_task_sessions(session_id,task_id,device_id,execution_generation,created_at) VALUES('shell','t','b',1,0)", []).unwrap();
+        conn.execute("UPDATE tasks SET assigned_device_id='a' WHERE id='t'", [])
+            .unwrap();
         let ctx = context(core, "a");
         assert_eq!(
             task_device(&ctx, "terminal.write", &json!({"sessionId":"shell"}))
@@ -3505,11 +3796,14 @@ mod tests {
             "t"
         );
         // The browser's connector retains the session route; the executor remains authoritative.
-        a_context
-            .session_tasks
-            .lock()
-            .unwrap()
-            .insert("shell".into(), "b".into());
+        a_context.session_tasks.lock().unwrap().insert(
+            "shell".into(),
+            SessionRoute {
+                task_id: Some("t".into()),
+                device_id: "b".into(),
+                execution_generation: Some(1),
+            },
+        );
         dispatch_to_owner(
             &a_context,
             "terminal.write",

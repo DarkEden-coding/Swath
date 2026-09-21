@@ -5,8 +5,9 @@ use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::io::Read;
-use std::path::{Component, Path};
+use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::{Mutex, OnceLock};
 use std::thread;
 #[cfg(feature = "desktop")]
 use tauri::{AppHandle, Emitter};
@@ -16,10 +17,11 @@ use std::os::windows::process::CommandExt;
 
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const RS: char = '\x1f';
 const GIT_TIMEOUT: Duration = Duration::from_secs(300);
+const SOURCE_PREFIX: &str = "swath-repo:";
 #[cfg(feature = "desktop")]
 const GIT_DATA_EVENT: &str = "git:data";
 
@@ -87,7 +89,42 @@ fn read_capped<R: Read + Send + 'static>(
 }
 
 /// Builds a non-interactive Git command with captured output.
-fn git_command(cwd: &str, args: &[&str]) -> Command {
+/// A repository source is an opaque identity in the catalog.  The process-local path is only
+/// a launch hint for the device that imported it; it is never persisted as a cross-device path.
+static SOURCE_PATHS: OnceLock<Mutex<HashMap<String, PathBuf>>> = OnceLock::new();
+
+fn source_paths() -> &'static Mutex<HashMap<String, PathBuf>> {
+    SOURCE_PATHS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn resolve_source_path(source: &str) -> Result<PathBuf, String> {
+    let source = source.trim();
+    if source.is_empty() {
+        return Err("git source is empty".into());
+    }
+    if source.starts_with(SOURCE_PREFIX) {
+        let paths = source_paths()
+            .lock()
+            .map_err(|_| "git source registry is unavailable".to_string())?;
+        return paths
+            .get(source)
+            .cloned()
+            .ok_or_else(|| "git source is not available on this device".to_string());
+    }
+    // Legacy migration fingerprints are identifiers, not paths.  Never let one fall through to
+    // Command::current_dir and accidentally run Git in the connector's process directory.
+    if source.starts_with("git:") || source.starts_with("path:") {
+        return Err("legacy git source is not available on this device".into());
+    }
+    Ok(PathBuf::from(source))
+}
+
+fn source_arg(source: &str) -> Result<String, String> {
+    Ok(resolve_source_path(source)?.to_string_lossy().into_owned())
+}
+
+fn git_command(cwd: &str, args: &[&str]) -> Result<Command, String> {
+    let cwd = resolve_source_path(cwd)?;
     let mut command = Command::new("git");
     command
         .args(args)
@@ -100,12 +137,25 @@ fn git_command(cwd: &str, args: &[&str]) -> Command {
         .env("GIT_DISCOVERY_ACROSS_FILESYSTEM", "1");
     #[cfg(windows)]
     command.creation_flags(CREATE_NO_WINDOW);
-    command
+    Ok(command)
 }
 
 /// Runs Git with bounded output and a fixed timeout.
 fn run_git(cwd: &str, args: &[&str], stream: Option<&StreamTarget>) -> RunGitResult {
-    let mut child = match git_command(cwd, args).spawn() {
+    let mut command = match git_command(cwd, args) {
+        Ok(command) => command,
+        Err(stderr) => {
+            if let Some(target) = stream {
+                target.emit(&stderr);
+            }
+            return RunGitResult {
+                exit_code: 1,
+                stdout: String::new(),
+                stderr,
+            };
+        }
+    };
+    let mut child = match command.spawn() {
         Ok(child) => child,
         Err(err) => {
             let exit_code = if err.kind() == std::io::ErrorKind::NotFound {
@@ -190,6 +240,7 @@ fn paths_field(v: &Value) -> Option<Vec<String>> {
 }
 
 #[cfg(feature = "desktop")]
+#[allow(dead_code)] // Kept for the desktop-only embedding API; task RPC uses rpc_headless.
 fn stream_from_request(app: &AppHandle, request: &Value) -> Option<StreamTarget> {
     let run_id = str_field(request, "runId")?.trim();
     if run_id.is_empty() {
@@ -585,6 +636,7 @@ pub fn rpc_headless(
 }
 
 #[cfg(feature = "desktop")]
+#[allow(dead_code)] // Legacy desktop API; all task-scoped callers route through the connector.
 pub fn rpc(app: &AppHandle, request: Value) -> GitResult<Value> {
     let op = str_field(&request, "op").unwrap_or("");
     let cwd = str_field(&request, "cwd").unwrap_or("").trim();
@@ -668,7 +720,7 @@ pub fn rpc(app: &AppHandle, request: Value) -> GitResult<Value> {
         _ => json!({ "exitCode": 1, "stdout": "", "stderr": "Unknown git operation" }),
     })
 }
-/// Ensures a legacy folder has an initial Git history and returns its canonical common Git dir.
+/// Ensures a legacy folder has an initial Git history and returns its portable repository identity.
 /// Dirty Git sources are rejected before task forking, leaving index, worktree, renames and
 /// untracked files untouched; this is the quiesce policy rather than an unsafe partial snapshot.
 pub fn prepare_project_source(path: &str) -> Result<String, String> {
@@ -730,10 +782,84 @@ pub fn prepare_project_source(path: &str) -> Result<String, String> {
     if common.exit_code != 0 {
         return Err(format!("git_preflight_failed: {}", common.stderr.trim()));
     }
-    let source = std::fs::canonicalize(common.stdout.trim())
+    let common = std::fs::canonicalize(common.stdout.trim())
         .map_err(|e| format!("git_preflight_failed: {e}"))?;
     preflight_tree(&cwd)?;
-    Ok(source.to_string_lossy().into_owned())
+    let source = repository_source(&root, &common)?;
+    register_source(&source, root);
+    Ok(source)
+}
+
+/// Returns a stable catalog identity without persisting the importing device's absolute path.
+///
+/// A per-repository ID is written to local Git config so moving the folder does not change the
+/// identity, while unrelated clones of the same remote cannot accidentally collide.  A
+/// process-local path registry lets the importing operation continue to use the source for the
+/// initial replica; another device must use its configured replica instead of guessing a path.
+fn repository_source(root: &Path, common: &Path) -> Result<String, String> {
+    let cwd = root.to_string_lossy();
+    let configured = run_git(
+        &cwd,
+        &["config", "--local", "--get", "swath.repository-id"],
+        None,
+    );
+    let id = if configured.exit_code == 0 && !configured.stdout.trim().is_empty() {
+        configured.stdout.trim().to_string()
+    } else {
+        // Do not key this by an origin URL alone: two independent clones of the same remote can
+        // legitimately be different project authorities.  The generated ID is persisted in Git
+        // config, so copying a repository carries its identity while an unrelated clone cannot
+        // collide merely because it lives at the same path on another device.
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or_default();
+        let material = format!(
+            "local:{}:{}:{}",
+            common.display(),
+            std::process::id(),
+            nonce
+        );
+        let id = format!("{:016x}", stable_hash(material.as_bytes()));
+        let write = run_git(
+            &cwd,
+            &[
+                "config",
+                "--local",
+                "--replace-all",
+                "swath.repository-id",
+                &id,
+            ],
+            None,
+        );
+        if write.exit_code != 0 {
+            return Err(format!("git_preflight_failed: {}", write.stderr.trim()));
+        }
+        id
+    };
+    if id.is_empty()
+        || id.len() > 128
+        || !id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+    {
+        return Err("git_preflight_failed: invalid repository identity".into());
+    }
+    Ok(format!("{SOURCE_PREFIX}{id}"))
+}
+
+fn stable_hash(bytes: &[u8]) -> u64 {
+    let mut hash = 14695981039346656037u64;
+    for byte in bytes {
+        hash = (hash ^ u64::from(*byte)).wrapping_mul(1099511628211);
+    }
+    hash
+}
+
+fn register_source(source: &str, root: PathBuf) {
+    if let Ok(mut paths) = source_paths().lock() {
+        paths.insert(source.to_string(), root);
+    }
 }
 
 /// Returns the checked-out branch name, or `HEAD` for a deliberately detached source.
@@ -776,13 +902,14 @@ pub fn create_bundle(source: &str, destination: &Path) -> Result<(), String> {
 
 /// Creates or updates a project-private bare object store without publishing remote refs.
 pub fn ensure_project_replica(source: &str, replica: &Path) -> Result<(), String> {
+    let source_path = source_arg(source)?;
     if !replica.exists() {
         if let Some(parent) = replica.parent() {
             std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
         let r = run_git(
             ".",
-            &["clone", "--bare", source, &replica.to_string_lossy()],
+            &["clone", "--bare", &source_path, &replica.to_string_lossy()],
             None,
         );
         if r.exit_code != 0 {
@@ -791,7 +918,12 @@ pub fn ensure_project_replica(source: &str, replica: &Path) -> Result<(), String
     }
     let r = run_git(
         &replica.to_string_lossy(),
-        &["fetch", "--no-tags", source, "+refs/*:refs/swath/source/*"],
+        &[
+            "fetch",
+            "--no-tags",
+            &source_path,
+            "+refs/*:refs/swath/source/*",
+        ],
         None,
     );
     if r.exit_code != 0 {
@@ -829,13 +961,18 @@ pub fn provision_worktree(
     worktree: &Path,
     base: &str,
 ) -> Result<(), String> {
-    let source_is_replica = Path::new(source) == replica;
+    let source_is_replica = resolve_source_path(source)
+        .ok()
+        .and_then(|path| std::fs::canonicalize(path).ok())
+        .zip(std::fs::canonicalize(replica).ok())
+        .is_some_and(|(source, replica)| source == replica);
     if !source_is_replica {
         ensure_project_replica(source, replica)?;
     }
     let repo = replica.to_string_lossy();
     if !source_is_replica {
-        let fetch = run_git(&repo, &["fetch", "--no-tags", source, base], None);
+        let source_path = source_arg(source)?;
+        let fetch = run_git(&repo, &["fetch", "--no-tags", &source_path, base], None);
         if fetch.exit_code != 0 {
             return Err(format!("base_fetch_failed: {}", fetch.stderr.trim()));
         }
@@ -924,4 +1061,47 @@ fn preflight_tree(cwd: &str) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        default_branch, ensure_project_replica, prepare_project_source, resolve_ref, SOURCE_PREFIX,
+    };
+    use std::fs;
+    use std::path::Path;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temporary_repo() -> std::path::PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("swath-git-source-{nonce}"));
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("README.md"), "source\n").unwrap();
+        root
+    }
+
+    #[test]
+    fn project_source_is_an_opaque_identity_and_remains_usable_locally() {
+        let root = temporary_repo();
+        let source = prepare_project_source(root.to_str().unwrap()).unwrap();
+        assert!(source.starts_with(SOURCE_PREFIX));
+        assert!(!Path::new(&source).is_absolute());
+        assert_eq!(default_branch(&source).unwrap(), "main");
+        let head = resolve_ref(&source, "HEAD").unwrap();
+        assert_eq!(head.len(), 40);
+
+        let replica = root.join("replica.git");
+        ensure_project_replica(&source, &replica).unwrap();
+        assert!(replica.join("HEAD").exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn legacy_source_tokens_never_fall_back_to_the_process_directory() {
+        let error = resolve_ref("git:.git", "HEAD").unwrap_err();
+        assert!(error.contains("legacy git source"));
+    }
 }

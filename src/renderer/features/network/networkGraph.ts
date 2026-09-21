@@ -23,7 +23,7 @@ export interface NetworkGraph {
   edges: NetworkGraphEdge[];
 }
 
-/** Creates a deterministic circular mesh from durable membership and ephemeral agent activity. */
+/** Creates a deterministic server-centered view from membership and ephemeral agent activity. */
 export function buildNetworkGraph(
   devices: Device[],
   members: NetworkMember[],
@@ -33,7 +33,7 @@ export function buildNetworkGraph(
 ): NetworkGraph {
   const memberByDevice = new Map(members.map((member) => [member.deviceId, member]));
   const count = devices.length;
-  const nodes = devices.map((device, index): NetworkGraphNode => {
+  const nodes = devices.map((device): NetworkGraphNode => {
     const member = memberByDevice.get(device.id) ?? null;
     const assigned = tasks.filter(
       (task) => task.assignedDeviceId === device.id && task.lifecycle === "active",
@@ -42,9 +42,6 @@ export function buildNetworkGraph(
     const running = panes.filter(
       (pane) => taskIds.has(pane.taskId) && activity[pane.id] === "running",
     ).length;
-    const angle = count === 1 ? -Math.PI / 2 : -Math.PI / 2 + (index * Math.PI * 2) / count;
-    const radiusX = count <= 2 ? 190 : 285;
-    const radiusY = count <= 2 ? 95 : 155;
     const healthy = member?.healthy === true;
     return {
       device,
@@ -53,17 +50,38 @@ export function buildNetworkGraph(
       running,
       activeTasks: assigned.length,
       state: running > 0 ? "running" : healthy ? "available" : "offline",
-      x: count === 1 ? 400 : 400 + Math.cos(angle) * radiusX,
-      y: count === 1 ? 220 : 220 + Math.sin(angle) * radiusY,
+      x: 400,
+      y: 220,
     };
   });
+
+  // The catalog has one fixed server. Keep it at the center and arrange executor
+  // devices around it so the diagram does not imply peer-to-peer replication.
+  const serverIndex = nodes.findIndex((node) => node.member?.voter === true);
+  const centerIndex = serverIndex >= 0 ? serverIndex : count === 1 ? 0 : -1;
+  if (centerIndex >= 0) {
+    nodes[centerIndex]!.x = 400;
+    nodes[centerIndex]!.y = 220;
+  }
+  const clients = nodes.filter((_, index) => index !== centerIndex);
+  const radiusX = clients.length <= 2 ? 190 : 285;
+  const radiusY = clients.length <= 2 ? 95 : 155;
+  clients.forEach((node, index) => {
+    const angle = -Math.PI / 2 + (index * Math.PI * 2) / clients.length;
+    node.x = 400 + Math.cos(angle) * radiusX;
+    node.y = 220 + Math.sin(angle) * radiusY;
+  });
+
   const edges: NetworkGraphEdge[] = [];
-  for (let source = 0; source < nodes.length; source += 1)
-    for (let target = source + 1; target < nodes.length; target += 1)
+  if (centerIndex >= 0) {
+    const server = nodes[centerIndex]!;
+    for (const client of clients) {
       edges.push({
-        source: nodes[source]!,
-        target: nodes[target]!,
-        healthy: nodes[source]!.healthy && nodes[target]!.healthy,
+        source: server,
+        target: client,
+        healthy: server.healthy && client.healthy,
       });
+    }
+  }
   return { nodes, edges };
 }

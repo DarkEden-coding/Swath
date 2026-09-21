@@ -5,6 +5,26 @@ on:
   pull_request:
 
 jobs:
+  fmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
+
+  clippy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings
+
   desktop-tests:
     runs-on: macos-latest
     defaults:
@@ -13,7 +33,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo test
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --all-targets
 
   headless-linux:
     runs-on: ubuntu-latest
@@ -23,4 +44,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --all-targets --no-default-features
       - run: cargo build --no-default-features --bin swath-headless

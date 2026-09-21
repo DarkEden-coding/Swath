@@ -1,5 +1,6 @@
 import {
   useCallback,
+  useEffect,
   useRef,
   useState,
   type DragEvent,
@@ -8,6 +9,16 @@ import {
 } from "react";
 
 export type ReorderAxis = "horizontal" | "vertical";
+
+/** Converts an insertion point into the final index used by the reorder callback. */
+export function finalReorderIndex(
+  fromIndex: number,
+  insertionIndex: number,
+  itemCount: number,
+): number | null {
+  const toIndex = fromIndex < insertionIndex ? insertionIndex - 1 : insertionIndex;
+  return toIndex >= 0 && toIndex < itemCount && fromIndex !== toIndex ? toIndex : null;
+}
 
 export interface UseReorderDragOptions {
   /** Direction in which insertion points are measured. */
@@ -59,6 +70,7 @@ export function useReorderDrag(options: UseReorderDragOptions): ReorderDragBindi
   const [draggedId, setDraggedId] = useState<string | null>(null);
   const [dropIndex, setDropIndex] = useState<number | null>(null);
   const nativeDragging = useRef(false);
+  const mouseDragCleanup = useRef<(() => void) | null>(null);
   const capturedPointer = useRef<{
     pointerId: number;
     id: string;
@@ -82,6 +94,8 @@ export function useReorderDrag(options: UseReorderDragOptions): ReorderDragBindi
   );
 
   const finishDrag = useCallback((): void => {
+    mouseDragCleanup.current?.();
+    mouseDragCleanup.current = null;
     nativeDragging.current = false;
     unlockTextSelection();
     setDraggedId(null);
@@ -92,9 +106,8 @@ export function useReorderDrag(options: UseReorderDragOptions): ReorderDragBindi
     (id: string | null, insertionIndex: number): void => {
       const fromIndex = id === null ? -1 : findIndexById(id);
       if (fromIndex !== -1) {
-        const toIndex = fromIndex < insertionIndex ? insertionIndex - 1 : insertionIndex;
-        if (toIndex >= 0 && toIndex < itemCount && fromIndex !== toIndex)
-          onMove(fromIndex, toIndex);
+        const toIndex = finalReorderIndex(fromIndex, insertionIndex, itemCount);
+        if (toIndex !== null) onMove(fromIndex, toIndex);
       }
       finishDrag();
     },
@@ -103,6 +116,10 @@ export function useReorderDrag(options: UseReorderDragOptions): ReorderDragBindi
 
   const startNativeDrag = useCallback(
     (event: DragEvent, id: string, initialIndex: number): void => {
+      // Native drag is only retained for the project list. If a browser starts it after the
+      // mouse fallback was armed, tear down that fallback before handling the native gesture.
+      mouseDragCleanup.current?.();
+      mouseDragCleanup.current = null;
       nativeDragging.current = true;
       lockTextSelection();
       setDraggedId(id);
@@ -137,7 +154,9 @@ export function useReorderDrag(options: UseReorderDragOptions): ReorderDragBindi
 
   const startPointerDrag = useCallback(
     (event: ReactMouseEvent, id: string): void => {
-      if (event.button !== 0) return;
+      if (event.button !== 0 || nativeDragging.current) return;
+      mouseDragCleanup.current?.();
+      mouseDragCleanup.current = null;
       // Lock immediately on mousedown so dragging over terminals cannot select text.
       lockTextSelection();
       const startX = event.clientX;
@@ -155,8 +174,7 @@ export function useReorderDrag(options: UseReorderDragOptions): ReorderDragBindi
         setDropIndex(getDropIndex(axis === "horizontal" ? moveEvent.clientX : moveEvent.clientY));
       };
       const onUp = (upEvent: MouseEvent): void => {
-        window.removeEventListener("mousemove", onMove);
-        window.removeEventListener("mouseup", onUp);
+        cleanup();
         if (nativeDragging.current) return;
         if (!active) {
           unlockTextSelection();
@@ -165,14 +183,22 @@ export function useReorderDrag(options: UseReorderDragOptions): ReorderDragBindi
         upEvent.preventDefault();
         moveById(id, getDropIndex(axis === "horizontal" ? upEvent.clientX : upEvent.clientY));
       };
+      const cleanup = (): void => {
+        window.removeEventListener("mousemove", onMove);
+        window.removeEventListener("mouseup", onUp);
+        if (mouseDragCleanup.current === cleanup) mouseDragCleanup.current = null;
+      };
       window.addEventListener("mousemove", onMove);
       window.addEventListener("mouseup", onUp);
+      mouseDragCleanup.current = cleanup;
     },
     [axis, getDropIndex, moveById],
   );
 
   const startCapturedPointerDrag = useCallback((event: ReactPointerEvent, id: string): void => {
-    if (event.button !== 0 || capturedPointer.current) return;
+    if (event.button !== 0 || capturedPointer.current || nativeDragging.current) return;
+    mouseDragCleanup.current?.();
+    mouseDragCleanup.current = null;
     capturedPointer.current = {
       pointerId: event.pointerId,
       id,
@@ -220,6 +246,18 @@ export function useReorderDrag(options: UseReorderDragOptions): ReorderDragBindi
     capturedPointer.current = null;
     finishDrag();
   }, [finishDrag]);
+
+  // A component can disappear while a pointer or mouse gesture is in flight (for example when
+  // switching workspaces). Release both the body lock and any window listeners in that case.
+  useEffect(
+    () => () => {
+      mouseDragCleanup.current?.();
+      mouseDragCleanup.current = null;
+      capturedPointer.current = null;
+      unlockTextSelection();
+    },
+    [],
+  );
 
   return {
     draggedId,

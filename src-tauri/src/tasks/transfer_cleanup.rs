@@ -116,7 +116,10 @@ fn task_row(
     conn: &rusqlite::Connection,
     task: &str,
 ) -> Result<(String, i64, String, String), String> {
-    conn.query_row("SELECT assigned_device_id,execution_generation,project_id,worktree_path FROM tasks t JOIN task_provisioning p ON p.task_id=t.id WHERE t.id=?1 AND t.tombstoned_at IS NULL", params![task], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).map_err(|_| "task_not_found".into())
+    // The provisioning path is only the creation-time path. Transfers add a path for the
+    // receiving device, so all executor-facing operations must resolve the path for the current
+    // owner from the device-specific table.
+    conn.query_row("SELECT t.assigned_device_id,t.execution_generation,t.project_id,COALESCE(p.path,q.worktree_path) FROM tasks t JOIN task_provisioning q ON q.task_id=t.id LEFT JOIN device_task_paths p ON p.task_id=t.id AND p.device_id=t.assigned_device_id WHERE t.id=?1 AND t.tombstoned_at IS NULL", params![task], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).map_err(|_| "task_not_found".into())
 }
 fn manifest(path: &Path, root: &Path, entries: &mut Vec<Value>) -> Result<(), String> {
     for entry in fs::read_dir(path).map_err(|e| e.to_string())? {
@@ -300,6 +303,16 @@ fn stream_file(source: &Path, destination: &Path) -> Result<(), String> {
 fn copy_tree(source: &Path, destination: &Path) -> Result<(), String> {
     copy_tree_from(source, destination, source)
 }
+
+fn task_ref(task: &str) -> String {
+    format!("refs/heads/swath/tasks/{task}")
+}
+
+fn task_refspec(task: &str) -> String {
+    let reference = task_ref(task);
+    format!("+{reference}:{reference}")
+}
+
 fn copy_tree_from(source: &Path, destination: &Path, root: &Path) -> Result<(), String> {
     for entry in fs::read_dir(source).map_err(|e| e.to_string())? {
         let entry = entry.map_err(|e| e.to_string())?;
@@ -515,6 +528,42 @@ fn send_tree_files<'a>(
 /// Runs a source-to-destination transfer through authenticated connector APIs.  No destination
 /// path is ever interpreted on the source machine; the destination owns its staging directory.
 pub async fn transfer_confirm(data_dir: &Path, request: &Value) -> Result<Value, String> {
+    let operation_id = request
+        .get("operationId")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned);
+    let confirmed = request.get("agentsStopped").and_then(Value::as_bool) == Some(true)
+        && request.get("serverConfirmed").and_then(Value::as_bool) == Some(true);
+    let result = transfer_confirm_inner(data_dir, request).await;
+    // A transfer fence is a temporary execution lock. Any failure before ownership is committed
+    // must make the operation retryable; otherwise a preflight drift, connector outage, or local
+    // filesystem error leaves the task frozen forever. Once ownership is committed the phase is
+    // deliberately left alone so recovery continues forward.
+    if confirmed {
+        if let Some(operation_id) = operation_id {
+            let failed = result
+                .as_ref()
+                .map(|value| value.get("ok") != Some(&Value::Bool(true)))
+                .unwrap_or(true);
+            if failed {
+                release_transfer_fence(data_dir, &operation_id, "transfer_failed");
+            }
+        }
+    }
+    result
+}
+
+fn release_transfer_fence(data_dir: &Path, operation_id: &str, reason: &str) {
+    if let Ok(conn) = catalog_connection(data_dir) {
+        let _ = conn.execute(
+            "UPDATE task_operations SET phase='preflight',last_error=?2,updated_at=strftime('%s','now') WHERE operation_id=?1 AND kind='transfer' AND phase IN ('source frozen','destination staged','verified') AND (last_error IS NULL OR last_error!='ownership_pending')",
+            params![operation_id, reason],
+        );
+    }
+}
+
+async fn transfer_confirm_inner(data_dir: &Path, request: &Value) -> Result<Value, String> {
     let oid = field(request, "operationId")?;
     if request.get("agentsStopped").and_then(Value::as_bool) != Some(true)
         || request.get("serverConfirmed").and_then(Value::as_bool) != Some(true)
@@ -537,14 +586,6 @@ pub async fn transfer_confirm(data_dir: &Path, request: &Value) -> Result<Value,
             "Transfer was cancelled before commit",
         ));
     }
-    let (owner, current_gen, project, _) = task_row(&conn, &task)?;
-    if current_gen != generation {
-        return Ok(error("stale_generation", "Task generation changed"));
-    }
-    let source = PathBuf::from(source);
-    if !source.is_dir() {
-        return Ok(error("source_unavailable", "Frozen source is unavailable"));
-    }
     let destination_device: String = conn
         .query_row(
             "SELECT destination_device_id FROM task_operations WHERE operation_id=?1",
@@ -552,7 +593,31 @@ pub async fn transfer_confirm(data_dir: &Path, request: &Value) -> Result<Value,
             |r| r.get(0),
         )
         .map_err(|e| e.to_string())?;
-    if phase == "preflight" {
+    let ownership_pending: bool = conn
+        .query_row(
+            "SELECT last_error='ownership_pending' FROM task_operations WHERE operation_id=?1",
+            params![oid],
+            |r| r.get(0),
+        )
+        .unwrap_or(false);
+    let (owner, current_gen, project, _) = task_row(&conn, &task)?;
+    if current_gen != generation {
+        // A projection timeout can happen after the ownership mutation commits but before this
+        // device advances its operation row. Once the new owner is visible, finish the durable
+        // ladder without retransferring or offering cancellation.
+        if ownership_pending && owner == destination_device && current_gen == generation + 1 {
+            conn.execute("UPDATE task_operations SET phase='complete',last_error=NULL,completed_at=strftime('%s','now'),updated_at=strftime('%s','now') WHERE operation_id=?1", params![oid]).map_err(|e| e.to_string())?;
+            return Ok(
+                json!({"ok":true,"operationId":oid,"phase":"complete","generation":current_gen,"sourceRetired":true,"freezePersists":true}),
+            );
+        }
+        return Ok(error("stale_generation", "Task generation changed"));
+    }
+    let source = PathBuf::from(source);
+    if !source.is_dir() {
+        return Ok(error("source_unavailable", "Frozen source is unavailable"));
+    }
+    if phase == "preflight" || ownership_pending {
         conn.execute("UPDATE task_operations SET phase='source frozen',updated_at=strftime('%s','now') WHERE operation_id=?1",params![oid]).map_err(|e|e.to_string())?;
     }
     let snapshot: Value = serde_json::from_str(&snap).map_err(|_| "invalid_snapshot")?;
@@ -673,6 +738,10 @@ pub async fn transfer_confirm(data_dir: &Path, request: &Value) -> Result<Value,
     }
     conn.execute("UPDATE task_operations SET phase='destination staged',updated_at=strftime('%s','now') WHERE operation_id=?1",params![oid]).map_err(|e|e.to_string())?;
     conn.execute("UPDATE task_operations SET phase='verified',updated_at=strftime('%s','now') WHERE operation_id=?1",params![oid]).map_err(|e|e.to_string())?;
+    // Mark the point of no cancellation before the shared ownership mutation. The mutation may
+    // commit successfully while its projection wait returns an error, so this marker must survive
+    // that uncertain result and force forward recovery while retaining the normal frozen phase.
+    conn.execute("UPDATE task_operations SET last_error='ownership_pending',updated_at=strftime('%s','now') WHERE operation_id=?1",params![oid]).map_err(|e|e.to_string())?;
     catalog_write(
         data_dir,
         request,
@@ -681,7 +750,7 @@ pub async fn transfer_confirm(data_dir: &Path, request: &Value) -> Result<Value,
         json!({"taskId":task,"deviceId":destination_device,"generation":generation}),
     )
     .await?;
-    conn.execute("UPDATE task_operations SET phase='ownership committed',updated_at=strftime('%s','now') WHERE operation_id=?1",params![oid]).map_err(|e|e.to_string())?;
+    conn.execute("UPDATE task_operations SET phase='ownership committed',last_error=NULL,updated_at=strftime('%s','now') WHERE operation_id=?1",params![oid]).map_err(|e|e.to_string())?;
     conn.execute("UPDATE task_operations SET phase='source retired',updated_at=strftime('%s','now') WHERE operation_id=?1",params![oid]).map_err(|e|e.to_string())?;
     conn.execute("UPDATE task_operations SET phase='complete',completed_at=strftime('%s','now'),updated_at=strftime('%s','now') WHERE operation_id=?1",params![oid]).map_err(|e|e.to_string())?;
     Ok(
@@ -903,13 +972,14 @@ pub async fn transfer_stage(data_dir: &Path, request: &Value) -> Result<Value, S
                     ));
                 }
             }
+            let refspec = task_refspec(task);
             let out = Command::new("git")
                 .arg("-C")
                 .arg(&replica)
                 .args([
                     "fetch",
                     root.join("bundle").to_string_lossy().as_ref(),
-                    "+refs/*:refs/*",
+                    refspec.as_str(),
                 ])
                 .output()
                 .map_err(|e| e.to_string())?;
@@ -1058,6 +1128,28 @@ pub async fn transfer_stage(data_dir: &Path, request: &Value) -> Result<Value, S
             Ok(json!({"ok":verified,"phase":if verified {"verified"} else {"incomplete"}}))
         }
         "cancel" => {
+            // A delayed source projection can leave the operation row cancellable after the
+            // destination has already become the owner. Never remove that owner's worktree.
+            let saved: Value = serde_json::from_slice(
+                &fs::read(root.join("request.json")).map_err(|_| "transfer_not_initialized")?,
+            )
+            .map_err(|_| "invalid_transfer")?;
+            let task = field(&saved, "taskId")?;
+            let source = field(&saved, "sourceDeviceId")?;
+            let conn = catalog_connection(data_dir)?;
+            let owner: String = conn
+                .query_row(
+                    "SELECT assigned_device_id FROM tasks WHERE id=?1 AND tombstoned_at IS NULL",
+                    params![task],
+                    |r| r.get(0),
+                )
+                .map_err(|_| "task_not_found")?;
+            if owner != source {
+                return Ok(error(
+                    "cannot_cancel_committed",
+                    "Ownership may already be committed; recover the transfer forward",
+                ));
+            }
             if let Ok(bytes) = fs::read(root.join("destination")) {
                 if let Ok(path) = String::from_utf8(bytes) {
                     let path = PathBuf::from(path);
@@ -1178,7 +1270,9 @@ pub async fn transfer_stage(data_dir: &Path, request: &Value) -> Result<Value, S
                 .and_then(Value::as_str)
                 .ok_or("invalid_snapshot")?;
             let conn = catalog_connection(data_dir)?;
-            conn.execute("INSERT INTO device_task_paths(task_id,device_id,path,revision) SELECT ?1,?2,?3,1 WHERE NOT EXISTS(SELECT 1 FROM device_task_paths WHERE task_id=?1 AND device_id=?2)",params![task,device,dest.to_string_lossy()]).ok();
+            // A device can receive the same task again after a later transfer. Refresh its
+            // executor path instead of preserving the retired worktree from the first transfer.
+            conn.execute("INSERT INTO device_task_paths(task_id,device_id,path,revision) VALUES(?1,?2,?3,1) ON CONFLICT(task_id,device_id) DO UPDATE SET path=excluded.path,revision=device_task_paths.revision+1",params![task,device,dest.to_string_lossy()]).map_err(|e| e.to_string())?;
             let source: String = conn
                 .query_row(
                     "SELECT repository_source FROM projects WHERE id=?1",
@@ -1214,9 +1308,9 @@ pub async fn transfer_stage(data_dir: &Path, request: &Value) -> Result<Value, S
 
 pub async fn transfer_cancel(data_dir: &Path, request: &Value) -> Result<Value, String> {
     let oid = field(request, "operationId")?;
-    let (dest, device) = {
+    let (task, generation, source_device, dest, device, ownership_pending) = {
         let conn = catalog_connection(data_dir)?;
-        let Some((_, phase, _, _, dest, _)) = op(&conn, oid)? else {
+        let Some((task, phase, generation, _, dest, _)) = op(&conn, oid)? else {
             return Ok(error("operation_not_found", "Transfer does not exist"));
         };
         if matches!(
@@ -1228,32 +1322,93 @@ pub async fn transfer_cancel(data_dir: &Path, request: &Value) -> Result<Value, 
                 "Committed transfer must recover forward",
             ));
         }
-        let device = conn
+        let (source_device, device): (String, Option<String>) = conn
             .query_row(
-                "SELECT destination_device_id FROM task_operations WHERE operation_id=?1",
+                "SELECT COALESCE(source_device_id,''),destination_device_id FROM task_operations WHERE operation_id=?1",
                 params![oid],
-                |r| r.get::<_, String>(0),
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?
+            .unwrap_or_default();
+        let ownership_pending: bool = conn
+            .query_row(
+                "SELECT last_error='ownership_pending' FROM task_operations WHERE operation_id=?1",
+                params![oid],
+                |r| r.get(0),
+            )
+            .unwrap_or(false);
+        (
+            task,
+            generation,
+            source_device,
+            dest,
+            device,
+            ownership_pending,
+        )
+    };
+
+    if ownership_pending {
+        return Ok(error(
+            "cannot_cancel_committed",
+            "Ownership may already be committed; recover the transfer forward",
+        ));
+    }
+
+    // The operation row can lag the shared ownership mutation (for example if projection timed
+    // out after the mutation committed). Check the task fence itself before asking the destination
+    // to remove its worktree, and conservatively refuse cancellation on any generation change.
+    {
+        let conn = catalog_connection(data_dir)?;
+        let current: Option<(String, i64)> = conn
+            .query_row(
+                "SELECT assigned_device_id,execution_generation FROM tasks WHERE id=?1 AND tombstoned_at IS NULL",
+                params![task],
+                |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .optional()
             .map_err(|e| e.to_string())?;
-        (dest, device)
-    };
+        if current
+            .as_ref()
+            .map(|(owner, current_generation)| {
+                owner != &source_device || *current_generation != generation
+            })
+            .unwrap_or(true)
+        {
+            return Ok(error(
+                "cannot_cancel_committed",
+                "Ownership may already be committed; recover the transfer forward",
+            ));
+        }
+    }
+
     if let Some(device) = device {
         // Best effort only: cancellation remains durable even while a disconnected destination
         // later resumes and observes the cancelled source operation.
-        let _ = destination_stage(
+        let remote = destination_stage(
             data_dir,
             &device,
             json!({"action":"cancel","operationId":oid}),
         )
         .await;
+        if let Ok(reply) = remote {
+            if reply.get("code").and_then(Value::as_str) == Some("cannot_cancel_committed") {
+                return Ok(reply);
+            }
+        }
     }
     let conn = catalog_connection(data_dir)?;
     // Source records a remote URI; never recursively delete a path supplied by another device.
     if Path::new(&dest).starts_with(data_dir.join("task-worktrees")) {
         let _ = fs::remove_dir_all(dest);
     }
-    conn.execute("UPDATE task_operations SET phase='cancelled',cancel_requested=1,updated_at=strftime('%s','now') WHERE operation_id=?1",params![oid]).map_err(|e|e.to_string())?;
+    let changed = conn.execute("UPDATE task_operations SET phase='cancelled',cancel_requested=1,updated_at=strftime('%s','now') WHERE operation_id=?1 AND phase NOT IN ('ownership committed','source retired','complete') AND EXISTS(SELECT 1 FROM tasks WHERE id=?2 AND assigned_device_id=?3 AND execution_generation=?4 AND tombstoned_at IS NULL)",params![oid,task,source_device,generation]).map_err(|e|e.to_string())?;
+    if changed == 0 {
+        return Ok(error(
+            "cannot_cancel_committed",
+            "Ownership may already be committed; recover the transfer forward",
+        ));
+    }
     Ok(json!({"ok":true,"phase":"cancelled"}))
 }
 fn managed(data_dir: &Path, path: &Path) -> bool {
@@ -1603,6 +1758,14 @@ pub async fn restore_task(data_dir: &Path, request: &Value) -> Result<Value, Str
         }
         return Err(reason);
     }
+    // Reactivation is the explicit recovery point for a cleaned task. Release every cleanup
+    // operation fence only after the shared lifecycle mutation commits; otherwise a failed
+    // catalog write still leaves the task safely frozen for retry.
+    conn.execute(
+        "UPDATE task_operations SET phase='restored',completed_at=COALESCE(completed_at,strftime('%s','now')),updated_at=strftime('%s','now') WHERE task_id=?1 AND kind='cleanup' AND phase='cleanup frozen'",
+        params![task],
+    )
+    .map_err(|e| e.to_string())?;
     let losses: Value = conn
         .query_row(
             "SELECT known_losses_json FROM task_cleanup_receipts WHERE task_id=?1",
@@ -1634,6 +1797,32 @@ mod tests {
         assert!(safe_symlink_relative("nested/link", "../other/../target"));
         assert!(!safe_symlink_relative("link", "../outside"));
         assert!(!safe_symlink_relative("nested/link", "../../outside"));
+    }
+
+    #[test]
+    fn task_fetch_refspec_is_namespaced_to_one_task() {
+        assert_eq!(
+            task_refspec("task-123"),
+            "+refs/heads/swath/tasks/task-123:refs/heads/swath/tasks/task-123"
+        );
+        assert!(!task_refspec("task-123").contains("refs/*"));
+    }
+
+    #[test]
+    fn task_row_prefers_the_current_owner_path() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE tasks (id TEXT PRIMARY KEY, assigned_device_id TEXT, execution_generation INTEGER, project_id TEXT, tombstoned_at INTEGER);
+             CREATE TABLE task_provisioning (task_id TEXT PRIMARY KEY, worktree_path TEXT);
+             CREATE TABLE device_task_paths (task_id TEXT, device_id TEXT, path TEXT, PRIMARY KEY(task_id, device_id));
+             INSERT INTO tasks VALUES ('task','device-b',2,'project',NULL);
+             INSERT INTO task_provisioning VALUES ('task','/old/task');
+             INSERT INTO device_task_paths VALUES ('task','device-b','/current/task-device-b');",
+        )
+        .unwrap();
+        let (_, generation, _, path) = task_row(&conn, "task").unwrap();
+        assert_eq!(generation, 2);
+        assert_eq!(path, "/current/task-device-b");
     }
 
     #[test]
