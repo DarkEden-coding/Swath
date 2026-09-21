@@ -19,7 +19,7 @@ use axum::{
     Json, Router,
 };
 use base64ct::{Base64UrlUnpadded, Encoding};
-use futures_util::{SinkExt, StreamExt};
+use futures_util::{future::join_all, SinkExt, StreamExt};
 use openraft::BasicNode;
 use rusqlite::{params, OptionalExtension};
 use rust_embed::RustEmbed;
@@ -1429,7 +1429,18 @@ async fn peer_call(
         json!({"code":"executor_unreachable","targetDeviceId":target,"method":method,"httpStatus":status.as_u16(),"message":e.to_string()}).to_string()
     })?;
     let value: Value = serde_json::from_slice(&body).map_err(|_| {
-        let code = if status.is_success() { "peer_protocol_error" } else { "executor_unavailable" };
+        // An empty proxy 502/503/504 means this connector could not reach the executor. It is
+        // not an application failure on that executor and should be shown as device health.
+        let code = if status.is_success() {
+            "peer_protocol_error"
+        } else if matches!(
+            status,
+            StatusCode::BAD_GATEWAY | StatusCode::SERVICE_UNAVAILABLE | StatusCode::GATEWAY_TIMEOUT
+        ) {
+            "executor_unreachable"
+        } else {
+            "executor_unavailable"
+        };
         json!({"code":code,"targetDeviceId":target,"method":method,"httpStatus":status.as_u16(),"bodyKind":if body.is_empty() { "empty" } else { "non_json" }}).to_string()
     })?;
     if !status.is_success() {
@@ -1442,6 +1453,62 @@ async fn peer_call(
             .unwrap_or(json!({"code":"executor_unreachable"}))
             .to_string()
     })
+}
+
+/// Probes connector reachability for the browser gateway. Stored coordinator health is durable
+/// membership state, whereas the device map needs an up-to-date transport answer.
+async fn live_network_membership(
+    ctx: &ServerContext,
+    network_id: &str,
+) -> Result<Vec<network::Member>, String> {
+    let conn =
+        config::connection_at(&config::db_path_in(ctx.core.data_dir()).map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?;
+    let members = network::membership(&conn, network_id).map_err(|e| e.to_string())?;
+    let connectors = conn
+        .prepare(
+            "SELECT d.id,c.endpoint,c.credential FROM devices d JOIN device_connectors c ON c.device_id=d.id WHERE d.network_id=?1 AND d.tombstoned_at IS NULL",
+        )
+        .map_err(|e| e.to_string())?
+        .query_map([network_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    let connectors = connectors
+        .into_iter()
+        .map(|(id, endpoint, credential)| (id, (endpoint, credential)))
+        .collect::<HashMap<_, _>>();
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(3))
+        .build()
+        .map_err(|e| e.to_string())?;
+    Ok(join_all(members.into_iter().map(|mut member| {
+        let client = client.clone();
+        let local = ctx.device_id.as_deref() == Some(member.device_id.as_str());
+        let connector = connectors.get(&member.device_id).cloned();
+        async move {
+            member.healthy = if local {
+                true
+            } else if let Some((endpoint, credential)) = connector {
+                client
+                    .get(format!("{}/api/handshake", endpoint.trim_end_matches('/')))
+                    .bearer_auth(credential)
+                    .send()
+                    .await
+                    .is_ok()
+            } else {
+                false
+            };
+            member
+        }
+    }))
+    .await)
 }
 
 async fn project_bundle(
@@ -1902,17 +1969,10 @@ async fn dispatch_local(
             serde_json::from_str(response.value.as_deref().unwrap_or("{}"))
                 .map_err(|e| e.to_string())
         }
-        "network.membership" => {
-            let conn = config::connection_at(
-                &config::db_path_in(ctx.core.data_dir()).map_err(|e| e.to_string())?,
-            )
-            .map_err(|e| e.to_string())?;
-            serde_json::to_value(
-                network::membership(&conn, &field::<String>(&params, "networkId")?)
-                    .map_err(|e| e.to_string())?,
-            )
-            .map_err(|e| e.to_string())
-        }
+        "network.membership" => serde_json::to_value(
+            live_network_membership(ctx, &field::<String>(&params, "networkId")?).await?,
+        )
+        .map_err(|e| e.to_string()),
         "network.health" => {
             let conn = config::connection_at(
                 &config::db_path_in(ctx.core.data_dir()).map_err(|e| e.to_string())?,

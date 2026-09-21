@@ -38,3 +38,15 @@ export function errorMessage(error: unknown, fallback: string): string {
   if (typeof error === "string" && error.trim()) return error;
   return fallback;
 }
+
+/** Peer relays use this typed error when the task-owning device cannot be reached. */
+export function isDeviceUnreachableError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : typeof error === "string" ? error : "";
+  if (!message) return false;
+  try {
+    const value = JSON.parse(message) as { code?: unknown; error?: { code?: unknown } };
+    return value.code === "executor_unreachable" || value.error?.code === "executor_unreachable";
+  } catch {
+    return false;
+  }
+}

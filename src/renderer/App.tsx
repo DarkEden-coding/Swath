@@ -22,7 +22,11 @@ import { useUiStore } from "./state/uiStore";
 import { useTaskStore } from "./state/taskStore";
 import { NetworkStartupGate } from "./features/tasks/NetworkStartupGate";
 import { Notifications } from "./features/shell/components/Notifications";
-import { errorMessage, useNotificationStore } from "./state/notificationStore";
+import {
+  errorMessage,
+  isDeviceUnreachableError,
+  useNotificationStore,
+} from "./state/notificationStore";
 
 const TerminalWorkspace = lazy(() =>
   import("./features/shell/components/TerminalWorkspace").then((module) => ({
@@ -100,8 +104,12 @@ export function App(): JSX.Element {
   }, []);
 
   useEffect(() => {
-    const notify = (error: unknown) =>
-      useNotificationStore.getState().notifyError(errorMessage(error, "Action failed"));
+    const notify = (error: unknown) => {
+      // The network map independently probes and displays this as Unreachable. Repeating a
+      // transport failure for background task refreshes only creates a distracting error loop.
+      if (!isDeviceUnreachableError(error))
+        useNotificationStore.getState().notifyError(errorMessage(error, "Action failed"));
+    };
     const onUnhandledRejection = (event: PromiseRejectionEvent) => {
       event.preventDefault();
       notify(event.reason);

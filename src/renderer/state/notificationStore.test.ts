@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { errorMessage, useNotificationStore } from "./notificationStore";
+import { errorMessage, isDeviceUnreachableError, useNotificationStore } from "./notificationStore";
 
 describe("notificationStore", () => {
   afterEach(() => {
@@ -20,5 +20,14 @@ describe("notificationStore", () => {
   it("uses useful thrown error messages", () => {
     expect(errorMessage(new Error("not leader"), "Fallback")).toBe("not leader");
     expect(errorMessage(null, "Fallback")).toBe("Fallback");
+  });
+
+  it("recognizes a typed unreachable executor error", () => {
+    expect(
+      isDeviceUnreachableError(
+        new Error('{"code":"executor_unreachable","targetDeviceId":"dev_offline"}'),
+      ),
+    ).toBe(true);
+    expect(isDeviceUnreachableError(new Error('{"code":"executor_unavailable"}'))).toBe(false);
   });
 });
