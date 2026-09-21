@@ -1,5 +1,17 @@
 import { describe, expect, it } from "vitest";
-import { taskRendererProjection } from "./TaskWorkspace";
+import { reorderedPaneIds, taskRendererProjection } from "./TaskWorkspace";
+
+describe("reorderedPaneIds", () => {
+  it("moves task tabs in both directions using final indices", () => {
+    expect(reorderedPaneIds(["a", "b", "c"], 0, 2)).toEqual(["b", "c", "a"]);
+    expect(reorderedPaneIds(["a", "b", "c"], 2, 0)).toEqual(["c", "a", "b"]);
+  });
+
+  it("leaves invalid moves unchanged", () => {
+    expect(reorderedPaneIds(["a", "b"], 0, 0)).toEqual(["a", "b"]);
+    expect(reorderedPaneIds(["a", "b"], -1, 1)).toEqual(["a", "b"]);
+  });
+});
 
 describe("taskRendererProjection", () => {
   it("builds registered pane leaves with the task worktree, not placeholder panes", () => {

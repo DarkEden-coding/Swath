@@ -152,7 +152,12 @@ pub(super) async fn catalog_write(
     }
     // A forwarded Raft write can be acknowledged before this follower projects the entry. Do not
     // let a dependent provisioning/read step race its own successful command.
-    for _ in 0..100 {
+    // A learner can be several seconds behind while installing a snapshot or reconnecting to the
+    // leader. The write is already committed at this point, so the old two-second deadline both
+    // reported a false failure and encouraged callers to retry an operation that had succeeded.
+    // Keep waiting for the local projection long enough to cover a normal replication catch-up;
+    // dependent operations (notably task provisioning) still retain their read-after-write fence.
+    for _ in 0..300 {
         let applied = catalog_connection(data_dir)
             .and_then(|conn| {
                 conn.query_row(
@@ -166,7 +171,7 @@ pub(super) async fn catalog_write(
         if applied {
             return Ok(response);
         }
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
     return Err("catalog_apply_timeout".into());
 }

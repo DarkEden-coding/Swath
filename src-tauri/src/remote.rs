@@ -1374,6 +1374,26 @@ fn ensure_peer_relay(ctx: &ServerContext, target: &str, params: &Value) {
                             if let Ok(value) = serde_json::from_str::<Value>(&event) {
                                 if let (Some(channel), Some(payload)) = (value.get("channel").and_then(Value::as_str), value.get("payload")) {
                                     if matches!(channel, "terminal:data" | "terminal:exit" | "pi:event" | "git:data") { ctx.core.events.publish(channel, payload.clone()); }
+                                } else if let Some(events) = value.pointer("/result/events").and_then(Value::as_array) {
+                                    // The relay can connect after a remote Pi has already emitted
+                                    // its startup handshake. event.subscribe replays those durable
+                                    // records in its response; publish them just like live events.
+                                    for replay in events {
+                                        if let (Some(channel), Some(payload)) = (replay.get("channel").and_then(Value::as_str), replay.get("payload")) {
+                                            let subscribed = subscriptions.values().any(|subscription| {
+                                                let params = &subscription["params"];
+                                                (channel == "pi:event"
+                                                    && params.get("paneId").and_then(Value::as_str)
+                                                        == payload.get("paneId").and_then(Value::as_str))
+                                                    || (channel == "terminal:exit"
+                                                        && params.get("sessionId").and_then(Value::as_str)
+                                                            == payload.get("sessionId").and_then(Value::as_str))
+                                            });
+                                            if subscribed {
+                                                ctx.core.events.publish(channel, payload.clone());
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }

@@ -26,6 +26,7 @@ interface TaskState {
   selectProject: (id: string) => void;
   selectTask: (id: string, historical?: boolean) => void;
   setFocusedPane: (id: string | null) => void;
+  movePane: (taskId: string, fromIndex: number, toIndex: number) => void;
   setDraft: (paneId: string, draft: string) => void;
 }
 
@@ -96,6 +97,29 @@ export const useTaskStore = create<TaskState>((set, get) => ({
       },
     })),
   setFocusedPane: (id) => set((state) => ({ local: { ...state.local, focusedPaneId: id } })),
+  movePane: (taskId, fromIndex, toIndex) =>
+    set((state) => {
+      const shared = state.catalog.tasks.find((task) => task.id === taskId)?.paneOrder ?? [];
+      const current = state.local.paneOrderByTask[taskId] ?? shared;
+      if (
+        fromIndex < 0 ||
+        toIndex < 0 ||
+        fromIndex >= current.length ||
+        toIndex >= current.length ||
+        fromIndex === toIndex
+      )
+        return state;
+      const order = [...current];
+      const [paneId] = order.splice(fromIndex, 1);
+      if (!paneId) return state;
+      order.splice(toIndex, 0, paneId);
+      return {
+        local: {
+          ...state.local,
+          paneOrderByTask: { ...state.local.paneOrderByTask, [taskId]: order },
+        },
+      };
+    }),
   setDraft: (paneId, draft) =>
     set((state) => ({
       local: { ...state.local, drafts: { ...state.local.drafts, [paneId]: draft } },
@@ -108,11 +132,13 @@ let saveQueue = Promise.resolve();
 useTaskStore.subscribe((state, previous) => {
   if (!state.networkId || state.local === previous.local) return;
   const { networkId, local } = state;
-  saveQueue = saveQueue.catch(() => undefined).then(async () => {
-    const current = useTaskStore.getState();
-    if (current.networkId !== networkId) return;
-    const saved = await window.swath.localState.save(networkId, local, current.localRevision + 1);
-    if (useTaskStore.getState().networkId === networkId)
-      useTaskStore.setState({ localRevision: saved });
-  });
+  saveQueue = saveQueue
+    .catch(() => undefined)
+    .then(async () => {
+      const current = useTaskStore.getState();
+      if (current.networkId !== networkId) return;
+      const saved = await window.swath.localState.save(networkId, local, current.localRevision + 1);
+      if (useTaskStore.getState().networkId === networkId)
+        useTaskStore.setState({ localRevision: saved });
+    });
 });

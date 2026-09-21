@@ -110,6 +110,7 @@ export function TaskTabBar({
   activeViewId,
   onSelect,
   onSelectView,
+  onReorderView,
   onCreatePane,
   piOnly = false,
   onCreate,
@@ -126,6 +127,7 @@ export function TaskTabBar({
   activeViewId: string | null;
   onSelect: (id: string) => void;
   onSelectView: (id: string) => void;
+  onReorderView: (fromIndex: number, toIndex: number) => void;
   onCreatePane: (taskId: string, kind: string) => void;
   piOnly?: boolean;
   onCreate: () => void;
@@ -134,8 +136,16 @@ export function TaskTabBar({
   const [titleBarTarget, setTitleBarTarget] = useState<HTMLElement | null>(null);
   const [expandedTaskId, setExpandedTaskId] = useState<string | null>(activeTaskId);
   const [paneMenuTaskId, setPaneMenuTaskId] = useState<string | null>(null);
-  const activity = usePiActivityStore((state) => state.activity);
   const menuRef = useRef<HTMLDivElement>(null);
+  const viewStripRef = useRef<HTMLDivElement>(null);
+  const viewReorder = useReorderDrag({
+    axis: "horizontal",
+    itemCount: views.length,
+    getElements: () =>
+      Array.from(viewStripRef.current?.querySelectorAll<HTMLElement>("[data-task-view-id]") ?? []),
+    findIndexById: (id) => views.findIndex((view) => view.id === id),
+    onMove: onReorderView,
+  });
 
   useEffect(() => {
     setTitleBarTarget(document.getElementById("swath-titlebar-tasks"));
@@ -193,7 +203,10 @@ export function TaskTabBar({
                   <span className="truncate">{task.title}</span>
                 </button>
                 {expandedTaskId === task.id ? (
-                  <div className="ml-1 flex h-full items-center gap-1 border-l border-swath-border pl-1">
+                  <div
+                    ref={task.id === activeTaskId ? viewStripRef : undefined}
+                    className="ml-1 flex h-full items-center gap-1 border-l border-swath-border pl-1"
+                  >
                     {(task.id === activeTaskId
                       ? views
                       : task.panes.map((pane, index) => ({
@@ -205,6 +218,12 @@ export function TaskTabBar({
                       return (
                         <button
                           key={view.id}
+                          data-task-view-id={task.id === activeTaskId ? view.id : undefined}
+                          aria-grabbed={viewReorder.draggedId === view.id}
+                          onMouseDown={(event) => {
+                            if (task.id === activeTaskId)
+                              viewReorder.startPointerDrag(event, view.id);
+                          }}
                           onClick={() => {
                             onSelect(task.id);
                             onSelectView(view.id);

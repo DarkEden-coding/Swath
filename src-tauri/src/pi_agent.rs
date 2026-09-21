@@ -132,8 +132,27 @@ impl PiManager {
         generation: i64,
     ) -> PiResult {
         let mut procs = self.procs.lock().map_err(|_| "pi state poisoned")?;
-        if let Some(process) = procs.get(pane_id) {
-            return Ok(json!({ "ok": true, "attached": true, "pid": process.pid }));
+        if let Some(process) = procs.get_mut(pane_id) {
+            match process.child.try_wait() {
+                Ok(None) => {
+                    return Ok(json!({ "ok": true, "attached": true, "pid": process.pid }));
+                }
+                Ok(Some(status)) => {
+                    let stderr = process
+                        .stderr
+                        .lock()
+                        .map(|text| text.clone())
+                        .unwrap_or_default();
+                    procs.remove(pane_id);
+                    if !stderr.trim().is_empty() {
+                        return Err(format!(
+                            "pi exited during startup ({status}): {}",
+                            stderr.trim()
+                        ));
+                    }
+                }
+                Err(error) => return Err(format!("Unable to inspect pi process: {error}")),
+            }
         }
 
         let temp_dir = std::env::temp_dir();
@@ -235,6 +254,28 @@ impl PiManager {
     /// Writes one newline-terminated JSON command to a pane's pi stdin.
     fn send(&self, pane_id: &str, line: &str) -> PiResult {
         let mut procs = self.procs.lock().map_err(|_| "pi state poisoned")?;
+        if let Some(proc) = procs.get_mut(pane_id) {
+            if let Some(status) = proc
+                .child
+                .try_wait()
+                .map_err(|error| format!("Unable to inspect pi process: {error}"))?
+            {
+                let stderr = proc
+                    .stderr
+                    .lock()
+                    .map(|text| text.clone())
+                    .unwrap_or_default();
+                procs.remove(pane_id);
+                return Err(format!(
+                    "pi exited ({status}){}",
+                    if stderr.trim().is_empty() {
+                        String::new()
+                    } else {
+                        format!(": {}", stderr.trim())
+                    }
+                ));
+            }
+        }
         let proc = procs
             .get_mut(pane_id)
             .ok_or_else(|| format!("No pi process for pane {pane_id}"))?;
@@ -242,11 +283,26 @@ impl PiManager {
             .stdin
             .as_mut()
             .ok_or_else(|| "pi stdin is closed".to_string())?;
-        stdin
+        if let Err(err) = stdin
             .write_all(line.as_bytes())
             .and_then(|_| stdin.write_all(b"\n"))
             .and_then(|_| stdin.flush())
-            .map_err(|err| format!("Unable to write to pi: {err}"))?;
+        {
+            let stderr = proc
+                .stderr
+                .lock()
+                .map(|text| text.clone())
+                .unwrap_or_default();
+            procs.remove(pane_id);
+            return Err(format!(
+                "Unable to write to pi: {err}{}",
+                if stderr.trim().is_empty() {
+                    String::new()
+                } else {
+                    format!(": {}", stderr.trim())
+                }
+            ));
+        }
         Ok(json!({ "ok": true }))
     }
 
@@ -749,6 +805,50 @@ mod tests {
         assert!(!ensure.contains("self.kill(pane_id)?"));
         assert_eq!(ensure.matches("self.procs.lock").count(), 1);
         assert!(ensure.find("self.procs.lock").unwrap() < ensure.find("command.spawn").unwrap());
+    }
+
+    /// A pane whose child has already exited must not remain attachable: that stale map entry is
+    /// what used to turn the first handshake write into `Broken pipe`.
+    #[test]
+    #[cfg(unix)]
+    fn send_reaps_an_exited_process() {
+        let root = std::env::temp_dir().join(format!("swath-pi-exit-test-{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        let events = crate::events::ConnectorEvents::new();
+        let manager = PiManager::new(events, root);
+        let mut child = Command::new("/bin/sh")
+            .args(["-c", "printf startup-failed >&2; exit 7"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let stdin = child.stdin.take();
+        let stderr_pipe = child.stderr.take().unwrap();
+        let stderr = Arc::new(Mutex::new(String::new()));
+        {
+            let stderr = Arc::clone(&stderr);
+            std::thread::spawn(move || {
+                let mut text = String::new();
+                let _ = BufReader::new(stderr_pipe).read_line(&mut text);
+                *stderr.lock().unwrap() = text;
+            });
+        }
+        let pid = child.id();
+        manager.procs.lock().unwrap().insert(
+            "pane".into(),
+            PiProcess {
+                pid,
+                child,
+                stdin,
+                stderr,
+            },
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        let error = manager.send("pane", "{}").unwrap_err();
+        assert!(error.contains("pi exited"), "{error}");
+        assert!(!manager.procs.lock().unwrap().contains_key("pane"));
     }
 
     /// Windows must target npm's `.cmd` shim explicitly; CreateProcess does not use PATHEXT.

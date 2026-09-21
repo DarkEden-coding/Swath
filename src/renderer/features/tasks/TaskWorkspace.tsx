@@ -46,7 +46,13 @@ export function taskRendererProjection(
       const layout = remap(view.layout);
       if (!layout) return [];
       const liveIds = collectPanes(layout).map((pane) => pane.id);
-      return [{ ...view, layout, activePaneId: liveIds.includes(view.activePaneId) ? view.activePaneId : liveIds[0] }];
+      return [
+        {
+          ...view,
+          layout,
+          activePaneId: liveIds.includes(view.activePaneId) ? view.activePaneId : liveIds[0],
+        },
+      ];
     });
     const restoredPaneIds = new Set(
       restored.flatMap((view) => collectPanes(view.layout).map((p) => p.id)),
@@ -71,8 +77,19 @@ export function taskRendererProjection(
       }));
     const views = [...restored, ...added];
     if (!views.length) {
-      const empty = { type: "pane" as const, id: `${task.id}:empty`, kind: "terminal" as const, cwd };
-      views.push({ id: `task-view:${empty.id}`, type: "workspace-view", title: "Terminal 1", layout: empty, activePaneId: empty.id });
+      const empty = {
+        type: "pane" as const,
+        id: `${task.id}:empty`,
+        kind: "terminal" as const,
+        cwd,
+      };
+      views.push({
+        id: `task-view:${empty.id}`,
+        type: "workspace-view",
+        title: "Terminal 1",
+        layout: empty,
+        activePaneId: empty.id,
+      });
     }
     const view = views.find((item) => item.id === activeViewId) ?? views[0]!;
     return {
@@ -129,6 +146,26 @@ export function taskRendererProjection(
     },
     view,
   };
+}
+
+/** Returns the durable pane order produced by a task-tab drag. */
+export function reorderedPaneIds(
+  paneIds: readonly string[],
+  fromIndex: number,
+  toIndex: number,
+): string[] {
+  const order = [...paneIds];
+  if (
+    fromIndex < 0 ||
+    toIndex < 0 ||
+    fromIndex >= order.length ||
+    toIndex >= order.length ||
+    fromIndex === toIndex
+  )
+    return order;
+  const [paneId] = order.splice(fromIndex, 1);
+  if (paneId) order.splice(toIndex, 0, paneId);
+  return order;
 }
 
 function rpcOk(value: unknown): boolean {
@@ -397,7 +434,7 @@ function CleanupDialog({
 }
 
 export function TaskWorkspace(): JSX.Element {
-  const { catalog, local, devices, networkId, refresh, selectTask } = useTaskStore();
+  const { catalog, local, devices, networkId, refresh, selectTask, movePane } = useTaskStore();
   const settings = useConfigStore((state) => state.config?.settings);
   const [createOpen, setCreateOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
@@ -500,6 +537,18 @@ export function TaskWorkspace(): JSX.Element {
         onSelectView={(id) =>
           task && setActiveViewIds((current) => ({ ...current, [task.id]: id }))
         }
+        onReorderView={(fromIndex, toIndex) => {
+          if (!task) return;
+          const order = reorderedPaneIds(
+            panes.map((pane) => pane.id),
+            fromIndex,
+            toIndex,
+          );
+          movePane(task.id, fromIndex, toIndex);
+          void window.swath.tasks
+            .rpc({ op: "reorderPanes", taskId: task.id, paneIds: order })
+            .then(refresh);
+        }}
         onCreatePane={(taskId, kind) =>
           void window.swath.tasks.rpc({ op: "createPane", taskId, kind }).then(async (reply) => {
             if (!rpcOk(reply)) return;
