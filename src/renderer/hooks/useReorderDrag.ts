@@ -1,4 +1,4 @@
-import { useCallback, useState, type DragEvent, type MouseEvent as ReactMouseEvent } from "react";
+import { useCallback, useRef, useState, type DragEvent, type MouseEvent as ReactMouseEvent } from "react";
 
 export type ReorderAxis = "horizontal" | "vertical";
 
@@ -47,6 +47,7 @@ export function useReorderDrag(options: UseReorderDragOptions): ReorderDragBindi
   const { axis, itemCount, getElements, findIndexById, onMove } = options;
   const [draggedId, setDraggedId] = useState<string | null>(null);
   const [dropIndex, setDropIndex] = useState<number | null>(null);
+  const nativeDragging = useRef(false);
 
   const getDropIndex = useCallback(
     (coordinate: number): number => {
@@ -63,6 +64,7 @@ export function useReorderDrag(options: UseReorderDragOptions): ReorderDragBindi
   );
 
   const finishDrag = useCallback((): void => {
+    nativeDragging.current = false;
     unlockTextSelection();
     setDraggedId(null);
     setDropIndex(null);
@@ -83,6 +85,7 @@ export function useReorderDrag(options: UseReorderDragOptions): ReorderDragBindi
 
   const startNativeDrag = useCallback(
     (event: DragEvent, id: string, initialIndex: number): void => {
+      nativeDragging.current = true;
       lockTextSelection();
       setDraggedId(id);
       setDropIndex(initialIndex);
@@ -123,6 +126,7 @@ export function useReorderDrag(options: UseReorderDragOptions): ReorderDragBindi
       const startY = event.clientY;
       let active = false;
       const onMove = (moveEvent: MouseEvent): void => {
+        if (nativeDragging.current) return;
         if (!active && Math.hypot(moveEvent.clientX - startX, moveEvent.clientY - startY) < 5)
           return;
         if (!active) {
@@ -135,6 +139,7 @@ export function useReorderDrag(options: UseReorderDragOptions): ReorderDragBindi
       const onUp = (upEvent: MouseEvent): void => {
         window.removeEventListener("mousemove", onMove);
         window.removeEventListener("mouseup", onUp);
+        if (nativeDragging.current) return;
         if (!active) {
           unlockTextSelection();
           return;

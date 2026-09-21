@@ -534,7 +534,9 @@ export function PiAgentPane({
                           ? state.error
                           : state.state
                             ? "Start a new chat with pi."
-                            : `Starting pi in ${cwd}…`}
+                            : taskExecution?.readOnly
+                              ? "This task is completed. No saved Pi transcript is available on this device."
+                              : `Starting pi in ${cwd}…`}
                     </div>
                   ) : (
                     <Transcript
@@ -571,7 +573,11 @@ export function PiAgentPane({
 
             {renderWidgets(widgetsAbove)}
 
-            <Composer
+            {taskExecution?.readOnly ? (
+              <div className="border-t border-swath-border py-3 text-xs text-swath-muted">
+                Read-only task — resume it to send Pi messages.
+              </div>
+            ) : <Composer
               paneId={paneId}
               cwd={cwd}
               commands={commands}
@@ -594,7 +600,7 @@ export function PiAgentPane({
               }}
               onCycleModel={cycleScopedModel}
               onCycleThinking={agent.cycleThinking}
-            />
+            />}
 
             {renderWidgets(widgetsBelow)}
 

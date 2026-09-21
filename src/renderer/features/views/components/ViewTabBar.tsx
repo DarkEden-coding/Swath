@@ -206,6 +206,8 @@ export function TaskTabBar({
                   <div
                     ref={task.id === activeTaskId ? viewStripRef : undefined}
                     className="ml-1 flex h-full items-center gap-1 border-l border-swath-border pl-1"
+                    onDragOver={task.id === activeTaskId ? viewReorder.handleNativeDragOver : undefined}
+                    onDrop={task.id === activeTaskId ? viewReorder.handleNativeDrop : undefined}
                   >
                     {(task.id === activeTaskId
                       ? views
@@ -218,8 +220,14 @@ export function TaskTabBar({
                       return (
                         <button
                           key={view.id}
+                          draggable={task.id === activeTaskId}
                           data-task-view-id={task.id === activeTaskId ? view.id : undefined}
                           aria-grabbed={viewReorder.draggedId === view.id}
+                          onDragStart={(event) => {
+                            if (task.id === activeTaskId)
+                              viewReorder.startNativeDrag(event, view.id, views.findIndex((item) => item.id === view.id));
+                          }}
+                          onDragEnd={viewReorder.finishDrag}
                           onMouseDown={(event) => {
                             if (task.id === activeTaskId)
                               viewReorder.startPointerDrag(event, view.id);
