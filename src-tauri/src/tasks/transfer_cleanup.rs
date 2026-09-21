@@ -1310,6 +1310,27 @@ fn remote_evidence(path: &Path) -> (bool, String) {
         Err(_) => (false, String::new()),
     }
 }
+fn unintegrated_commits(conn: &rusqlite::Connection, project: &str, path: &Path) -> String {
+    let branch: String = conn
+        .query_row(
+            "SELECT default_branch FROM projects WHERE id=?1",
+            [project],
+            |row| row.get(0),
+        )
+        .unwrap_or_else(|_| "HEAD".into());
+    if branch == "HEAD" {
+        return String::new();
+    }
+    git(
+        path,
+        &[
+            "log",
+            "--format=%H%x00%s",
+            &format!("refs/swath/source/heads/{branch}..HEAD"),
+        ],
+    )
+    .unwrap_or_else(|_| "configured base branch is unavailable".into())
+}
 fn known_losses(path: &Path) -> Result<Vec<Value>, String> {
     let status = git(
         path,
@@ -1396,11 +1417,7 @@ pub async fn cleanup_preview(data_dir: &Path, request: &Value) -> Result<Value, 
             "--untracked-files=all",
         ],
     )?;
-    let unmerged = git(
-        &path,
-        &["log", "--format=%H%x00%s", "--all", "--not", "HEAD"],
-    )
-    .unwrap_or_default();
+    let unmerged = unintegrated_commits(&conn, &project, &path);
     let processes = live_processes(&path).unwrap_or_else(|reason| vec![reason]);
     let losses = known_losses(&path)?;
     let commit = snap["head"].as_str().unwrap_or("");
@@ -1414,7 +1431,7 @@ pub async fn cleanup_preview(data_dir: &Path, request: &Value) -> Result<Value, 
     .await?;
     let preview = json!({"generation":gen,"refs":snap["refs"],"worktreeSnapshot":snap["worktreeSnapshot"],"tracked":snap["status"],"untrackedAndIgnored":ignored,"unpushed":unpushed,"unmerged":unmerged,"remoteFresh":remote_fresh,"replicaReceipts":{"required":required,"received":received},"knownLosses":losses,"sizeBytes":tree_size(&path),"processes":processes,"retainedCommit":snap["head"]});
     let token = hash(&preview.to_string());
-    conn.execute("INSERT INTO task_operations(operation_id,task_id,kind,phase,generation,source_path,snapshot_json,report_json,created_at,updated_at) VALUES(?1,?2,'cleanup','preview',?3,?4,?5,?6,strftime('%s','now'),strftime('%s','now'))",params![format!("cleanup-{token}"),task,gen,path.to_string_lossy(),snap.to_string(),json!({"preview":preview,"token":token}).to_string()]).map_err(|e|e.to_string())?;
+    conn.execute("INSERT INTO task_operations(operation_id,task_id,kind,phase,generation,source_path,snapshot_json,report_json,created_at,updated_at) VALUES(?1,?2,'cleanup','preview',?3,?4,?5,?6,strftime('%s','now'),strftime('%s','now')) ON CONFLICT(operation_id) DO NOTHING",params![format!("cleanup-{token}"),task,gen,path.to_string_lossy(),snap.to_string(),json!({"preview":preview,"token":token}).to_string()]).map_err(|e|e.to_string())?;
     Ok(json!({"ok":true,"preview":preview,"previewToken":token}))
 }
 pub async fn cleanup_confirm(data_dir: &Path, request: &Value) -> Result<Value, String> {
@@ -1475,22 +1492,19 @@ pub async fn cleanup_confirm(data_dir: &Path, request: &Value) -> Result<Value, 
     )
     .await?;
     let discard = request.get("discardApproval").and_then(Value::as_bool) == Some(true);
-    let unmerged_now = git(
-        &path,
-        &["log", "--format=%H%x00%s", "--all", "--not", "HEAD"],
-    )
-    .unwrap_or_default();
+    let unmerged_now = unintegrated_commits(&conn, &project, &path);
+    let retained_without_remote = received_receipts >= required_receipts && unmerged_now.is_empty();
     if !live_processes(&path)
         .unwrap_or_else(|reason| vec![reason])
         .is_empty()
-        || !fresh_now
+        || (!fresh_now && !retained_without_remote)
         || (!discard && !losses.is_empty())
         || (!discard && !unpushed_now.is_empty())
         || !unmerged_now.is_empty()
         || !preview["processes"]
             .as_array()
             .is_some_and(|v| v.is_empty())
-        || preview["remoteFresh"] != Value::Bool(true)
+        || (preview["remoteFresh"] != Value::Bool(true) && !retained_without_remote)
         || (!discard && !preview["unpushed"].as_str().unwrap_or_default().is_empty())
         || !preview["unmerged"].as_str().unwrap_or_default().is_empty()
         || received_receipts < required_receipts
@@ -1502,6 +1516,9 @@ pub async fn cleanup_confirm(data_dir: &Path, request: &Value) -> Result<Value, 
     // Create the restore receipt while data still exists. A removal failure retains both data
     // and a recovery receipt instead of committing an irreversible state.
     conn.execute("INSERT INTO task_cleanup_receipts(task_id,retained_commit,known_losses_json,result_json,cleaned_at) VALUES(?1,?2,?3,?4,strftime('%s','now')) ON CONFLICT(task_id) DO UPDATE SET retained_commit=excluded.retained_commit,known_losses_json=excluded.known_losses_json,result_json=excluded.result_json,cleaned_at=excluded.cleaned_at",params![task,retained,serde_json::to_string(&losses).map_err(|e|e.to_string())?,old.to_string()]).map_err(|e|e.to_string())?;
+    // Commit shared authorization before removing filesystem state. The completed lifecycle is a
+    // durable execution fence observed by every executor entry point.
+    catalog_write(data_dir, request, "cleanup", revision(&conn, "tasks", task)?, json!({"action":"authorize","taskId":task,"retainedCommit":retained,"knownLosses":losses,"result":old})).await?;
     git(
         &path,
         &[
@@ -1514,11 +1531,6 @@ pub async fn cleanup_confirm(data_dir: &Path, request: &Value) -> Result<Value, 
     .map_err(|reason| format!("cleanup_remove_failed: {reason}"))?;
     if path.exists() {
         fs::remove_dir_all(&path).map_err(|e| e.to_string())?;
-    }
-    if let Err(reason) = catalog_write(data_dir, request, "cleanup", revision(&conn, "tasks", task)?, json!({"action":"complete","taskId":task,"retainedCommit":retained,"knownLosses":losses,"result":old})).await {
-        let replica = data_dir.join("project-repos").join(format!("{project}.git"));
-        let _ = Command::new("git").arg("-C").arg(replica).args(["worktree", "add", "--detach", path.to_string_lossy().as_ref(), retained]).output();
-        return Err(reason);
     }
     Ok(json!({"ok":true,"retainedCommit":retained,"knownLosses":losses}))
 }

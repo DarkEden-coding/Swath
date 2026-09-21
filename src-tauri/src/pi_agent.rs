@@ -503,12 +503,12 @@ fn task_cwd(data_dir: &Path, request: &Value) -> Result<String, String> {
         })?;
     let conn = config::connection_at(&config::db_path_in(data_dir).map_err(|e| e.to_string())?)
         .map_err(|e| e.to_string())?;
-    let frozen: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM task_operations WHERE task_id=?1 AND kind='transfer' AND phase IN ('source frozen','destination staged','verified'))", params![task_id], |r| r.get(0)).map_err(|e| e.to_string())?;
+    let frozen: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM task_operations WHERE task_id=?1 AND ((kind='transfer' AND phase IN ('source frozen','destination staged','verified')) OR (kind='cleanup' AND phase='cleanup frozen')))", params![task_id], |r| r.get(0)).map_err(|e| e.to_string())?;
     if frozen {
         return Err(json!({"code":"task_frozen","taskId":task_id}).to_string());
     }
     let row: Option<(i64, String)> = conn.query_row(
-        "SELECT t.execution_generation, p.path FROM tasks t JOIN device_task_paths p ON p.task_id=t.id AND p.device_id=t.assigned_device_id WHERE t.id=?1 AND t.tombstoned_at IS NULL",
+        "SELECT t.execution_generation, p.path FROM tasks t JOIN device_task_paths p ON p.task_id=t.id AND p.device_id=t.assigned_device_id WHERE t.id=?1 AND t.lifecycle='active' AND t.tombstoned_at IS NULL",
         params![task_id], |r| Ok((r.get(0)?, r.get(1)?))).optional().map_err(|e| e.to_string())?;
     let Some((current, cwd)) = row else {
         return Err(json!({"code":"unknown_executor","taskId":task_id}).to_string());

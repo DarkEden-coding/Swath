@@ -127,7 +127,10 @@ fn start_history_outbox(data_dir: PathBuf) {
             loop {
                 let pending: Vec<(String, String)> = (|| -> Result<Vec<(String, String)>> {
                     let conn = config::connection_at(&config::db_path_in(&data_dir)?)?;
-                    let mut q = conn.prepare("SELECT id,payload_json FROM transactional_outbox WHERE topic='pi.history' AND published_at IS NULL ORDER BY created_at LIMIT 64")?;
+                    // Rotate failures behind newer eligible work. Per-peer receipts below retain
+                    // delivery correctness while preventing a poison first page from starving the
+                    // entire history stream forever.
+                    let mut q = conn.prepare("SELECT o.id,o.payload_json FROM transactional_outbox o WHERE o.topic='pi.history' AND (o.published_at IS NULL OR EXISTS(SELECT 1 FROM device_connectors d WHERE NOT EXISTS(SELECT 1 FROM pi_history_deliveries h WHERE h.outbox_id=o.id AND h.peer_id=d.device_id))) ORDER BY o.attempts,o.created_at LIMIT 64")?;
                     let rows = q.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<std::result::Result<Vec<_>, _>>()?;
                     Ok(rows)
                 })().unwrap_or_default();

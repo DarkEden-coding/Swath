@@ -17,12 +17,37 @@ export function taskRendererProjection(
   activeViewId?: string | null,
 ): { workspace: Workspace; view: WorkspaceView } {
   if (legacyWorkspace?.views.length) {
-    const paneIds = new Map(panes.map((pane) => [pane.id.split(":").at(-1) ?? pane.id, pane.id]));
-    const remap = (node: LayoutNode): LayoutNode => {
-      if (node.type === "pane") return { ...node, id: paneIds.get(node.id) ?? node.id };
-      return { ...node, first: remap(node.first), second: remap(node.second) };
+    const paneByLegacyId = new Map(
+      panes.flatMap((pane) => [
+        [pane.id, pane] as const,
+        [pane.id.split(":").at(-1) ?? pane.id, pane] as const,
+      ]),
+    );
+    const remap = (node: LayoutNode): LayoutNode | null => {
+      if (node.type === "pane") {
+        const pane = paneByLegacyId.get(node.id);
+        if (!pane) return null;
+        return {
+          ...node,
+          id: pane.id,
+          kind: pane.kind as PaneKind,
+          title: pane.title ?? undefined,
+          cwd,
+          metadata: pane.sessionId ? { piSessionFile: pane.sessionId } : undefined,
+        };
+      }
+      const first = remap(node.first);
+      const second = remap(node.second);
+      if (!first) return second;
+      if (!second) return first;
+      return { ...node, first, second };
     };
-    const restored = legacyWorkspace.views.map((view) => ({ ...view, layout: remap(view.layout) }));
+    const restored = legacyWorkspace.views.flatMap((view) => {
+      const layout = remap(view.layout);
+      if (!layout) return [];
+      const liveIds = collectPanes(layout).map((pane) => pane.id);
+      return [{ ...view, layout, activePaneId: liveIds.includes(view.activePaneId) ? view.activePaneId : liveIds[0] }];
+    });
     const restoredPaneIds = new Set(
       restored.flatMap((view) => collectPanes(view.layout).map((p) => p.id)),
     );
@@ -45,6 +70,10 @@ export function taskRendererProjection(
         activePaneId: pane.id,
       }));
     const views = [...restored, ...added];
+    if (!views.length) {
+      const empty = { type: "pane" as const, id: `${task.id}:empty`, kind: "terminal" as const, cwd };
+      views.push({ id: `task-view:${empty.id}`, type: "workspace-view", title: "Terminal 1", layout: empty, activePaneId: empty.id });
+    }
     const view = views.find((item) => item.id === activeViewId) ?? views[0]!;
     return {
       workspace: {
@@ -525,13 +554,28 @@ export function TaskWorkspace(): JSX.Element {
               >
                 Cleanup
               </button>
-              <button
-                disabled={Boolean(local.historicalTaskId)}
-                className="rounded px-2 py-1 text-xs text-swath-good hover:bg-swath-bg"
-                onClick={() => mutate({ op: "completeTask", taskId: task.id })}
-              >
-                Complete
-              </button>
+              {task.lifecycle === "completed" ? (
+                <button
+                  className="rounded px-2 py-1 text-xs text-swath-good hover:bg-swath-bg"
+                  onClick={() =>
+                    void window.swath.tasks
+                      .rpc({ op: "reactivateTask", taskId: task.id })
+                      .then(async () => {
+                        await refresh();
+                        selectTask(task.id);
+                      })
+                  }
+                >
+                  Resume
+                </button>
+              ) : (
+                <button
+                  className="rounded px-2 py-1 text-xs text-swath-good hover:bg-swath-bg"
+                  onClick={() => mutate({ op: "completeTask", taskId: task.id })}
+                >
+                  Complete
+                </button>
+              )}
             </div>
             <div className="h-[calc(100%-2.5rem)] min-h-0">
               {projection && settings ? (

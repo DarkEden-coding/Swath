@@ -4,17 +4,14 @@
 //! duplicates no pane logic, and lets the exact same renderer run in a browser.
 
 use crate::{
-    ask_images, config,
-    events::{ConnectorEvents, EventPublisher},
-    files, git, migration, network, pi_agent, preview,
-    runtime::Core,
-    tasks,
+    ask_images, config, events::ConnectorEvents, files, git, migration, network, pi_agent, preview,
+    runtime::Core, tasks,
 };
 use axum::{
     body::Body,
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
-        Query, State,
+        DefaultBodyLimit, Query, State,
     },
     http::{header, HeaderMap, Response, StatusCode},
     response::IntoResponse,
@@ -114,7 +111,7 @@ struct ServerContext {
     device_id: Option<String>,
     session_tasks: Arc<Mutex<HashMap<String, String>>>,
     events: Arc<ConnectorEvents>,
-    peer_relays: Arc<Mutex<HashMap<String, mpsc::UnboundedSender<Value>>>>,
+    peer_relays: Arc<Mutex<HashMap<String, mpsc::Sender<Value>>>>,
     allowed_origins: Vec<String>,
     raft: Option<Arc<network::raft::CatalogRaft>>,
 }
@@ -351,7 +348,12 @@ impl RemoteServerManager {
         let router = Router::new()
             .route("/api/handshake", get(handshake))
             .route("/api/socket", get(socket))
-            .route("/api/peer/rpc", post(peer_rpc))
+            // History events may contain validated inline image payloads. Keep the larger bound
+            // scoped to authenticated peer RPC instead of disabling request limits globally.
+            .route(
+                "/api/peer/rpc",
+                post(peer_rpc).layer(DefaultBodyLimit::max(8 * 1024 * 1024)),
+            )
             .route("/api/project/{project_id}/bundle", get(project_bundle))
             .route("/api/enrollment/request", post(enrollment_request))
             .route("/api/enrollment/{enrollment_id}", get(enrollment_status))
@@ -1009,7 +1011,15 @@ fn event_task(ctx: &ServerContext, table: &str, column: &str, id: Option<&str>) 
 fn spawn_durable_event_writer(ctx: ServerContext) {
     tokio::spawn(async move {
         let mut events = ctx.events.subscribe();
-        while let Ok(event) = events.recv().await {
+        loop {
+            let event = match events.recv().await {
+                Ok(event) => event,
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                    eprintln!("durable event writer lagged by {skipped} events; continuing");
+                    continue;
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            };
             let Ok(value) = serde_json::from_str::<Value>(&event) else {
                 continue;
             };
@@ -1274,17 +1284,25 @@ fn ensure_peer_relay(ctx: &ServerContext, target: &str, params: &Value) {
         if let Some(sender) = relays.get(target) {
             (sender.clone(), None)
         } else {
-            let (sender, receiver) = mpsc::unbounded_channel();
+            let (sender, receiver) = mpsc::channel(128);
             relays.insert(target.to_owned(), sender.clone());
             (sender, Some(receiver))
         }
     };
-    let _ = sender.send(json!({"method":"event.subscribe","params":params}));
+    // Keep only routing identity in relay state; prompt bodies and attachments are neither
+    // necessary nor appropriate to retain across reconnects.
+    let subscription = json!({"method":"event.subscribe","params":{
+        "taskId":params.get("taskId"),
+        "paneId":params.get("paneId"),
+        "sessionId":params.get("sessionId"),
+        "executionGeneration":params.get("executionGeneration")
+    }});
+    let _ = sender.try_send(subscription);
     let Some(mut receiver) = receiver else { return };
     let ctx = ctx.clone();
     let target = target.to_owned();
     tokio::spawn(async move {
-        let mut subscriptions: Vec<Value> = Vec::new();
+        let mut subscriptions: HashMap<String, Value> = HashMap::new();
         loop {
             let peer = config::connection_at(&match config::db_path_in(ctx.core.data_dir()) {
                 Ok(path) => path,
@@ -1328,7 +1346,7 @@ fn ensure_peer_relay(ctx: &ServerContext, target: &str, params: &Value) {
                 continue;
             };
             let (mut output, mut input) = socket.split();
-            for update in &subscriptions {
+            for update in subscriptions.values() {
                 if output
                     .send(tokio_tungstenite::tungstenite::Message::Text(
                         json!({"id":"relay","method":update["method"],"params":update["params"]})
@@ -1345,7 +1363,8 @@ fn ensure_peer_relay(ctx: &ServerContext, target: &str, params: &Value) {
                 tokio::select! {
                     update = receiver.recv() => match update {
                         Some(update) => {
-                            subscriptions.push(update.clone());
+                            let key = update["params"].to_string();
+                            subscriptions.insert(key, update.clone());
                             if output.send(tokio_tungstenite::tungstenite::Message::Text(json!({"id":"relay","method":update["method"],"params":update["params"]}).to_string().into())).await.is_err() { break }
                         },
                         None => return,
@@ -1354,7 +1373,7 @@ fn ensure_peer_relay(ctx: &ServerContext, target: &str, params: &Value) {
                         Some(Ok(tokio_tungstenite::tungstenite::Message::Text(event))) => {
                             if let Ok(value) = serde_json::from_str::<Value>(&event) {
                                 if let (Some(channel), Some(payload)) = (value.get("channel").and_then(Value::as_str), value.get("payload")) {
-                                    if matches!(channel, "terminal:data" | "terminal:exit" | "pi:event" | "git:data") { ctx.events.publish(channel, payload.clone()); }
+                                    if matches!(channel, "terminal:data" | "terminal:exit" | "pi:event" | "git:data") { ctx.core.events.publish(channel, payload.clone()); }
                                 }
                             }
                         }
@@ -1406,9 +1425,15 @@ async fn peer_call(
                 .to_string()
         })?;
     let status = response.status();
-    let value: Value = response.json().await.map_err(|e| e.to_string())?;
+    let body = response.bytes().await.map_err(|e| {
+        json!({"code":"executor_unreachable","targetDeviceId":target,"method":method,"httpStatus":status.as_u16(),"message":e.to_string()}).to_string()
+    })?;
+    let value: Value = serde_json::from_slice(&body).map_err(|_| {
+        let code = if status.is_success() { "peer_protocol_error" } else { "executor_unavailable" };
+        json!({"code":code,"targetDeviceId":target,"method":method,"httpStatus":status.as_u16(),"bodyKind":if body.is_empty() { "empty" } else { "non_json" }}).to_string()
+    })?;
     if !status.is_success() {
-        return Err(value.to_string());
+        return Err(json!({"code":value.get("code").and_then(Value::as_str).unwrap_or("executor_unavailable"),"targetDeviceId":target,"method":method,"httpStatus":status.as_u16(),"error":value}).to_string());
     }
     value.get("result").cloned().ok_or_else(|| {
         value

@@ -72,7 +72,7 @@ export function applyPiHistory(
     if (
       record.taskId !== scope.taskId ||
       record.paneId !== scope.paneId ||
-      record.executionGeneration !== scope.executionGeneration
+      record.sessionId !== scope.sessionId
     )
       continue;
     existing.set(record.stableId, {

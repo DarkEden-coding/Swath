@@ -479,11 +479,11 @@ fn task_cwd(data_dir: &Path, task_id: Option<&str>, generation: Option<i64>) -> 
     let conn = config::connection_at(&config::db_path_in(data_dir).map_err(|e| anyhow!(e))?)?;
     // A transfer freeze is catalog state, not a UI hint; this check survives a restart and
     // prevents a new shell from racing the snapshot before ownership commits.
-    let frozen: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM task_operations WHERE task_id=?1 AND kind='transfer' AND phase IN ('source frozen','destination staged','verified'))", params![task_id], |r| r.get(0))?;
+    let frozen: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM task_operations WHERE task_id=?1 AND ((kind='transfer' AND phase IN ('source frozen','destination staged','verified')) OR (kind='cleanup' AND phase='cleanup frozen')))", params![task_id], |r| r.get(0))?;
     if frozen {
         return Err(anyhow!("{}", r#"{"code":"task_frozen"}"#));
     }
-    let row: Option<(i64, String)> = conn.query_row("SELECT t.execution_generation,p.path FROM tasks t JOIN device_task_paths p ON p.task_id=t.id AND p.device_id=t.assigned_device_id WHERE t.id=?1 AND t.tombstoned_at IS NULL", params![task_id], |r| Ok((r.get(0)?,r.get(1)?))).optional()?;
+    let row: Option<(i64, String)> = conn.query_row("SELECT t.execution_generation,p.path FROM tasks t JOIN device_task_paths p ON p.task_id=t.id AND p.device_id=t.assigned_device_id WHERE t.id=?1 AND t.lifecycle='active' AND t.tombstoned_at IS NULL", params![task_id], |r| Ok((r.get(0)?,r.get(1)?))).optional()?;
     let Some((current, cwd)) = row else {
         return Err(anyhow!(format!(
             r#"{{"code":"unknown_executor","taskId":"{task_id}"}}"#

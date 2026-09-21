@@ -318,8 +318,8 @@ pub fn sync_apply(data_dir: &Path, network: &str, records: &[Value]) -> Result<V
             .ok_or_else(|| "missing executionGeneration".to_string())?;
         let authorized: bool = tx
             .query_row(
-                "SELECT EXISTS(SELECT 1 FROM tasks t JOIN projects p ON p.id=t.project_id JOIN task_panes q ON q.task_id=t.id WHERE p.network_id=?1 AND t.id=?2 AND q.id=?3 AND t.execution_generation=?4 AND t.tombstoned_at IS NULL AND q.tombstoned_at IS NULL)",
-                params![network, task, pane, generation],
+                "SELECT EXISTS(SELECT 1 FROM tasks t JOIN projects p ON p.id=t.project_id JOIN task_panes q ON q.task_id=t.id WHERE p.network_id=?1 AND t.id=?2 AND q.id=?3)",
+                params![network, task, pane],
                 |row| row.get(0),
             )
             .map_err(|e| e.to_string())?;

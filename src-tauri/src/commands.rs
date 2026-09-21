@@ -12,13 +12,13 @@ pub fn platform() -> String {
 }
 
 #[tauri::command]
-pub fn config_load(app: AppHandle) -> CommandResult<AppConfig> {
-    config::load(&app).map_err(|err| err.to_string())
+pub fn config_load(state: State<'_, AppState>) -> CommandResult<AppConfig> {
+    config::load_at(state.core.data_dir()).map_err(|err| err.to_string())
 }
 
 #[tauri::command]
-pub fn config_save(app: AppHandle, config: AppConfig) -> CommandResult<()> {
-    config::save(&app, &config).map_err(|err| err.to_string())
+pub fn config_save(state: State<'_, AppState>, config: AppConfig) -> CommandResult<()> {
+    config::save_at(state.core.data_dir(), &config).map_err(|err| err.to_string())
 }
 
 #[tauri::command]

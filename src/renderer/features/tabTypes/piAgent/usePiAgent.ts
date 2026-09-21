@@ -260,15 +260,12 @@ export function usePiAgent(
       return;
     }
     spawnedPanes.add(paneId);
-    // Reopen the session this pane last reported. Legacy panes have no stored file, so continue
-    // the newest session for their project once and persist the exact file from pi's state.
+    // Reopen only the session this pane explicitly reported. An unbound pane is a new
+    // conversation; resuming or forking is an explicit UI operation and must never be inferred
+    // from another pane sharing the same working directory.
     const sessionFile = resumedSessions.get(paneId) ?? initialSessionFile;
     const isFreshStart = !sessionFile && Boolean(initialStart) && needsInitialPromptRef.current;
-    const sessionArgs = sessionFile
-      ? ["--session", sessionFile]
-      : isFreshStart
-        ? []
-        : ["--continue"];
+    const sessionArgs = sessionFile ? ["--session", sessionFile] : [];
     const startupArgs = initialStart
       ? [
           ...(initialStart.title ? ["--name", initialStart.title] : []),

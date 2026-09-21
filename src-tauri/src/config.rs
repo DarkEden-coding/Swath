@@ -2,35 +2,15 @@ use crate::types::*;
 use anyhow::{anyhow, Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::{collections::HashMap, fs, path::PathBuf};
-#[cfg(feature = "desktop")]
-use tauri::{AppHandle, Manager};
 
 use crate::{network, task_store};
 
 const DB_FILE: &str = "swath.sqlite3";
 
-/// Resolves and creates the application data directory for the config database.
-#[cfg(feature = "desktop")]
-fn db_path(app: &AppHandle) -> Result<PathBuf> {
-    let dir = app
-        .path()
-        .app_data_dir()
-        .context("failed to resolve app data dir")?;
-    db_path_in(&dir)
-}
-
 /// Resolves the database path in an injected application data directory.
 pub fn db_path_in(dir: &std::path::Path) -> Result<PathBuf> {
     fs::create_dir_all(dir).with_context(|| format!("failed to create {}", dir.display()))?;
     Ok(dir.join(DB_FILE))
-}
-
-/// Opens the config database and ensures its schema is ready.
-#[cfg(feature = "desktop")]
-fn connection(app: &AppHandle) -> Result<Connection> {
-    let file = db_path(app)?;
-    migrate_legacy_sqlite_db(&file)?;
-    connection_at(&file)
 }
 
 /// Opens the configuration database at an injected application-data path.
@@ -124,16 +104,10 @@ fn legacy_user_data_path() -> Option<PathBuf> {
     }
 }
 
-/// Loads and normalizes the persisted application configuration.
-#[cfg(feature = "desktop")]
-pub fn load(app: &AppHandle) -> Result<AppConfig> {
-    let conn = connection(app)?;
-    load_from_connection(&conn)
-}
-
 /// Loads configuration from an injected runtime data directory.
 pub fn load_at(data_dir: &std::path::Path) -> Result<AppConfig> {
     let file = db_path_in(data_dir)?;
+    migrate_legacy_sqlite_db(&file)?;
     let conn = connection_at(&file)?;
     load_from_connection(&conn)
 }
@@ -215,10 +189,11 @@ pub fn save_local_interface_state(
     ))
 }
 
-/// Normalizes and persists the application configuration.
-#[cfg(feature = "desktop")]
-pub fn save(app: &AppHandle, config: &AppConfig) -> Result<()> {
-    let conn = connection(app)?;
+/// Saves configuration in the runtime's injected data directory.
+pub fn save_at(data_dir: &std::path::Path, config: &AppConfig) -> Result<()> {
+    let file = db_path_in(data_dir)?;
+    migrate_legacy_sqlite_db(&file)?;
+    let conn = connection_at(&file)?;
     save_to_connection(&conn, config)
 }
 

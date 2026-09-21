@@ -68,6 +68,22 @@ export function App(): JSX.Element {
     void refreshTasks();
   }, [refreshTasks]);
 
+  useEffect(() => {
+    if (!networkReady) return;
+    const reconcile = () => void refreshTasks();
+    const timer = window.setInterval(reconcile, 5_000);
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") reconcile();
+    };
+    window.addEventListener("focus", reconcile);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("focus", reconcile);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, [networkReady, refreshTasks]);
+
   const activeWorkspace =
     config?.workspaces.find((workspace) => workspace.id === config.activeWorkspaceId) ?? null;
   const activeView =

@@ -65,4 +65,32 @@ describe("pi history sync", () => {
     );
     expect(snapshot.records.map((item) => item.id)).toEqual(["one"]);
   });
+
+  it("does not mix records from another conversation in the same pane", () => {
+    const snapshot = applyPiHistory(
+      null,
+      {
+        status: "synced",
+        networkId: "network-a",
+        cursor: "pi-history-v1:2",
+        records: [record("current", 1), { ...record("other-session", 2), sessionId: "other" }],
+      },
+      scope,
+    );
+    expect(snapshot.records.map((item) => item.id)).toEqual(["current"]);
+  });
+
+  it("retains the same conversation across executor generations", () => {
+    const snapshot = applyPiHistory(
+      null,
+      {
+        status: "synced",
+        networkId: "network-a",
+        cursor: "pi-history-v1:2",
+        records: [record("current", 1), { ...record("before-transfer", 2), executionGeneration: 0 }],
+      },
+      scope,
+    );
+    expect(snapshot.records.map((item) => item.id)).toEqual(["current", "before-transfer"]);
+  });
 });

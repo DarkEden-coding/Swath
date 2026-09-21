@@ -162,7 +162,9 @@ export function TaskTabBar({
     >
       <div ref={menuRef} className="flex h-full items-center gap-1">
         {tasks
-          .filter((task) => task.lifecycle === "active")
+          // Keep the currently-mounted task visible through completion so running processes and
+          // their output are not orphaned from the tab strip. History remains separately listed.
+          .filter((task) => task.lifecycle === "active" || task.id === activeTaskId)
           .map((task) => {
             const piIds = task.panes
               .filter((pane) => pane.kind === "piAgent")

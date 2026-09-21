@@ -38,6 +38,12 @@ async fn ensure_local_replica(
         .join("project-repos")
         .join(format!("{project_id}.git"));
     if replica.exists() {
+        // A private replica is a cache, not the authority for a newly-created task. Refresh it
+        // whenever the configured source is locally available so a short branch name cannot
+        // silently resolve to the branch tip from the original clone.
+        if Path::new(source).exists() {
+            git::ensure_project_replica(source, &replica)?;
+        }
         return Ok(replica);
     }
     if Path::new(source).exists() {
@@ -108,6 +114,7 @@ pub(super) async fn catalog_write(
     .await
     .map_err(|e| e.to_string())?
     .ok_or("network_not_found")?;
+    let catalog_operation_id = operation_id.clone();
     let request = match kind {
         "project" => network::raft::CatalogRequest::Project {
             operation_id,
@@ -143,7 +150,25 @@ pub(super) async fn catalog_write(
     if response.status != "committed" {
         return Err(response.status);
     }
-    Ok(response)
+    // A forwarded Raft write can be acknowledged before this follower projects the entry. Do not
+    // let a dependent provisioning/read step race its own successful command.
+    for _ in 0..100 {
+        let applied = catalog_connection(data_dir)
+            .and_then(|conn| {
+                conn.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM operation_dedup WHERE operation_id=?1)",
+                    [&catalog_operation_id],
+                    |row| row.get::<_, bool>(0),
+                )
+                .map_err(|error| error.to_string())
+            })
+            .unwrap_or(false);
+        if applied {
+            return Ok(response);
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    return Err("catalog_apply_timeout".into());
 }
 pub(super) fn revision(conn: &rusqlite::Connection, table: &str, id: &str) -> Result<i64, String> {
     conn.query_row(
@@ -172,7 +197,7 @@ pub async fn rpc(data_dir: &Path, request: Value) -> Result<Value, String> {
     ) {
         if let Some(task_id) = request.get("taskId").and_then(Value::as_str) {
             let conn = catalog_connection(data_dir)?;
-            let frozen: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM task_operations WHERE task_id=?1 AND kind='transfer' AND phase IN ('source frozen','destination staged','verified'))", [task_id], |row| row.get(0)).map_err(|e| e.to_string())?;
+            let frozen: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM task_operations WHERE task_id=?1 AND ((kind='transfer' AND phase IN ('source frozen','destination staged','verified')) OR (kind='cleanup' AND phase='cleanup frozen')))", [task_id], |row| row.get(0)).map_err(|e| e.to_string())?;
             if frozen {
                 return Ok(error(
                     "task_frozen",
@@ -190,6 +215,7 @@ pub async fn rpc(data_dir: &Path, request: Value) -> Result<Value, String> {
         "renameTask" => rename_task(data_dir, &request).await,
         "reorderTasks" => reorder_tasks(data_dir, &request).await,
         "completeTask" => complete_task(data_dir, &request).await,
+        "reactivateTask" => reactivate_task(data_dir, &request).await,
         "reorderPanes" => reorder_panes(data_dir, &request).await,
         "createPane" => create_pane(data_dir, &request).await,
         "updatePane" => update_pane(data_dir, &request).await,
@@ -295,18 +321,20 @@ async fn create_task(data_dir: &Path, request: &Value) -> Result<Value, String> 
     }
     let replica = ensure_local_replica(data_dir, project_id, &source).await?;
     let execution_source = replica.to_string_lossy().into_owned();
-    let selected_ref = request
+    let requested_ref = request
         .get("baseCommit")
         .and_then(Value::as_str)
         .filter(|value| !value.trim().is_empty())
         .unwrap_or(&branch);
-    let base = git::resolve_ref(&execution_source, selected_ref).unwrap_or_default();
-    if base.is_empty() {
-        return Ok(error(
-            "unborn_repository",
-            "Create an initial commit before creating a task",
-        ));
-    }
+    let selected_ref = if requested_ref == branch && branch != "HEAD" {
+        format!("refs/swath/source/heads/{branch}")
+    } else {
+        requested_ref.to_owned()
+    };
+    let base = match git::resolve_ref(&execution_source, &selected_ref) {
+        Ok(base) => base,
+        Err(reason) => return Ok(error("base_commit_unavailable", reason)),
+    };
     let task_id = id(&conn, "task")?;
     let worktree = data_dir.join("task-worktrees").join(&task_id);
     let project_revision = revision(&conn, "projects", project_id)?;
@@ -544,6 +572,19 @@ async fn complete_task(data_dir: &Path, request: &Value) -> Result<Value, String
         "task",
         revision(&conn, "tasks", task)?,
         json!({"action":"lifecycle","taskId":task,"lifecycle":"completed"}),
+    )
+    .await?;
+    Ok(json!({"ok":true}))
+}
+async fn reactivate_task(data_dir: &Path, request: &Value) -> Result<Value, String> {
+    let task = field(request, "taskId")?;
+    let conn = catalog_connection(data_dir)?;
+    catalog_write(
+        data_dir,
+        request,
+        "task",
+        revision(&conn, "tasks", task)?,
+        json!({"action":"lifecycle","taskId":task,"lifecycle":"active"}),
     )
     .await?;
     Ok(json!({"ok":true}))

@@ -125,13 +125,25 @@ export function PiAgentPane({
     groupPaths,
     paneMeta?.metadata?.piSessionFile,
     initialStart,
-    (request) =>
-      appActions.createPiAgentTab(workspace.id, agentTabTitle(request), {
-        prompt: request.task,
-        title: agentTabTitle(request),
-        model: request.model,
-        thinkingLevel: request.reasoningLevel,
-      }),
+    (request) => {
+      if (taskExecution?.taskId) {
+        void window.swath.tasks
+          .rpc({
+            op: "createPane",
+            taskId: taskExecution.taskId,
+            kind: "piAgent",
+            title: agentTabTitle(request),
+          })
+          .then(() => useTaskStore.getState().refresh());
+      } else {
+        appActions.createPiAgentTab(workspace.id, agentTabTitle(request), {
+          prompt: request.task,
+          title: agentTabTitle(request),
+          model: request.model,
+          thinkingLevel: request.reasoningLevel,
+        });
+      }
+    },
     taskExecution && {
       taskId: taskExecution.taskId,
       networkId: taskExecution.networkId,
@@ -406,16 +418,30 @@ export function PiAgentPane({
         title={state.title ?? state.state?.sessionName ?? "pi"}
         statusClass={state.exited ? "exited" : state.isStreaming ? "running" : "dormant"}
         onActivate={() => {
-          appActions.setActivePane(workspace.id, view.id, paneId);
           if (taskExecution?.taskId) setFocusedPane(paneId);
+          else appActions.setActivePane(workspace.id, view.id, paneId);
         }}
-        onSplitRight={(kind) =>
-          appActions.splitPane(workspace.id, view.id, paneId, "vertical", kind)
-        }
-        onSplitDown={(kind) =>
-          appActions.splitPane(workspace.id, view.id, paneId, "horizontal", kind)
-        }
-        onClose={() => appActions.closePane(workspace.id, view.id, paneId)}
+        onSplitRight={(kind) => {
+          if (taskExecution?.taskId)
+            void window.swath.tasks
+              .rpc({ op: "createPane", taskId: taskExecution.taskId, kind: kind ?? "terminal" })
+              .then(() => useTaskStore.getState().refresh());
+          else appActions.splitPane(workspace.id, view.id, paneId, "vertical", kind);
+        }}
+        onSplitDown={(kind) => {
+          if (taskExecution?.taskId)
+            void window.swath.tasks
+              .rpc({ op: "createPane", taskId: taskExecution.taskId, kind: kind ?? "terminal" })
+              .then(() => useTaskStore.getState().refresh());
+          else appActions.splitPane(workspace.id, view.id, paneId, "horizontal", kind);
+        }}
+        onClose={() => {
+          if (taskExecution?.taskId)
+            void window.swath.tasks
+              .rpc({ op: "removePane", taskId: taskExecution.taskId, paneId })
+              .then(() => useTaskStore.getState().refresh());
+          else appActions.closePane(workspace.id, view.id, paneId);
+        }}
       >
         <div className="pi-agent relative flex h-full min-h-0 overflow-hidden">
           <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden">

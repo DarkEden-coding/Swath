@@ -86,4 +86,50 @@ describe("taskRendererProjection", () => {
       second: { id: "legacy-pane:op:old-pi" },
     });
   });
+
+  it("prunes deleted legacy panes and uses authoritative shared metadata", () => {
+    const legacy = {
+      id: "workspace-1",
+      name: "Project",
+      path: "/old",
+      activeViewId: "source",
+      createdAt: 0,
+      updatedAt: 0,
+      views: [
+        {
+          id: "source",
+          type: "workspace-view" as const,
+          title: "Source",
+          activePaneId: "deleted",
+          layout: {
+            type: "split" as const,
+            id: "split-1",
+            direction: "vertical" as const,
+            ratio: 0.5,
+            first: { type: "pane" as const, id: "deleted", kind: "terminal" as const },
+            second: {
+              type: "pane" as const,
+              id: "chat",
+              kind: "piAgent" as const,
+              metadata: { piSessionFile: "/old/session.jsonl" },
+            },
+          },
+        },
+      ],
+    };
+    const { view } = taskRendererProjection(
+      { id: "task", title: "Task" },
+      [{ id: "shared:chat", kind: "piAgent", title: "New", sessionId: "/new/session.jsonl" }],
+      "/new",
+      null,
+      legacy,
+    );
+    expect(view.activePaneId).toBe("shared:chat");
+    expect(view.layout).toMatchObject({
+      type: "pane",
+      id: "shared:chat",
+      cwd: "/new",
+      metadata: { piSessionFile: "/new/session.jsonl" },
+    });
+  });
 });

@@ -303,14 +303,138 @@ struct SnapshotBlob {
     last: Option<LogId<NodeId>>,
     membership: StoredMembership<NodeId, BasicNode>,
     data: BTreeMap<String, String>,
+    #[serde(default)]
+    catalog: Vec<SnapshotTable>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct SnapshotTable {
+    name: String,
+    columns: Vec<String>,
+    rows: Vec<Vec<SnapshotCell>>,
+}
+
+#[derive(Serialize, Deserialize)]
+enum SnapshotCell {
+    Null,
+    Integer(i64),
+    Real(f64),
+    Text(String),
+    Blob(Vec<u8>),
+}
+
+// Consensus-owned projections only. Device-local routing, credentials, paths, runtime state,
+// event delivery progress and preferences deliberately never cross a snapshot boundary.
+const SNAPSHOT_TABLES: &[&str] = &[
+    "networks",
+    "devices",
+    "coordinator_members",
+    "git_replicas",
+    "enrollment_credentials",
+    "raft_node_members",
+    "projects",
+    "tasks",
+    "task_panes",
+    "sessions",
+    "operation_dedup",
+    "tombstones",
+    "legacy_import_records",
+    "migration_conflict_resolutions",
+];
+
+fn snapshot_catalog(conn: &Connection) -> Result<Vec<SnapshotTable>, rusqlite::Error> {
+    let mut result = Vec::new();
+    for &name in SNAPSHOT_TABLES {
+        let exists: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+            [name],
+            |row| row.get(0),
+        )?;
+        if !exists {
+            continue;
+        }
+        let mut statement = conn.prepare(&format!("SELECT * FROM {name}"))?;
+        let columns = statement
+            .column_names()
+            .iter()
+            .map(|value| (*value).to_owned())
+            .collect::<Vec<_>>();
+        let rows = statement
+            .query_map([], |row| {
+                (0..columns.len())
+                    .map(|index| {
+                        use rusqlite::types::ValueRef;
+                        Ok(match row.get_ref(index)? {
+                            ValueRef::Null => SnapshotCell::Null,
+                            ValueRef::Integer(value) => SnapshotCell::Integer(value),
+                            ValueRef::Real(value) => SnapshotCell::Real(value),
+                            ValueRef::Text(value) => {
+                                SnapshotCell::Text(String::from_utf8_lossy(value).into_owned())
+                            }
+                            ValueRef::Blob(value) => SnapshotCell::Blob(value.to_vec()),
+                        })
+                    })
+                    .collect::<Result<Vec<_>, rusqlite::Error>>()
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        result.push(SnapshotTable {
+            name: name.to_owned(),
+            columns,
+            rows,
+        });
+    }
+    Ok(result)
+}
+
+fn restore_catalog(
+    conn: &mut Connection,
+    catalog: &[SnapshotTable],
+) -> Result<(), rusqlite::Error> {
+    let tx = conn.transaction()?;
+    for table in catalog.iter().rev() {
+        if SNAPSHOT_TABLES.contains(&table.name.as_str()) {
+            tx.execute(&format!("DELETE FROM {}", table.name), [])?;
+        }
+    }
+    for table in catalog {
+        if !SNAPSHOT_TABLES.contains(&table.name.as_str()) || table.columns.is_empty() {
+            continue;
+        }
+        let placeholders = (1..=table.columns.len())
+            .map(|index| format!("?{index}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!(
+            "INSERT INTO {} ({}) VALUES ({})",
+            table.name,
+            table.columns.join(","),
+            placeholders
+        );
+        for row in &table.rows {
+            let values = row
+                .iter()
+                .map(|cell| match cell {
+                    SnapshotCell::Null => rusqlite::types::Value::Null,
+                    SnapshotCell::Integer(value) => rusqlite::types::Value::Integer(*value),
+                    SnapshotCell::Real(value) => rusqlite::types::Value::Real(*value),
+                    SnapshotCell::Text(value) => rusqlite::types::Value::Text(value.clone()),
+                    SnapshotCell::Blob(value) => rusqlite::types::Value::Blob(value.clone()),
+                })
+                .collect::<Vec<_>>();
+            tx.execute(&sql, rusqlite::params_from_iter(values))?;
+        }
+    }
+    tx.commit()
 }
 impl RaftSnapshotBuilder<CatalogType> for SqliteStore {
     async fn build_snapshot(&mut self) -> Result<Snapshot<CatalogType>, StorageError<NodeId>> {
         let s = self.state()?;
+        let catalog = snapshot_catalog(&self.db.lock().unwrap()).map_err(Self::err)?;
         let b = serde_json::to_vec(&SnapshotBlob {
             last: s.last,
             membership: s.membership.clone(),
-            data: s.data,
+            data: s.data.clone(),
+            catalog,
         })
         .map_err(Self::err)?;
         let meta = SnapshotMeta {
@@ -321,14 +445,7 @@ impl RaftSnapshotBuilder<CatalogType> for SqliteStore {
         self.db.lock().unwrap().execute("INSERT INTO raft_snapshots(network_id,last_log_index,last_log_term,payload,created_at) VALUES(?1,?2,?3,?4,strftime('%s','now')) ON CONFLICT(network_id) DO UPDATE SET payload=excluded.payload",params![self.network_id,meta.last_log_id.map(|x|x.index as i64).unwrap_or(0),meta.last_log_id.map(|x|x.leader_id.term as i64).unwrap_or(0),b]).map_err(Self::err)?;
         Ok(Snapshot {
             meta,
-            snapshot: Box::new(Cursor::new(
-                serde_json::to_vec(&SnapshotBlob {
-                    last: s.last,
-                    membership: s.membership,
-                    data: self.state()?.data,
-                })
-                .map_err(Self::err)?,
-            )),
+            snapshot: Box::new(Cursor::new(b)),
         })
     }
 }
@@ -370,7 +487,9 @@ fn apply_catalog_projection(
     if operation_id.is_empty() {
         return Ok(invalid("invalid_request"));
     }
-    let hash = serde_json::to_string(&(kind, expected, payload)).unwrap_or_default();
+    // An operation identifies semantic intent. Preconditions are execution-attempt metadata and
+    // may legitimately change when a follower catches up and retries the same intent.
+    let hash = serde_json::to_string(&(kind, payload)).unwrap_or_default();
     if let Some((old_hash, result)) = tx
         .query_row(
             "SELECT request_hash,result_json FROM operation_dedup WHERE operation_id=?1",
@@ -518,6 +637,11 @@ fn record_catalog_result(
     payload: &serde_json::Value,
     response: CatalogResponse,
 ) -> Result<CatalogResponse, rusqlite::Error> {
+    // A rejected optimistic attempt is not a completed semantic operation. Let the caller reload
+    // and retry the same operation ID with an authoritative precondition.
+    if response.status == "revision_conflict" {
+        return Ok(response);
+    }
     tx.execute("INSERT INTO operation_dedup(operation_id,operation_kind,request_hash,result_json,created_at) VALUES(?1,?2,?3,?4,strftime('%s','now'))",params![operation_id,kind,hash,serde_json::to_string(&response).unwrap()])?;
     tx.execute("INSERT INTO transactional_outbox(id,topic,payload_json,created_at) VALUES(?1,?2,?3,strftime('%s','now'))",params![format!("catalog:{operation_id}"),format!("catalog.{kind}"),payload.to_string()])?;
     Ok(response)
@@ -860,6 +984,21 @@ fn task_mutation(
             if !matches!(state, "active" | "completed") {
                 return Ok(invalid("invalid_request"));
             };
+            let current: Option<(String, i64)> = tx
+                .query_row(
+                    "SELECT lifecycle,revision FROM tasks WHERE id=?1 AND tombstoned_at IS NULL",
+                    [id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()?;
+            if let Some((current_state, current_revision)) = current {
+                if current_state == state {
+                    return Ok(committed(
+                        serde_json::json!({"taskId":id,"revision":current_revision,"lifecycle":state}),
+                        current_revision,
+                    ));
+                }
+            }
             let n=tx.execute("UPDATE tasks SET lifecycle=?1,revision=revision+1 WHERE id=?2 AND revision=?3 AND tombstoned_at IS NULL",params![state,id,expected])?;
             Ok(if n == 0 {
                 conflict()
@@ -1214,6 +1353,9 @@ impl RaftStateMachine<CatalogType> for SqliteStore {
     ) -> Result<(), StorageError<NodeId>> {
         let payload = x.into_inner();
         let b: SnapshotBlob = serde_json::from_slice(&payload).map_err(Self::err)?;
+        if !b.catalog.is_empty() {
+            restore_catalog(&mut self.db.lock().unwrap(), &b.catalog).map_err(Self::err)?;
+        }
         self.put_state(&State {
             last: m.last_log_id,
             membership: m.last_membership.clone(),
@@ -2068,6 +2210,53 @@ mod raft_tests {
             .unwrap();
         assert_eq!(restarted.store.get("survives").as_deref(), Some("ok"));
         restarted.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn snapshot_restores_relational_catalog_and_receipts() {
+        let base = NEXT.fetch_add(2, Ordering::Relaxed) + 20_000;
+        let mut source = SqliteStore::open(&path(base), "snapshot-catalog").unwrap();
+        {
+            let conn = source.db.lock().unwrap();
+            conn.execute("INSERT INTO projects(id,network_id,name,default_branch,revision,created_at) VALUES('project','network','Project','main',3,1)", []).unwrap();
+            conn.execute("INSERT INTO operation_dedup(operation_id,operation_kind,request_hash,result_json,created_at) VALUES('operation','project','hash','{}',1)", []).unwrap();
+            conn.execute("INSERT INTO tombstones(record_type,record_id,revision,deleted_at) VALUES('pane','old-pane',2,1)", []).unwrap();
+        }
+        let snapshot = source.build_snapshot().await.unwrap();
+        let meta = snapshot.meta.clone();
+        let mut target = SqliteStore::open(&path(base + 1), "snapshot-catalog").unwrap();
+        target
+            .install_snapshot(&meta, snapshot.snapshot)
+            .await
+            .unwrap();
+        let conn = target.db.lock().unwrap();
+        assert_eq!(
+            conn.query_row(
+                "SELECT revision FROM projects WHERE id='project'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            3
+        );
+        assert_eq!(
+            conn.query_row(
+                "SELECT COUNT(*) FROM operation_dedup WHERE operation_id='operation'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            1
+        );
+        assert_eq!(
+            conn.query_row(
+                "SELECT COUNT(*) FROM tombstones WHERE record_id='old-pane'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            1
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
