@@ -21,5 +21,23 @@ describe("task RPC validation", () => {
       op: "removeProject",
       projectId: "p",
     });
+    expect(
+      parseTaskRpcRequest({
+        op: "updatePane",
+        taskId: "t",
+        paneId: "pane",
+        sessionId: "/sessions/pi.jsonl",
+        operationId: "pane-session:pane:pi",
+      }),
+    ).toEqual({
+      op: "updatePane",
+      taskId: "t",
+      paneId: "pane",
+      sessionId: "/sessions/pi.jsonl",
+      operationId: "pane-session:pane:pi",
+    });
+    expect(
+      parseTaskRpcRequest({ op: "updatePane", taskId: "t", paneId: "pane", sessionId: "" }),
+    ).toBeNull();
   });
 });

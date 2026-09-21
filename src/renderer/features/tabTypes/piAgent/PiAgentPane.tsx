@@ -157,9 +157,28 @@ export function PiAgentPane({
   const sessionFile = state.state?.sessionFile;
   useEffect(() => {
     if (sessionFile && sessionFile !== paneMeta?.metadata?.piSessionFile) {
-      appActions.setPanePiSessionFile(workspace.id, view.id, paneId, sessionFile);
+      if (taskExecution?.taskId) {
+        void window.swath.tasks
+          .rpc({
+            op: "updatePane",
+            taskId: taskExecution.taskId,
+            paneId,
+            sessionId: sessionFile,
+            operationId: `pane-session:${paneId}:${sessionFile}`,
+          })
+          .then(() => useTaskStore.getState().refresh());
+      } else {
+        appActions.setPanePiSessionFile(workspace.id, view.id, paneId, sessionFile);
+      }
     }
-  }, [paneId, paneMeta?.metadata?.piSessionFile, sessionFile, view.id, workspace.id]);
+  }, [
+    paneId,
+    paneMeta?.metadata?.piSessionFile,
+    sessionFile,
+    taskExecution?.taskId,
+    view.id,
+    workspace.id,
+  ]);
 
   // Draft and attachments are cached alongside the transcript so a tab switch does not lose them.
   const persistedDraft = useTaskStore((store) => store.local.drafts?.[paneId]);

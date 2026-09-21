@@ -15,6 +15,13 @@ export type TaskRpcRequest =
   | { op: "completeTask"; taskId: string }
   | { op: "reorderPanes"; taskId: string; paneIds: string[] }
   | { op: "createPane"; taskId: string; kind: string; title?: string }
+  | {
+      op: "updatePane";
+      taskId: string;
+      paneId: string;
+      sessionId: string;
+      operationId?: string;
+    }
   | { op: "removePane"; taskId: string; paneId: string }
   | { op: "retryProvision" | "getTask" | "cleanupPreview" | "restoreTask"; taskId: string }
   | { op: "approvePreview"; taskId: string; port: number }
@@ -114,6 +121,21 @@ export function parseTaskRpcRequest(raw: unknown): TaskRpcRequest | null {
     const taskId = text(raw.taskId),
       paneId = text(raw.paneId);
     return taskId && paneId ? { op: raw.op, taskId, paneId } : null;
+  }
+  if (raw.op === "updatePane") {
+    const taskId = text(raw.taskId),
+      paneId = text(raw.paneId),
+      sessionId = text(raw.sessionId),
+      operationId = raw.operationId === undefined ? undefined : text(raw.operationId);
+    return taskId && paneId && sessionId && (raw.operationId === undefined || operationId)
+      ? {
+          op: raw.op,
+          taskId,
+          paneId,
+          sessionId,
+          ...(operationId ? { operationId } : {}),
+        }
+      : null;
   }
   if (
     raw.op === "retryProvision" ||

@@ -192,6 +192,7 @@ pub async fn rpc(data_dir: &Path, request: Value) -> Result<Value, String> {
         "completeTask" => complete_task(data_dir, &request).await,
         "reorderPanes" => reorder_panes(data_dir, &request).await,
         "createPane" => create_pane(data_dir, &request).await,
+        "updatePane" => update_pane(data_dir, &request).await,
         "removePane" => remove_pane(data_dir, &request).await,
         "retryProvision" => retry_provision(data_dir, &request).await,
         "getTask" => get_task(data_dir, &request),
@@ -568,6 +569,21 @@ async fn create_pane(data_dir: &Path, request: &Value) -> Result<Value, String> 
     let pane = id(&conn, "pane")?;
     catalog_write(data_dir,request,"pane",revision(&conn,"tasks",task)?,json!({"action":"create","paneId":pane,"taskId":task,"kind":kind,"title":request.get("title").and_then(Value::as_str)})).await?;
     Ok(json!({"ok":true,"paneId":pane}))
+}
+async fn update_pane(data_dir: &Path, request: &Value) -> Result<Value, String> {
+    let task = field(request, "taskId")?;
+    let pane = field(request, "paneId")?;
+    let session = field(request, "sessionId")?;
+    let conn = catalog_connection(data_dir)?;
+    catalog_write(
+        data_dir,
+        request,
+        "pane",
+        revision(&conn, "task_panes", pane)?,
+        json!({"action":"update","paneId":pane,"taskId":task,"sessionId":session}),
+    )
+    .await?;
+    Ok(json!({"ok":true}))
 }
 async fn remove_pane(data_dir: &Path, request: &Value) -> Result<Value, String> {
     let task = field(request, "taskId")?;

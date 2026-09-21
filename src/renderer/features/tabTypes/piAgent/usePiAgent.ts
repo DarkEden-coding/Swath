@@ -205,8 +205,12 @@ export function usePiAgent(
   const send = useCallback(
     (command: PiCommandMessage) => {
       if (taskExecution?.readOnly) return;
+      const operation =
+        command.type === "prompt" || command.type === "follow_up"
+          ? { operationId: crypto.randomUUID() }
+          : {};
       void window.swath.pi
-        .rpc({ op: "send", ...target, line: JSON.stringify(command) })
+        .rpc({ op: "send", ...target, ...operation, line: JSON.stringify(command) })
         .catch((error: unknown) => {
           dispatch({ type: "error", message: String(error) });
         });

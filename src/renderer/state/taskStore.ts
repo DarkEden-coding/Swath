@@ -102,16 +102,17 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     })),
 }));
 
-// Revision fencing makes stale asynchronous saves harmless to native and browser backends.
-let saving = 0;
+// Serialize interface-state writes: revision fencing rejects a later write if it reaches native
+// storage before the earlier revision has committed.
+let saveQueue = Promise.resolve();
 useTaskStore.subscribe((state, previous) => {
   if (!state.networkId || state.local === previous.local) return;
-  const revision = Math.max(state.localRevision + 1, ++saving);
-  void window.swath.localState.save(state.networkId, state.local, revision).then((saved) => {
-    if (
-      useTaskStore.getState().networkId === state.networkId &&
-      saved >= useTaskStore.getState().localRevision
-    )
+  const { networkId, local } = state;
+  saveQueue = saveQueue.catch(() => undefined).then(async () => {
+    const current = useTaskStore.getState();
+    if (current.networkId !== networkId) return;
+    const saved = await window.swath.localState.save(networkId, local, current.localRevision + 1);
+    if (useTaskStore.getState().networkId === networkId)
       useTaskStore.setState({ localRevision: saved });
   });
 });
