@@ -223,6 +223,18 @@ export function TaskTabBar({
                           draggable={task.id === activeTaskId}
                           data-task-view-id={task.id === activeTaskId ? view.id : undefined}
                           aria-grabbed={viewReorder.draggedId === view.id}
+                          aria-keyshortcuts="Alt+ArrowLeft Alt+ArrowRight"
+                          title="Alt+Left / Alt+Right to reorder tab"
+                          onKeyDown={(event) => {
+                            if (task.id !== activeTaskId || !event.altKey) return;
+                            const from = views.findIndex((item) => item.id === view.id);
+                            const direction = event.key === "ArrowLeft" ? -1 : event.key === "ArrowRight" ? 1 : 0;
+                            const to = from + direction;
+                            if (direction && from >= 0 && to >= 0 && to < views.length) {
+                              event.preventDefault();
+                              onReorderView(from, to);
+                            }
+                          }}
                           onDragStart={(event) => {
                             if (task.id === activeTaskId)
                               viewReorder.startNativeDrag(event, view.id, views.findIndex((item) => item.id === view.id));
