@@ -138,6 +138,7 @@ export function TaskTabBar({
   const [paneMenuTaskId, setPaneMenuTaskId] = useState<string | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const viewStripRef = useRef<HTMLDivElement>(null);
+  const suppressViewClick = useRef(false);
   const viewReorder = useReorderDrag({
     axis: "horizontal",
     itemCount: views.length,
@@ -206,10 +207,6 @@ export function TaskTabBar({
                   <div
                     ref={task.id === activeTaskId ? viewStripRef : undefined}
                     className="ml-1 flex h-full items-center gap-1 border-l border-swath-border pl-1 [-webkit-app-region:no-drag] [app-region:no-drag]"
-                    onDragOver={
-                      task.id === activeTaskId ? viewReorder.handleNativeDragOver : undefined
-                    }
-                    onDrop={task.id === activeTaskId ? viewReorder.handleNativeDrop : undefined}
                   >
                     {(task.id === activeTaskId
                       ? views
@@ -222,14 +219,13 @@ export function TaskTabBar({
                       return (
                         <Fragment key={view.id}>
                           {task.id === activeTaskId && viewReorder.dropIndex === viewIndex ? (
-                            <span
-                              className="h-5 w-0.5 shrink-0 rounded bg-swath-accent"
-                              aria-hidden
-                            />
+                            <span className="relative z-10 h-5 w-0 shrink-0" aria-hidden>
+                              <span className="absolute -left-px top-0 h-5 w-0.5 rounded bg-swath-accent" />
+                            </span>
                           ) : null}
                           <div className="flex shrink-0 items-center">
                             <button
-                              draggable={task.id === activeTaskId}
+                              draggable={false}
                               data-task-view-id={task.id === activeTaskId ? view.id : undefined}
                               aria-grabbed={viewReorder.draggedId === view.id}
                               aria-keyshortcuts="Alt+ArrowLeft Alt+ArrowRight"
@@ -249,24 +245,27 @@ export function TaskTabBar({
                                   onReorderView(from, to);
                                 }
                               }}
-                              onDragStart={(event) => {
+                              onPointerDown={(event) => {
+                                suppressViewClick.current = false;
                                 if (task.id === activeTaskId)
-                                  viewReorder.startNativeDrag(
-                                    event,
-                                    view.id,
-                                    views.findIndex((item) => item.id === view.id),
-                                  );
+                                  viewReorder.startCapturedPointerDrag(event, view.id);
                               }}
-                              onDragEnd={viewReorder.finishDrag}
-                              onMouseDown={(event) => {
-                                if (task.id === activeTaskId)
-                                  viewReorder.startPointerDrag(event, view.id);
+                              onPointerMove={viewReorder.moveCapturedPointerDrag}
+                              onPointerUp={(event) => {
+                                suppressViewClick.current =
+                                  viewReorder.endCapturedPointerDrag(event);
                               }}
+                              onPointerCancel={viewReorder.cancelCapturedPointerDrag}
+                              onLostPointerCapture={viewReorder.cancelCapturedPointerDrag}
                               onClick={() => {
+                                if (suppressViewClick.current) {
+                                  suppressViewClick.current = false;
+                                  return;
+                                }
                                 onSelect(task.id);
                                 onSelectView(view.id);
                               }}
-                              className={`flex max-w-44 shrink-0 cursor-grab items-center gap-2 rounded px-2.5 py-1 text-left text-xs [-webkit-app-region:no-drag] [app-region:no-drag] active:cursor-grabbing ${viewReorder.draggedId === view.id ? "opacity-50" : ""} ${task.id === activeTaskId && view.id === activeViewId ? "bg-swath-accent/15 text-swath-text" : "text-swath-muted hover:bg-swath-bg"}`}
+                              className={`flex max-w-44 shrink-0 cursor-grab touch-none select-none items-center gap-2 rounded px-2.5 py-1 text-left text-xs [-webkit-app-region:no-drag] [app-region:no-drag] active:cursor-grabbing ${viewReorder.draggedId === view.id ? "opacity-50" : ""} ${task.id === activeTaskId && view.id === activeViewId ? "bg-swath-accent/15 text-swath-text" : "text-swath-muted hover:bg-swath-bg"}`}
                             >
                               {pane?.kind === "piAgent" ? (
                                 <PiTabIndicator paneIds={[pane.id]} />
@@ -278,7 +277,9 @@ export function TaskTabBar({
                       );
                     })}
                     {task.id === activeTaskId && viewReorder.dropIndex === views.length ? (
-                      <span className="h-5 w-0.5 shrink-0 rounded bg-swath-accent" aria-hidden />
+                      <span className="relative z-10 h-5 w-0 shrink-0" aria-hidden>
+                        <span className="absolute -left-px top-0 h-5 w-0.5 rounded bg-swath-accent" />
+                      </span>
                     ) : null}
                     <div className="relative flex h-full items-center">
                       <button

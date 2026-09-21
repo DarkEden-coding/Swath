@@ -1,4 +1,11 @@
-import { useCallback, useRef, useState, type DragEvent, type MouseEvent as ReactMouseEvent } from "react";
+import {
+  useCallback,
+  useRef,
+  useState,
+  type DragEvent,
+  type MouseEvent as ReactMouseEvent,
+  type PointerEvent as ReactPointerEvent,
+} from "react";
 
 export type ReorderAxis = "horizontal" | "vertical";
 
@@ -26,6 +33,10 @@ export interface ReorderDragBindings {
   handleNativeDrop: (event: DragEvent) => void;
   moveById: (id: string | null, insertionIndex: number) => void;
   startPointerDrag: (event: ReactMouseEvent, id: string) => void;
+  startCapturedPointerDrag: (event: ReactPointerEvent, id: string) => void;
+  moveCapturedPointerDrag: (event: ReactPointerEvent) => void;
+  endCapturedPointerDrag: (event: ReactPointerEvent) => boolean;
+  cancelCapturedPointerDrag: () => void;
 }
 
 /** Suppresses page/terminal text selection for the duration of a reorder gesture. */
@@ -48,6 +59,13 @@ export function useReorderDrag(options: UseReorderDragOptions): ReorderDragBindi
   const [draggedId, setDraggedId] = useState<string | null>(null);
   const [dropIndex, setDropIndex] = useState<number | null>(null);
   const nativeDragging = useRef(false);
+  const capturedPointer = useRef<{
+    pointerId: number;
+    id: string;
+    x: number;
+    y: number;
+    active: boolean;
+  } | null>(null);
 
   const getDropIndex = useCallback(
     (coordinate: number): number => {
@@ -153,6 +171,56 @@ export function useReorderDrag(options: UseReorderDragOptions): ReorderDragBindi
     [axis, getDropIndex, moveById],
   );
 
+  const startCapturedPointerDrag = useCallback((event: ReactPointerEvent, id: string): void => {
+    if (event.button !== 0 || capturedPointer.current) return;
+    capturedPointer.current = {
+      pointerId: event.pointerId,
+      id,
+      x: event.clientX,
+      y: event.clientY,
+      active: false,
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  }, []);
+
+  const moveCapturedPointerDrag = useCallback(
+    (event: ReactPointerEvent): void => {
+      const pointer = capturedPointer.current;
+      if (!pointer || pointer.pointerId !== event.pointerId) return;
+      if (!pointer.active && Math.hypot(event.clientX - pointer.x, event.clientY - pointer.y) < 5)
+        return;
+      if (!pointer.active) {
+        pointer.active = true;
+        lockTextSelection();
+        setDraggedId(pointer.id);
+      }
+      event.preventDefault();
+      setDropIndex(getDropIndex(axis === "horizontal" ? event.clientX : event.clientY));
+    },
+    [axis, getDropIndex],
+  );
+
+  const endCapturedPointerDrag = useCallback(
+    (event: ReactPointerEvent): boolean => {
+      const pointer = capturedPointer.current;
+      if (!pointer || pointer.pointerId !== event.pointerId) return false;
+      capturedPointer.current = null;
+      if (event.currentTarget.hasPointerCapture(event.pointerId))
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      if (pointer.active) {
+        event.preventDefault();
+        moveById(pointer.id, getDropIndex(axis === "horizontal" ? event.clientX : event.clientY));
+      }
+      return pointer.active;
+    },
+    [axis, getDropIndex, moveById],
+  );
+
+  const cancelCapturedPointerDrag = useCallback((): void => {
+    capturedPointer.current = null;
+    finishDrag();
+  }, [finishDrag]);
+
   return {
     draggedId,
     dropIndex,
@@ -164,5 +232,9 @@ export function useReorderDrag(options: UseReorderDragOptions): ReorderDragBindi
     handleNativeDrop,
     moveById,
     startPointerDrag,
+    startCapturedPointerDrag,
+    moveCapturedPointerDrag,
+    endCapturedPointerDrag,
+    cancelCapturedPointerDrag,
   };
 }
