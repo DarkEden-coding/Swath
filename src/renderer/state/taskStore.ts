@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { Device, Project, Task, TaskPane } from "../../shared/types";
+import type { Device, NetworkMember, Project, Task, TaskPane } from "../../shared/types";
 import type { TaskCatalog, TaskInterfaceState } from "../domain/tasks/taskActions";
 
 const emptyCatalog: TaskCatalog = { projects: [], tasks: [], panes: [] };
@@ -18,11 +18,19 @@ export function hydrateTaskInterfaceState(saved: Partial<TaskInterfaceState>): T
   return { ...emptyLocal, ...saved, paneOrderByTask: {} };
 }
 
-type TaskReply = { ok?: boolean; projects?: Project[]; tasks?: Task[]; panes?: TaskPane[] };
+type TaskReply = {
+  ok?: boolean;
+  projects?: Project[];
+  tasks?: Task[];
+  panes?: TaskPane[];
+  devices?: Device[];
+  members?: NetworkMember[];
+};
 
 interface TaskState {
   catalog: TaskCatalog;
   devices: Device[];
+  members: NetworkMember[];
   networkId: string | null;
   local: TaskInterfaceState;
   loaded: boolean;
@@ -39,6 +47,7 @@ interface TaskState {
 export const useTaskStore = create<TaskState>((set, get) => ({
   catalog: emptyCatalog,
   devices: [],
+  members: [],
   networkId: null,
   local: emptyLocal,
   loaded: false,
@@ -47,7 +56,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     // Startup must not create catalog state. The gate explicitly initializes or joins.
     const snapshot = await window.swath.network.current();
     if (!snapshot) {
-      set({ catalog: emptyCatalog, devices: [], networkId: null, loaded: true });
+      set({ catalog: emptyCatalog, devices: [], members: [], networkId: null, loaded: true });
       return;
     }
     const raw = (await window.swath.tasks.rpc({
@@ -78,7 +87,8 @@ export const useTaskStore = create<TaskState>((set, get) => ({
       : (catalog.tasks.find((t) => t.projectId === activeProjectId)?.id ?? null);
     set({
       catalog,
-      devices: snapshot.devices,
+      devices: raw.devices ?? snapshot.devices,
+      members: raw.members ?? snapshot.members ?? [],
       networkId: snapshot.network.id,
       local: { ...previous, activeProjectId, activeTaskId },
       localRevision,

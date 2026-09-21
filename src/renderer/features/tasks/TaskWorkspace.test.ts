@@ -4,7 +4,19 @@ import {
   reorderedPaneIds,
   reorderedTaskViewPaneIds,
   taskRendererProjection,
+  taskCreationError,
 } from "./TaskWorkspace";
+
+describe("taskCreationError", () => {
+  it("shows server rejection details instead of a generic failure", () => {
+    expect(taskCreationError({ ok: false, error: "Project has no Git source" })).toBe(
+      "Project has no Git source",
+    );
+    expect(
+      taskCreationError('{"code":"catalog_unavailable","message":"Catalog is unavailable"}'),
+    ).toBe("Catalog is unavailable");
+  });
+});
 
 describe("piSessionMetadata", () => {
   it("does not pass a migrated pane id to pi as --session", () => {

@@ -1377,14 +1377,29 @@ fn task_device(
                 })
         });
     if let Some(task_id) = task_id {
-        return conn
+        let owner = conn
             .query_row(
                 "SELECT assigned_device_id FROM tasks WHERE id=?1 AND tombstoned_at IS NULL",
                 [&task_id],
                 |r| r.get(0),
             )
             .optional()
-            .map_err(|e| e.to_string());
+            .map_err(|e| e.to_string())?;
+        if owner.is_some() {
+            return Ok(owner);
+        }
+        // A catalog write may have committed while this executor missed its projection. Allow
+        // an explicitly addressed retry to reach that executor; it verifies server ownership
+        // before copying the pending task locally.
+        if method == "task.rpc"
+            && params.get("op").and_then(Value::as_str) == Some("retryProvision")
+        {
+            return Ok(params
+                .get("deviceId")
+                .and_then(Value::as_str)
+                .map(str::to_owned));
+        }
+        return Ok(None);
     }
     // Provisioning is an execution request even though the task does not exist yet.
     if method == "task.rpc" && params.get("op").and_then(Value::as_str) == Some("createTask") {

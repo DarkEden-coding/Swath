@@ -209,6 +209,24 @@ function rpcOk(value: unknown): boolean {
   return !!value && typeof value === "object" && (value as { ok?: unknown }).ok === true;
 }
 
+export function taskCreationError(value: unknown): string {
+  if (typeof value === "string") {
+    try {
+      return taskCreationError(JSON.parse(value));
+    } catch {
+      return value || "Unable to create task";
+    }
+  }
+  if (value instanceof Error) return taskCreationError(value.message);
+  if (value && typeof value === "object") {
+    const reply = value as { error?: unknown; message?: unknown; code?: unknown };
+    if (reply.error != null) return taskCreationError(reply.error);
+    if (typeof reply.message === "string" && reply.message) return reply.message;
+    if (typeof reply.code === "string" && reply.code) return reply.code;
+  }
+  return "Unable to create task";
+}
+
 export function CreateTaskDialog({ onClose }: { onClose: () => void }): JSX.Element {
   const { catalog, devices, local, networkId, refresh } = useTaskStore();
   const project = catalog.projects.find((item) => item.id === local.activeProjectId);
@@ -243,18 +261,12 @@ export function CreateTaskDialog({ onClose }: { onClose: () => void }): JSX.Elem
             })
             .then((reply) => {
               if (!rpcOk(reply)) {
-                const detail =
-                  reply && typeof reply === "object" && "message" in reply
-                    ? String((reply as { message?: unknown }).message ?? "")
-                    : "";
-                setError(detail || "Unable to create task");
+                setError(taskCreationError(reply));
                 return;
               }
               return refresh().then(onClose);
             })
-            .catch((reason) =>
-              setError(reason instanceof Error ? reason.message : "Unable to create task"),
-            );
+            .catch((reason) => setError(taskCreationError(reason)));
         }}
       >
         <h2 className="mb-3 text-sm font-semibold text-swath-text">Create task</h2>

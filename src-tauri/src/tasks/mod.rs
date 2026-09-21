@@ -27,6 +27,87 @@ fn error(code: &str, message: impl Into<String>) -> Value {
     json!({"ok": false, "code": code, "error": message.into()})
 }
 
+async fn fixed_server_record(data_dir: &Path, request: Value) -> Result<Value, String> {
+    let conn = catalog_connection(data_dir)?;
+    let local = network::stable_device_id(&conn).map_err(|e| e.to_string())?;
+    let server: String = conn.query_row("SELECT server_device_id FROM networks WHERE tombstoned_at IS NULL ORDER BY created_at,id LIMIT 1", [], |row| row.get(0)).map_err(|e| e.to_string())?;
+    if server == local {
+        return match request.get("op").and_then(Value::as_str) {
+            Some("getProjectCatalogRecord") => project_catalog_record(data_dir, &request),
+            Some("getTaskCatalogRecord") => task_catalog_record(data_dir, &request),
+            _ => Err("invalid_catalog_read".into()),
+        };
+    }
+    let (endpoint, credential): (String, String) = conn
+        .query_row(
+            "SELECT endpoint,credential FROM device_connectors WHERE device_id=?1",
+            [&server],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(|e| e.to_string())?;
+    drop(conn);
+    let response = reqwest::Client::new()
+        .post(format!("{}/api/peer/rpc", endpoint.trim_end_matches('/')))
+        .bearer_auth(credential)
+        .json(&json!({"method":"task.rpc","params":request,"targetDeviceId":server,"hop":0}))
+        .send()
+        .await
+        .map_err(|e| format!("catalog_server_unavailable: {e}"))?;
+    let status = response.status();
+    let body: Value = response.json().await.map_err(|e| e.to_string())?;
+    if !status.is_success() {
+        return Err(body.get("error").cloned().unwrap_or(body).to_string());
+    }
+    body.get("result")
+        .cloned()
+        .ok_or_else(|| "invalid_catalog_response".into())
+}
+
+async fn sync_task_record(data_dir: &Path, task_id: &str) -> Result<(), String> {
+    let record = fixed_server_record(
+        data_dir,
+        json!({"op":"getTaskCatalogRecord","taskId":task_id}),
+    )
+    .await?;
+    apply_task_record(data_dir, task_id, &record)
+}
+
+fn apply_task_record(data_dir: &Path, task_id: &str, record: &Value) -> Result<(), String> {
+    let task = &record["task"];
+    let project = &record["project"];
+    let local = catalog_connection(data_dir)?;
+    if task["assignedDeviceId"].as_str()
+        != Some(
+            network::stable_device_id(&local)
+                .map_err(|e| e.to_string())?
+                .as_str(),
+        )
+    {
+        return Err("task_not_owned_by_this_device".into());
+    }
+    let mut conn = local;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    tx.execute(
+        "UPDATE projects SET task_order=?1,revision=?2 WHERE id=?3",
+        params![
+            project["taskOrder"].to_string(),
+            project["revision"]
+                .as_i64()
+                .ok_or("invalid_project_revision")?,
+            project["id"].as_str().ok_or("invalid_project_id")?
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+    tx.execute("INSERT INTO tasks(id,project_id,title,assigned_device_id,execution_generation,lifecycle,pane_order,revision,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9) ON CONFLICT(id) DO UPDATE SET title=excluded.title,assigned_device_id=excluded.assigned_device_id,execution_generation=excluded.execution_generation,lifecycle=excluded.lifecycle,pane_order=excluded.pane_order,revision=excluded.revision",params![task["id"].as_str(),task["projectId"].as_str(),task["title"].as_str(),task["assignedDeviceId"].as_str(),task["executionGeneration"].as_i64(),task["lifecycle"].as_str(),task["paneOrder"].to_string(),task["revision"].as_i64(),task["createdAt"].as_i64()]).map_err(|e|e.to_string())?;
+    tx.execute("INSERT INTO task_provisioning(task_id,base_commit,worktree_path,state,last_error,created_at) VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(task_id) DO UPDATE SET state=excluded.state,last_error=excluded.last_error",params![task["id"].as_str(),task["baseCommit"].as_str(),task["worktreePath"].as_str(),task["provisioningState"].as_str(),task["lastError"].as_str(),task["createdAt"].as_i64()]).map_err(|e|e.to_string())?;
+    if let Some(panes) = record["panes"].as_array() {
+        for pane in panes {
+            tx.execute("INSERT INTO task_panes(id,task_id,kind,title,session_id,revision,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(id) DO UPDATE SET title=excluded.title,session_id=excluded.session_id,revision=excluded.revision",params![pane["id"].as_str(),task_id,pane["kind"].as_str(),pane["title"].as_str(),pane["sessionId"].as_str(),pane["revision"].as_i64(),pane["createdAt"].as_i64()]).map_err(|e|e.to_string())?;
+        }
+    }
+    tx.commit().map_err(|e| e.to_string())
+}
+
 /// Operations that mutate or read only the replicated catalog. They must be handled by the
 /// catalog control plane, never routed to the task's executor merely because they carry a taskId.
 pub(crate) fn is_catalog_operation(request: &Value) -> bool {
@@ -44,6 +125,8 @@ pub(crate) fn is_catalog_operation(request: &Value) -> bool {
                 | "createPane"
                 | "updatePane"
                 | "removePane"
+                | "getProjectCatalogRecord"
+                | "getTaskCatalogRecord"
         )
     )
 }
@@ -127,6 +210,11 @@ pub(super) async fn catalog_write(
             .unwrap_or(kind)
     );
     let db = config::db_path_in(data_dir).map_err(|e| e.to_string())?;
+    let action = payload
+        .get("action")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
     let service = network::raft::CatalogService::open_discovered(
         db.to_string_lossy(),
         "local-task-rpc",
@@ -170,6 +258,20 @@ pub(super) async fn catalog_write(
         .map_err(|e| serde_json::to_string(&e).unwrap_or(e.message))?;
     if response.status != "committed" {
         return Err(response.status);
+    }
+    // In the fixed-server topology desktop executors are not Raft learners. A write can be
+    // committed by the server without ever applying to this executor's old local projection.
+    // Callers that need a local task record reconcile it explicitly from the server below.
+    let conn = catalog_connection(data_dir)?;
+    let remote_server: bool = conn.query_row("SELECT server_device_id FROM networks WHERE tombstoned_at IS NULL ORDER BY created_at,id LIMIT 1", [], |row| row.get::<_,Option<String>>(0)).optional().map_err(|e|e.to_string())?.flatten().is_some_and(|server| network::stable_device_id(&conn).ok().is_some_and(|local| local != server));
+    if remote_server
+        && kind == "task"
+        && matches!(
+            action.as_str(),
+            "create" | "provision_ready" | "provision_failed"
+        )
+    {
+        return Ok(response);
     }
     if service
         .wait_for_operation(&catalog_operation_id, std::time::Duration::from_secs(15))
@@ -226,6 +328,8 @@ pub async fn rpc(data_dir: &Path, request: Value) -> Result<Value, String> {
         "createProject" | "importProject" => create_project(data_dir, &request).await,
         "createTask" => create_task(data_dir, &request).await,
         "listCatalog" => list_catalog(data_dir, &request),
+        "getProjectCatalogRecord" => project_catalog_record(data_dir, &request),
+        "getTaskCatalogRecord" => task_catalog_record(data_dir, &request),
         "renameProject" => rename_project(data_dir, &request).await,
         "removeProject" => remove_project(data_dir, &request).await,
         "renameTask" => rename_task(data_dir, &request).await,
@@ -295,17 +399,31 @@ async fn create_task(data_dir: &Path, request: &Value) -> Result<Value, String> 
     let device_id = field(request, "deviceId")?;
     let conn = config::connection_at(&config::db_path_in(data_dir).map_err(|e| e.to_string())?)
         .map_err(|e| e.to_string())?;
-    let (mut source, branch): (String, String) = match conn.query_row("SELECT repository_source,default_branch FROM projects WHERE id=?1 AND tombstoned_at IS NULL", params![project_id], |r| Ok((r.get::<_, Option<String>>(0)?.unwrap_or_default(),r.get(1)?))) {
-        Ok(row) if !row.0.is_empty() => row,
-        Ok(_) => return Ok(error("project_source_missing", "Project has no Git source; import it first")),
-        Err(_) => return Ok(error("project_not_found", "Project does not exist")),
-    };
+    let authoritative = fixed_server_record(
+        data_dir,
+        json!({"op":"getProjectCatalogRecord","projectId":project_id}),
+    )
+    .await?;
+    let branch = authoritative["defaultBranch"]
+        .as_str()
+        .ok_or("invalid_project_branch")?
+        .to_owned();
+    let mut source = authoritative["repositorySource"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
     // Early legacy imports stored a fingerprint (for example `git:.git`) instead of a usable
     // source path. Their imported task still owns the original path, so recover it here.
-    if source.starts_with("git:") || source.starts_with("path:") {
+    if source.is_empty() || source.starts_with("git:") || source.starts_with("path:") {
         if let Some(path) = conn.query_row("SELECT q.worktree_path FROM tasks t JOIN task_provisioning q ON q.task_id=t.id WHERE t.project_id=?1 AND q.worktree_path IS NOT NULL ORDER BY t.created_at LIMIT 1", [project_id], |row| row.get::<_, String>(0)).optional().map_err(|e| e.to_string())? {
             if Path::new(&path).is_dir() { source = path; }
         }
+    }
+    if source.is_empty() || source.starts_with("git:") || source.starts_with("path:") {
+        return Ok(error(
+            "project_source_missing",
+            "Project has no available Git source on this device",
+        ));
     }
     let known = conn
         .query_row(
@@ -319,16 +437,17 @@ async fn create_task(data_dir: &Path, request: &Value) -> Result<Value, String> 
     if !known {
         return Ok(error("device_not_found", "Select an enrolled device"));
     }
-    let online = conn
-        .query_row(
-            "SELECT healthy FROM coordinator_members WHERE device_id=?1",
-            params![device_id],
-            |r| r.get::<_, i64>(0),
-        )
-        .optional()
-        .map_err(|e| e.to_string())?
-        .unwrap_or(0)
-        != 0;
+    let online = device_id == network::stable_device_id(&conn).map_err(|e| e.to_string())?
+        || conn
+            .query_row(
+                "SELECT healthy FROM coordinator_members WHERE device_id=?1",
+                params![device_id],
+                |r| r.get::<_, i64>(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?
+            .unwrap_or(0)
+            != 0;
     if !online {
         return Ok(error(
             "device_offline",
@@ -353,8 +472,17 @@ async fn create_task(data_dir: &Path, request: &Value) -> Result<Value, String> 
     };
     let task_id = id(&conn, "task")?;
     let worktree = data_dir.join("task-worktrees").join(&task_id);
-    let project_revision = revision(&conn, "projects", project_id)?;
+    let project_revision = authoritative["revision"]
+        .as_i64()
+        .ok_or("invalid_project_revision")?;
     catalog_write(data_dir, request, "task", project_revision, json!({"action":"create","taskId":task_id,"projectId":project_id,"title":title,"deviceId":device_id,"baseCommit":base,"worktreePath":worktree})).await?;
+    sync_task_record(data_dir, &task_id)
+        .await
+        .map_err(|error| {
+            format!(
+                "Task {task_id} was created on the server but could not be prepared here: {error}"
+            )
+        })?;
     provision(
         data_dir,
         &task_id,
@@ -369,6 +497,7 @@ async fn create_task(data_dir: &Path, request: &Value) -> Result<Value, String> 
 /// Retries a previously failed/pending provisioning attempt without changing its receipt commit.
 async fn retry_provision(data_dir: &Path, request: &Value) -> Result<Value, String> {
     let task_id = field(request, "taskId")?;
+    sync_task_record(data_dir, task_id).await?;
     let conn = config::connection_at(&config::db_path_in(data_dir).map_err(|e| e.to_string())?)
         .map_err(|e| e.to_string())?;
     let row: Option<(String,String,String)> = conn.query_row("SELECT p.repository_source, q.base_commit, q.worktree_path FROM task_provisioning q JOIN tasks t ON t.id=q.task_id JOIN projects p ON p.id=t.project_id WHERE q.task_id=?1 AND q.state IN ('pending','failed')", params![task_id], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().map_err(|e| e.to_string())?;
@@ -414,6 +543,7 @@ async fn provision(
                 json!({"action":"provision_ready","taskId":task_id,"paneId":pane}),
             )
             .await?;
+            sync_task_record(data_dir, task_id).await?;
             Ok(
                 json!({"ok":true,"taskId":task_id,"state":"ready","worktreePath":worktree,"baseCommit":base,"piPaneId":pane}),
             )
@@ -427,6 +557,7 @@ async fn provision(
                 json!({"action":"provision_failed","taskId":task_id,"reason":reason}),
             )
             .await?;
+            sync_task_record(data_dir, task_id).await?;
             Ok(error("provision_failed", reason))
         }
     }
@@ -449,13 +580,40 @@ fn catalog_connection(data_dir: &Path) -> Result<rusqlite::Connection, String> {
 fn list_catalog(data_dir: &Path, request: &Value) -> Result<Value, String> {
     let network_id = field(request, "networkId")?;
     let conn = catalog_connection(data_dir)?;
+    let network_snapshot = network::catalog_snapshot(&conn, network_id)?;
     let mut projects = conn.prepare("SELECT id,name,repository_source,default_branch,task_order,revision,created_at,tombstoned_at FROM projects WHERE network_id=?1 AND tombstoned_at IS NULL ORDER BY created_at").map_err(|e| e.to_string())?;
     let projects: Vec<Value> = projects.query_map(params![network_id], |r| Ok(json!({"id":r.get::<_,String>(0)?,"name":r.get::<_,String>(1)?,"repositorySource":r.get::<_,Option<String>>(2)?,"defaultBranch":r.get::<_,String>(3)?,"taskOrder":serde_json::from_str::<Value>(&r.get::<_,String>(4)?).unwrap_or(json!([])),"revision":r.get::<_,i64>(5)?,"createdAt":r.get::<_,i64>(6)? * 1000,"tombstonedAt":r.get::<_,Option<i64>>(7)?.map(|v|v * 1000)}))).map_err(|e| e.to_string())?.collect::<Result<_,_>>().map_err(|e| e.to_string())?;
     let mut tasks = conn.prepare("SELECT t.id,t.project_id,t.title,t.assigned_device_id,t.execution_generation,t.lifecycle,t.pane_order,t.revision,t.created_at,t.tombstoned_at FROM tasks t JOIN projects p ON p.id=t.project_id WHERE p.network_id=?1 AND p.tombstoned_at IS NULL AND t.tombstoned_at IS NULL ORDER BY t.created_at").map_err(|e| e.to_string())?;
     let tasks: Vec<Value> = tasks.query_map(params![network_id], |r| Ok(json!({"id":r.get::<_,String>(0)?,"projectId":r.get::<_,String>(1)?,"title":r.get::<_,String>(2)?,"assignedDeviceId":r.get::<_,String>(3)?,"executionGeneration":r.get::<_,i64>(4)?,"lifecycle":r.get::<_,String>(5)?,"paneOrder":serde_json::from_str::<Value>(&r.get::<_,String>(6)?).unwrap_or(json!([])),"revision":r.get::<_,i64>(7)?,"createdAt":r.get::<_,i64>(8)? * 1000,"tombstonedAt":r.get::<_,Option<i64>>(9)?.map(|v|v * 1000)}))).map_err(|e| e.to_string())?.collect::<Result<_,_>>().map_err(|e| e.to_string())?;
     let mut panes = conn.prepare("SELECT q.id,q.task_id,q.kind,q.title,q.session_id,q.revision,q.tombstoned_at FROM task_panes q JOIN tasks t ON t.id=q.task_id JOIN projects p ON p.id=t.project_id WHERE p.network_id=?1 AND p.tombstoned_at IS NULL AND t.tombstoned_at IS NULL AND q.tombstoned_at IS NULL ORDER BY q.created_at").map_err(|e| e.to_string())?;
     let panes: Vec<Value> = panes.query_map(params![network_id], |r| Ok(json!({"id":r.get::<_,String>(0)?,"taskId":r.get::<_,String>(1)?,"kind":r.get::<_,String>(2)?,"title":r.get::<_,Option<String>>(3)?,"sessionId":r.get::<_,Option<String>>(4)?,"revision":r.get::<_,i64>(5)?,"tombstonedAt":r.get::<_,Option<i64>>(6)?.map(|v|v * 1000)}))).map_err(|e| e.to_string())?.collect::<Result<_,_>>().map_err(|e| e.to_string())?;
-    Ok(json!({"ok":true,"projects":projects,"tasks":tasks,"panes":panes}))
+    Ok(
+        json!({"ok":true,"projects":projects,"tasks":tasks,"panes":panes,"devices":network_snapshot["devices"],"members":network_snapshot["members"]}),
+    )
+}
+
+fn project_catalog_record(data_dir: &Path, request: &Value) -> Result<Value, String> {
+    let project_id = field(request, "projectId")?;
+    let conn = catalog_connection(data_dir)?;
+    conn.query_row(
+        "SELECT id,network_id,name,repository_source,default_branch,task_order,revision,created_at FROM projects WHERE id=?1 AND tombstoned_at IS NULL",
+        [project_id],
+        |row| Ok(json!({"id":row.get::<_,String>(0)?,"networkId":row.get::<_,String>(1)?,"name":row.get::<_,String>(2)?,"repositorySource":row.get::<_,Option<String>>(3)?,"defaultBranch":row.get::<_,String>(4)?,"taskOrder":serde_json::from_str::<Value>(&row.get::<_,String>(5)?).unwrap_or(json!([])),"revision":row.get::<_,i64>(6)?,"createdAt":row.get::<_,i64>(7)?})),
+    ).map_err(|_| "project_not_found".to_string())
+}
+
+fn task_catalog_record(data_dir: &Path, request: &Value) -> Result<Value, String> {
+    let task_id = field(request, "taskId")?;
+    let conn = catalog_connection(data_dir)?;
+    let task = conn.query_row(
+        "SELECT t.id,t.project_id,t.title,t.assigned_device_id,t.execution_generation,t.lifecycle,t.pane_order,t.revision,t.created_at,q.base_commit,q.worktree_path,q.state,q.last_error FROM tasks t JOIN task_provisioning q ON q.task_id=t.id WHERE t.id=?1 AND t.tombstoned_at IS NULL",
+        [task_id],
+        |row| Ok(json!({"id":row.get::<_,String>(0)?,"projectId":row.get::<_,String>(1)?,"title":row.get::<_,String>(2)?,"assignedDeviceId":row.get::<_,String>(3)?,"executionGeneration":row.get::<_,i64>(4)?,"lifecycle":row.get::<_,String>(5)?,"paneOrder":serde_json::from_str::<Value>(&row.get::<_,String>(6)?).unwrap_or(json!([])),"revision":row.get::<_,i64>(7)?,"createdAt":row.get::<_,i64>(8)?,"baseCommit":row.get::<_,String>(9)?,"worktreePath":row.get::<_,String>(10)?,"provisioningState":row.get::<_,String>(11)?,"lastError":row.get::<_,Option<String>>(12)?})),
+    ).map_err(|_| "task_not_found".to_string())?;
+    let project = project_catalog_record(data_dir, &json!({"projectId":task["projectId"]}))?;
+    let mut panes = conn.prepare("SELECT id,kind,title,session_id,revision,created_at FROM task_panes WHERE task_id=?1 AND tombstoned_at IS NULL").map_err(|e|e.to_string())?;
+    let panes: Vec<Value> = panes.query_map([task_id], |row| Ok(json!({"id":row.get::<_,String>(0)?,"kind":row.get::<_,String>(1)?,"title":row.get::<_,Option<String>>(2)?,"sessionId":row.get::<_,Option<String>>(3)?,"revision":row.get::<_,i64>(4)?,"createdAt":row.get::<_,i64>(5)?}))).map_err(|e|e.to_string())?.collect::<Result<_,_>>().map_err(|e|e.to_string())?;
+    Ok(json!({"task":task,"project":project,"panes":panes}))
 }
 
 async fn rename_project(data_dir: &Path, request: &Value) -> Result<Value, String> {

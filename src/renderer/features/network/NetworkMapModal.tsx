@@ -23,11 +23,16 @@ function stateLabel(node: NetworkGraphNode): string {
 }
 
 export function NetworkMapModal({ open, onClose }: NetworkMapModalProps): JSX.Element | null {
-  const { catalog, devices, networkId } = useTaskStore();
+  const {
+    catalog,
+    devices,
+    members: catalogMembers,
+    networkId,
+    refresh: refreshCatalog,
+  } = useTaskStore();
   const activity = usePiActivityStore((state) => state.activity);
   const [network, setNetwork] = useState<Network | null>(null);
   const [members, setMembers] = useState<NetworkMember[]>([]);
-  const [health, setHealth] = useState<NetworkHealth | null>(null);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
     if (!open) return;
@@ -41,15 +46,14 @@ export function NetworkMapModal({ open, onClose }: NetworkMapModalProps): JSX.El
     let active = true;
     const refresh = async () => {
       try {
-        const [snapshot, nextMembers, nextHealth] = await Promise.all([
+        const [snapshot, nextMembers] = await Promise.all([
           window.swath.network.current(),
           window.swath.network.membership(networkId),
-          window.swath.network.health(networkId),
+          refreshCatalog(),
         ]);
         if (!active) return;
         setNetwork(snapshot?.network ?? null);
         setMembers(nextMembers);
-        setHealth(nextHealth);
         setError(null);
       } catch (cause) {
         if (active)
@@ -62,11 +66,37 @@ export function NetworkMapModal({ open, onClose }: NetworkMapModalProps): JSX.El
       active = false;
       window.clearInterval(timer);
     };
-  }, [networkId, open]);
+  }, [networkId, open, refreshCatalog]);
+
+  const authoritativeMembers = useMemo(() => {
+    const live = new Map(members.map((member) => [member.deviceId, member]));
+    return devices.map((device) => {
+      const catalogMember = catalogMembers.find((member) => member.deviceId === device.id);
+      const observed = live.get(device.id);
+      return {
+        deviceId: device.id,
+        voter: catalogMember?.voter ?? false,
+        healthy: observed?.healthy ?? catalogMember?.healthy ?? false,
+      };
+    });
+  }, [catalogMembers, devices, members]);
+  const health: NetworkHealth = useMemo(() => {
+    const voters = catalogMembers.filter((member) => member.voter);
+    const healthyVoters = voters.filter((member) => member.healthy).length;
+    const required = Math.floor(voters.length / 2) + 1;
+    return {
+      networkId: networkId ?? "",
+      leaderId: voters.find((member) => member.healthy)?.deviceId,
+      voters: voters.length,
+      healthyVoters,
+      required,
+      quorum: voters.length > 0 && healthyVoters >= required,
+    };
+  }, [catalogMembers, networkId]);
 
   const graph = useMemo(
-    () => buildNetworkGraph(devices, members, catalog.tasks, catalog.panes, activity),
-    [activity, catalog.panes, catalog.tasks, devices, members],
+    () => buildNetworkGraph(devices, authoritativeMembers, catalog.tasks, catalog.panes, activity),
+    [activity, authoritativeMembers, catalog.panes, catalog.tasks, devices],
   );
   if (!open) return null;
 
@@ -90,7 +120,9 @@ export function NetworkMapModal({ open, onClose }: NetworkMapModalProps): JSX.El
                 {network?.name ?? "Swath network"}
               </h2>
             </div>
-            <p className="text-sm text-swath-muted">Devices connected through the shared server · updates every 5 seconds</p>
+            <p className="text-sm text-swath-muted">
+              Devices connected through the shared server · updates every 5 seconds
+            </p>
           </div>
           <div className="flex items-center gap-3">
             {health ? (
