@@ -743,14 +743,31 @@ fn tombstone(
     id: &str,
     expected: i64,
 ) -> Result<CatalogResponse, rusqlite::Error> {
-    let sql=match table{"projects"=>"UPDATE projects SET tombstoned_at=strftime('%s','now'),revision=revision+1 WHERE id=?1 AND revision=?2 AND tombstoned_at IS NULL","tasks"=>"UPDATE tasks SET tombstoned_at=strftime('%s','now'),revision=revision+1 WHERE id=?1 AND revision=?2 AND tombstoned_at IS NULL","task_panes"=>"UPDATE task_panes SET tombstoned_at=strftime('%s','now'),revision=revision+1 WHERE id=?1 AND revision=?2 AND tombstoned_at IS NULL",_=>return Ok(invalid("invalid_request"))};
-    if tx.execute(sql, params![id, expected])? == 0 {
+    let select = match table {
+        "projects" => "SELECT revision FROM projects WHERE id=?1 AND tombstoned_at IS NULL",
+        "tasks" => "SELECT revision FROM tasks WHERE id=?1 AND tombstoned_at IS NULL",
+        "task_panes" => "SELECT revision FROM task_panes WHERE id=?1 AND tombstoned_at IS NULL",
+        _ => return Ok(invalid("invalid_request")),
+    };
+    let current: Option<i64> = tx.query_row(select, [id], |row| row.get(0)).optional()?;
+    let Some(current) = current else {
         return Ok(conflict());
     };
-    tx.execute("INSERT INTO tombstones(record_type,record_id,revision,deleted_at) VALUES(?1,?2,?3,strftime('%s','now'))",params![typ,id,expected+1])?;
+    // Removal is a monotonic intent. A learner may legitimately submit an older revision while
+    // it catches up with the leader, so accept a stale fence and tombstone the current record.
+    // A future fence is still invalid, and edits/reorders continue to require exact revisions.
+    if expected > current {
+        return Ok(conflict());
+    }
+    let sql=match table{"projects"=>"UPDATE projects SET tombstoned_at=strftime('%s','now'),revision=revision+1 WHERE id=?1 AND revision=?2 AND tombstoned_at IS NULL","tasks"=>"UPDATE tasks SET tombstoned_at=strftime('%s','now'),revision=revision+1 WHERE id=?1 AND revision=?2 AND tombstoned_at IS NULL","task_panes"=>"UPDATE task_panes SET tombstoned_at=strftime('%s','now'),revision=revision+1 WHERE id=?1 AND revision=?2 AND tombstoned_at IS NULL",_=>unreachable!()};
+    if tx.execute(sql, params![id, current])? == 0 {
+        return Ok(conflict());
+    }
+    let tombstone_revision = current + 1;
+    tx.execute("INSERT INTO tombstones(record_type,record_id,revision,deleted_at) VALUES(?1,?2,?3,strftime('%s','now'))",params![typ,id,tombstone_revision])?;
     Ok(committed(
-        serde_json::json!({"id":id,"revision":expected+1}),
-        expected + 1,
+        serde_json::json!({"id":id,"revision":tombstone_revision}),
+        tombstone_revision,
     ))
 }
 
@@ -1944,6 +1961,31 @@ mod raft_tests {
             Some(2)
         );
         assert_eq!(node.client_write(CatalogRequest::Task { operation_id: "task:lifecycle".into(), expected_revision: 2, payload: serde_json::json!({"action":"lifecycle","taskId":"t","lifecycle":"completed"}) }).await.unwrap().data.revision, Some(3));
+        // A delete observed on a lagging learner remains valid after the record changed on the
+        // leader. Removal is monotonic, unlike edits and reorders, which remain exactly fenced.
+        let removed = node
+            .client_write(CatalogRequest::Project {
+                operation_id: "project:remove-stale".into(),
+                expected_revision: 1,
+                payload: serde_json::json!({"action":"tombstone","projectId":"p"}),
+            })
+            .await
+            .unwrap()
+            .data;
+        assert_eq!(removed.revision, Some(3));
+        assert_eq!(
+            node.store
+                .db
+                .lock()
+                .unwrap()
+                .query_row(
+                    "SELECT revision FROM projects WHERE id='p' AND tombstoned_at IS NOT NULL",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            3,
+        );
         node.shutdown().await;
     }
 
