@@ -1066,7 +1066,11 @@ fn spawn_durable_event_writer(ctx: ServerContext) {
     });
 }
 
-fn durable_events(ctx: &ServerContext, cursor: Option<i64>) -> Result<Value, String> {
+fn durable_events(
+    ctx: &ServerContext,
+    viewer: &ViewerSubscriptions,
+    cursor: Option<i64>,
+) -> Result<Value, String> {
     let conn =
         config::connection_at(&config::db_path_in(ctx.core.data_dir()).map_err(|e| e.to_string())?)
             .map_err(|e| e.to_string())?;
@@ -1086,12 +1090,32 @@ fn durable_events(ctx: &ServerContext, cursor: Option<i64>) -> Result<Value, Str
     }
     let after = cursor.unwrap_or(0);
     let mut statement = conn.prepare("SELECT sequence,channel,payload_json FROM browser_event_log WHERE sequence>?1 ORDER BY sequence LIMIT 10000").map_err(|e| e.to_string())?;
-    let events = statement.query_map([after], |r| Ok(json!({"cursor":r.get::<_,i64>(0)?,"channel":r.get::<_,String>(1)?,"payload":serde_json::from_str::<Value>(&r.get::<_,String>(2)?).unwrap_or(Value::Null)}))).map_err(|e| e.to_string())?.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?;
-    let next = events
+    let scanned = statement
+        .query_map([after], |r| {
+            Ok(json!({"cursor":r.get::<_,i64>(0)?,"channel":r.get::<_,String>(1)?,"payload":serde_json::from_str::<Value>(&r.get::<_,String>(2)?).unwrap_or(Value::Null)}))
+        })
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    let next = scanned
         .last()
         .and_then(|event| event.get("cursor"))
         .cloned()
         .unwrap_or_else(|| json!(after));
+    let events = scanned
+        .into_iter()
+        .filter(|event| {
+            viewer.accepts(
+                ctx,
+                &json!({
+                    "type": "event",
+                    "channel": event["channel"],
+                    "payload": event["payload"]
+                })
+                .to_string(),
+            )
+        })
+        .collect::<Vec<_>>();
     Ok(json!({"status":"replayed","cursor":next,"events":events}))
 }
 
@@ -1149,7 +1173,7 @@ async fn handle_request(
     viewer.subscribe(ctx, &params);
     let result: Result<Value, String> = if method == "event.subscribe" {
         let cursor = params.get("cursor").and_then(Value::as_i64);
-        durable_events(ctx, cursor).map(|mut replay| {
+        durable_events(ctx, viewer, cursor).map(|mut replay| {
             replay["viewerId"] = json!(viewer.id);
             replay
         })
@@ -3021,6 +3045,31 @@ mod tests {
         let event = json!({"type":"event","channel":"terminal:data","payload":{"sessionId":"shell","data":"secret"}}).to_string();
         assert!(subscribed.accepts(&ctx, &event));
         assert!(!other.accepts(&ctx, &event));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn durable_replay_is_filtered_before_serializing_for_a_viewer() {
+        let root =
+            std::env::temp_dir().join(format!("swath-viewer-durable-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let core = Core::start(root.clone(), ConnectorEvents::new()).unwrap();
+        catalog(&core, "a");
+        let ctx = context(core.clone(), "a");
+        let conn = config::connection_at(&config::db_path_in(core.data_dir()).unwrap()).unwrap();
+        for (pane, id) in [("wanted", "state"), ("other", "secret")] {
+            conn.execute(
+                "INSERT INTO browser_event_log(task_id,channel,payload_json) VALUES('t','pi:event',?1)",
+                [json!({"paneId":pane,"line":json!({"id":id,"type":"response"}).to_string()}).to_string()],
+            )
+            .unwrap();
+        }
+        let mut viewer = ViewerSubscriptions::new();
+        viewer.subscribe(&ctx, &json!({"paneId":"wanted"}));
+        let replay = durable_events(&ctx, &viewer, None).unwrap();
+        assert_eq!(replay["events"].as_array().unwrap().len(), 1);
+        assert_eq!(replay["events"][0]["payload"]["paneId"], "wanted");
+        assert_eq!(replay["cursor"], 2);
         let _ = fs::remove_dir_all(root);
     }
 
