@@ -139,13 +139,30 @@ export const useTaskStore = create<TaskState>((set, get) => ({
 let saveQueue = Promise.resolve();
 useTaskStore.subscribe((state, previous) => {
   if (!state.networkId || state.local === previous.local) return;
+  const persistedPaneOrder = (local: TaskInterfaceState, catalog: TaskCatalog) => {
+    const paneOrderByTask = { ...local.paneOrderByTask };
+    for (const task of catalog.tasks) {
+      const override = paneOrderByTask[task.id];
+      if (
+        override?.length === task.paneOrder.length &&
+        override.every((paneId, index) => paneId === task.paneOrder[index])
+      ) {
+        delete paneOrderByTask[task.id];
+      }
+    }
+    return { ...local, paneOrderByTask };
+  };
   const { networkId, local } = state;
   saveQueue = saveQueue
     .catch(() => undefined)
     .then(async () => {
       const current = useTaskStore.getState();
       if (current.networkId !== networkId) return;
-      const saved = await window.swath.localState.save(networkId, local, current.localRevision + 1);
+      const saved = await window.swath.localState.save(
+        networkId,
+        persistedPaneOrder(local, current.catalog),
+        current.localRevision + 1,
+      );
       if (useTaskStore.getState().networkId === networkId)
         useTaskStore.setState({ localRevision: saved });
     });

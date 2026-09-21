@@ -65,6 +65,38 @@ install_server() {
      printf '%s\n' '$commit' > \"\$HOME/.local/share/swath/deployed-commit\""
 }
 
+verify_server() {
+  local host="$1"
+  local commit="$2"
+  ssh "${SSH_OPTIONS[@]}" "dark@${host}" "
+    set -e
+    systemctl --user is-active --quiet swath-headless
+    source \"\$HOME/.config/swath/connector.env\"
+    local_health=\"\$(curl --fail --silent --show-error --retry 15 --retry-delay 1 --retry-all-errors \"http://127.0.0.1:\${SWATH_CONNECTOR_PORT:-7878}/api/health\")\"
+    endpoint=\"\$(SWATH_DATA_DIR_VALUE=\"\${SWATH_DATA_DIR:-\$HOME/.local/share/swath}\" python3 - <<'PY'
+import os, sqlite3
+db = os.path.join(os.environ['SWATH_DATA_DIR_VALUE'], 'swath.sqlite3')
+conn = sqlite3.connect(db)
+row = conn.execute('SELECT endpoint FROM device_connectors WHERE device_id=(SELECT server_device_id FROM networks WHERE server_device_id IS NOT NULL LIMIT 1)').fetchone()
+if not row:
+    raise SystemExit('catalog server endpoint is missing')
+print(row[0])
+PY
+)\"
+    advertised_health=\"\$(curl --fail --silent --show-error --retry 15 --retry-delay 1 --retry-all-errors \"\${endpoint%/}/api/health\")\"
+    HEALTH_LOCAL=\"\$local_health\" HEALTH_ADVERTISED=\"\$advertised_health\" EXPECTED_COMMIT='$commit' python3 - <<'PY'
+import json, os
+for name in ('HEALTH_LOCAL', 'HEALTH_ADVERTISED'):
+    value = json.loads(os.environ[name])
+    assert value.get('ok') is True, (name, value)
+    assert value.get('catalog', {}).get('available') is True, (name, value)
+    assert value.get('catalog', {}).get('ready') is True, (name, value)
+    assert value.get('serverDeviceId') == value.get('deviceId'), (name, value)
+    assert value.get('deployedCommit') == os.environ['EXPECTED_COMMIT'], (name, value)
+PY
+  "
+}
+
 stop_scythe_desktop() {
   ssh "${SSH_OPTIONS[@]}" "dark@${SCYTHE_HOST}" '
     systemctl --user stop swath-desktop 2>/dev/null || true
@@ -134,6 +166,7 @@ if ! build_server "$SERVER_NAME" "$SERVER_HOST"; then
 fi
 
 install_server "$SERVER_NAME" "$SERVER_HOST" "$commit"
+verify_server "$SERVER_HOST" "$commit"
 
 log "Building and installing the Mac and Scythe desktop apps"
 mac_was_running=0
@@ -184,8 +217,7 @@ ssh "${SSH_OPTIONS[@]}" "dark@${SCYTHE_HOST}" \
    printf '%s\n' '$commit' > \"\$HOME/.local/share/swath/deployed-commit\""
 
 log "Final service verification"
-ssh "${SSH_OPTIONS[@]}" "dark@${SERVER_HOST}" \
-  "systemctl --user is-active --quiet swath-headless && grep -q '/api/raft/write' '$REMOTE_ROOT/src-tauri/src/remote.rs'"
+verify_server "$SERVER_HOST" "$commit"
 echo "$SERVER_NAME: active"
 ssh "${SSH_OPTIONS[@]}" "dark@${SCYTHE_HOST}" \
   "systemctl --user is-active --quiet swath-desktop && grep -q '/api/raft/write' '$REMOTE_ROOT/src-tauri/src/remote.rs'"

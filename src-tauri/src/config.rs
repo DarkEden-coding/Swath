@@ -1,11 +1,17 @@
 use crate::types::*;
 use anyhow::{anyhow, Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
-use std::{collections::HashMap, fs, path::PathBuf};
+use std::{
+    collections::{HashMap, HashSet},
+    fs,
+    path::PathBuf,
+    sync::{Mutex, OnceLock},
+};
 
 use crate::{network, task_store};
 
 const DB_FILE: &str = "swath.sqlite3";
+static INITIALIZED_DATABASES: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
 
 /// Resolves the database path in an injected application data directory.
 pub fn db_path_in(dir: &std::path::Path) -> Result<PathBuf> {
@@ -13,12 +19,27 @@ pub fn db_path_in(dir: &std::path::Path) -> Result<PathBuf> {
     Ok(dir.join(DB_FILE))
 }
 
-/// Opens the configuration database at an injected application-data path.
+/// Opens an initialized database without rerunning schema DDL on every short-lived read.
 pub fn connection_at(file: &std::path::Path) -> Result<Connection> {
     let conn =
         Connection::open(file).with_context(|| format!("failed to open {}", file.display()))?;
     conn.busy_timeout(std::time::Duration::from_secs(10))?;
     conn.pragma_update(None, "journal_mode", "WAL")?;
+    let initialized = INITIALIZED_DATABASES.get_or_init(|| Mutex::new(HashSet::new()));
+    let mut initialized = initialized
+        .lock()
+        .map_err(|_| anyhow!("database initialization state is poisoned"))?;
+    let schema_present = initialized.contains(file)
+        && conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_migrations')",
+                [],
+                |row| row.get::<_, bool>(0),
+            )
+            .unwrap_or(false);
+    if schema_present {
+        return Ok(conn);
+    }
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS app_config (
             id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -42,6 +63,7 @@ pub fn connection_at(file: &std::path::Path) -> Result<Connection> {
     task_store::migrate(&conn)?;
     crate::migration::migrate(&conn)?;
     crate::pi_session_store::migrate(&conn)?;
+    initialized.insert(file.to_path_buf());
     Ok(conn)
 }
 

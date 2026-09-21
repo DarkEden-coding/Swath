@@ -97,6 +97,11 @@ pub async fn migrate_to_single_server(
         rusqlite::params![network_id, local_device],
         |row| row.get(0),
     )?;
+    let network_revision: i64 = conn.query_row(
+        "SELECT revision FROM networks WHERE id=?1",
+        [&network_id],
+        |row| row.get(0),
+    )?;
     let endpoint: String = conn.query_row(
         "SELECT endpoint FROM catalog_nodes WHERE network_id=?1",
         [&network_id],
@@ -139,21 +144,38 @@ pub async fn migrate_to_single_server(
         ));
     }
 
-    // The committed membership above is now the authority for writes. Record the fixed server
-    // and mirror its role in the UI projection in one transaction; no peer can subsequently
-    // elect itself or regain a vote from this catalog.
+    // Commit the topology marker through the state machine so every retained learner routes
+    // catalog operations to the same fixed server. A direct SQLite update here would be local-only
+    // and could later be overwritten by snapshot replay.
+    let topology_operation = format!("single-server:{network_id}:{local_device}");
+    let topology = catalog
+        .client_write(network::raft::CatalogRequest::Network {
+            operation_id: topology_operation.clone(),
+            expected_revision: network_revision,
+            payload: serde_json::json!({
+                "action":"set_server",
+                "networkId":network_id,
+                "serverDeviceId":local_device
+            }),
+        })
+        .await
+        .map_err(|error| {
+            anyhow::anyhow!("failed to commit fixed catalog server: {}", error.message)
+        })?;
+    if topology.status != "committed" {
+        return Err(anyhow::anyhow!(
+            "failed to commit fixed catalog server: {}",
+            topology.status
+        ));
+    }
+    if !catalog
+        .wait_for_operation(&topology_operation, std::time::Duration::from_secs(15))
+        .await
+        .map_err(|error| anyhow::anyhow!(error.message))?
     {
-        let mut conn = config::connection_at(&db)?;
-        let tx = conn.transaction()?;
-        tx.execute(
-            "UPDATE networks SET server_device_id=?1 WHERE id=?2 AND server_device_id IS NULL",
-            rusqlite::params![local_device, network_id],
-        )?;
-        tx.execute(
-            "UPDATE coordinator_members SET voter=CASE WHEN device_id=?2 THEN 1 ELSE 0 END, healthy=CASE WHEN device_id=?2 THEN 1 ELSE 0 END WHERE network_id=?1",
-            rusqlite::params![network_id, local_device],
-        )?;
-        tx.commit()?;
+        return Err(anyhow::anyhow!(
+            "fixed catalog server committed but was not projected locally"
+        ));
     }
     catalog.raft().trigger_snapshot().await?;
     Ok(())

@@ -318,6 +318,7 @@ export function usePiAgent(
   const restart = useCallback(() => {
     if (taskExecution?.readOnly) return;
     spawnedPanes.delete(paneId);
+    dispatch({ type: "reset" });
     void window.swath.pi.rpc({ op: "kill", ...target }).finally(spawn);
   }, [paneId, spawn, target, taskExecution?.readOnly]);
 
@@ -463,8 +464,10 @@ export function usePiAgent(
   // No teardown on unmount: the pane is unmounted on every tab switch, and killing pi there is
   // what forced the reload. `piAgentTabType.closePane` disposes the pane for real.
   useEffect(() => {
-    if (historyReady && !taskExecution?.readOnly) spawn();
-  }, [historyReady, spawn, taskExecution?.readOnly]);
+    // A failed child stays failed across tab remounts. Only an explicit Restart clears it; a tab
+    // switch must never turn a rapid process exit into an unbounded restart/replay loop.
+    if (historyReady && !taskExecution?.readOnly && !state.exited && !state.error) spawn();
+  }, [historyReady, spawn, state.error, state.exited, taskExecution?.readOnly]);
 
   // A remote executor can answer before its event relay has finished subscribing. Retry the
   // idempotent state request until one response arrives, rather than leaving the pane forever on
@@ -479,7 +482,16 @@ export function usePiAgent(
       !spawnedPanes.has(paneId)
     )
       return;
+    let attempts = 0;
     const timer = window.setInterval(() => {
+      if (++attempts > 10) {
+        window.clearInterval(timer);
+        dispatch({
+          type: "error",
+          message: "Pi started, but its state did not arrive. Check the executor connection, then Restart pi.",
+        });
+        return;
+      }
       send({ id: "startup-state", type: "get_state" });
     }, 1_500);
     return () => window.clearInterval(timer);

@@ -7,6 +7,53 @@ import { browserLocalState, loadBrowserEventCursor, saveBrowserEventCursor } fro
 type Status = "connected" | "connecting" | "offline";
 type EventChannel = RemoteEvent["channel"];
 
+export class RemoteRpcError extends Error {
+  constructor(
+    message: string,
+    readonly codes: string[],
+    readonly detail: unknown,
+    readonly retryable: boolean,
+  ) {
+    super(message);
+    this.name = "RemoteRpcError";
+  }
+}
+
+/** Converts nested connector/executor/catalog envelopes into one actionable client error. */
+export function remoteRpcError(raw: unknown): RemoteRpcError {
+  let detail: unknown = raw;
+  if (typeof raw === "string") {
+    try {
+      detail = JSON.parse(raw);
+    } catch {
+      return new RemoteRpcError(raw, [], raw, false);
+    }
+  }
+  const codes: string[] = [];
+  let message: string | null = null;
+  let retryable = false;
+  const visit = (value: unknown): void => {
+    if (typeof value === "string") {
+      if (!message) message = value;
+      try {
+        visit(JSON.parse(value));
+      } catch {
+        // Plain error text is already retained above.
+      }
+      return;
+    }
+    if (!value || typeof value !== "object") return;
+    const record = value as Record<string, unknown>;
+    if (typeof record.code === "string" && !codes.includes(record.code)) codes.push(record.code);
+    if (record.retryable === true) retryable = true;
+    if (typeof record.message === "string") message = record.message;
+    if (record.error !== undefined) visit(record.error);
+  };
+  visit(detail);
+  const summary = [codes.join(" → "), message].filter(Boolean).join(": ") || "Remote request failed";
+  return new RemoteRpcError(summary, codes, detail, retryable);
+}
+
 function normalizeUrl(value: string): string {
   const url = new URL(value.includes("://") ? value : `https://${value}`);
   url.pathname = url.pathname.replace(/\/$/, "");
@@ -162,7 +209,7 @@ class RemoteClient {
     const pending = this.pending.get(message.id);
     if (!pending) return;
     this.pending.delete(message.id);
-    if (message.error) pending.reject(new Error(message.error));
+    if (message.error) pending.reject(remoteRpcError(message.error));
     else pending.resolve(message.result);
   }
 

@@ -347,6 +347,7 @@ impl RemoteServerManager {
         spawn_durable_event_writer(context.clone());
         let router = Router::new()
             .route("/api/handshake", get(handshake))
+            .route("/api/health", get(health))
             .route("/api/socket", get(socket))
             // History events may contain validated inline image payloads. Keep the larger bound
             // scoped to authenticated peer RPC instead of disabling request limits globally.
@@ -891,6 +892,73 @@ async fn handshake(State(ctx): State<ServerContext>, headers: HeaderMap) -> impl
     }
 }
 
+/// Lightweight operational probe. It intentionally exposes no credentials or project data, but
+/// proves that callers reached Swath (rather than another reverse-proxied service) and reports the
+/// fixed catalog topology plus apply progress needed by deployment validation.
+async fn health(State(ctx): State<ServerContext>) -> impl IntoResponse {
+    let value = health_value(&ctx);
+    let server = value.get("serverDeviceId").and_then(Value::as_str);
+    let local = value.get("deviceId").and_then(Value::as_str);
+    let ready = value.pointer("/catalog/ready").and_then(Value::as_bool);
+    let status = if server.is_some() && server == local && ready != Some(true) {
+        StatusCode::SERVICE_UNAVAILABLE
+    } else {
+        StatusCode::OK
+    };
+    (status, Json(value))
+}
+
+fn health_value(ctx: &ServerContext) -> Value {
+    let (network_id, server_device_id) = config::db_path_in(ctx.core.data_dir())
+        .ok()
+        .and_then(|path| config::connection_at(&path).ok())
+        .and_then(|conn| {
+            conn.query_row(
+                "SELECT id,server_device_id FROM networks WHERE tombstoned_at IS NULL ORDER BY created_at,id LIMIT 1",
+                [],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
+            )
+            .optional()
+            .ok()
+            .flatten()
+        })
+        .map(|(network, server)| (Some(network), server))
+        .unwrap_or((None, None));
+    let (leader_id, last_applied) = ctx
+        .raft
+        .as_ref()
+        .map(|raft| {
+            let metrics = raft.raft.metrics();
+            let metrics = metrics.borrow();
+            (
+                metrics.current_leader,
+                metrics.last_applied.map(|log| log.index),
+            )
+        })
+        .unwrap_or((None, None));
+    let node_id = ctx.raft.as_ref().map(|raft| raft.id);
+    let catalog_ready = node_id.is_some() && leader_id == node_id;
+    let deployed_commit = std::fs::read_to_string(ctx.core.data_dir().join("deployed-commit"))
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty());
+    json!({
+        "ok": true,
+        "deviceId": ctx.device_id,
+        "networkId": network_id,
+        "serverDeviceId": server_device_id,
+        "connectorEndpoint": ctx.connector_endpoint,
+        "catalog": {
+            "available": ctx.raft.is_some(),
+            "ready": catalog_ready,
+            "nodeId": node_id,
+            "leaderId": leader_id,
+            "lastApplied": last_applied
+        },
+        "deployedCommit": deployed_commit
+    })
+}
+
 async fn socket(
     ws: WebSocketUpgrade,
     State(ctx): State<ServerContext>,
@@ -1218,7 +1286,16 @@ async fn handle_request(
     };
     match result {
         Ok(value) => json!({"type":"response","id":id,"result":value}).to_string(),
-        Err(error) => json!({"type":"response","id":id,"error":error}).to_string(),
+        Err(error) => json!({
+            "type":"response",
+            "id":id,
+            "error":serde_json::from_str::<Value>(&error).unwrap_or_else(|_| json!({
+                "code":"internal_error",
+                "message":error,
+                "retryable":false
+            }))
+        })
+        .to_string(),
     }
 }
 
@@ -1468,6 +1545,17 @@ async fn peer_call(
     params: Value,
     hop: u8,
 ) -> Result<Value, String> {
+    let catalog_request = method == "catalog.rpc";
+    let unavailable_code = if catalog_request {
+        "catalog_server_unreachable"
+    } else {
+        "executor_unreachable"
+    };
+    let stage = if catalog_request {
+        "catalog_server"
+    } else {
+        "executor"
+    };
     if hop >= 3 {
         return Err(json!({"code":"forwarding_loop","targetDeviceId":target}).to_string());
     }
@@ -1483,7 +1571,10 @@ async fn peer_call(
         .optional()
         .map_err(|e| e.to_string())?;
     let Some((endpoint, credential)) = peer else {
-        return Err(json!({"code":"executor_unreachable","targetDeviceId":target}).to_string());
+        return Err(
+            json!({"code":unavailable_code,"stage":stage,"targetDeviceId":target,"retryable":true})
+                .to_string(),
+        );
     };
     let url = format!("{}/api/peer/rpc", endpoint.trim_end_matches('/'));
     let response = reqwest::Client::new()
@@ -1495,7 +1586,7 @@ async fn peer_call(
         .send()
         .await
         .map_err(|e| {
-            json!({"code":"executor_unreachable","targetDeviceId":target,"message":e.to_string()})
+            json!({"code":unavailable_code,"stage":stage,"targetDeviceId":target,"message":e.to_string(),"retryable":true})
                 .to_string()
         })?;
     let status = response.status();
@@ -1511,14 +1602,14 @@ async fn peer_call(
             status,
             StatusCode::BAD_GATEWAY | StatusCode::SERVICE_UNAVAILABLE | StatusCode::GATEWAY_TIMEOUT
         ) {
-            "executor_unreachable"
+            unavailable_code
         } else {
             "executor_unavailable"
         };
-        json!({"code":code,"targetDeviceId":target,"method":method,"httpStatus":status.as_u16(),"bodyKind":if body.is_empty() { "empty" } else { "non_json" }}).to_string()
+        json!({"code":code,"stage":stage,"targetDeviceId":target,"method":method,"httpStatus":status.as_u16(),"bodyKind":if body.is_empty() { "empty" } else { "non_json" },"retryable":!status.is_success()}).to_string()
     })?;
     if !status.is_success() {
-        return Err(json!({"code":value.get("code").and_then(Value::as_str).unwrap_or("executor_unavailable"),"targetDeviceId":target,"method":method,"httpStatus":status.as_u16(),"error":value}).to_string());
+        return Err(json!({"code":value.get("code").and_then(Value::as_str).unwrap_or(if catalog_request { "catalog_server_unavailable" } else { "executor_unavailable" }),"stage":stage,"targetDeviceId":target,"method":method,"httpStatus":status.as_u16(),"retryable":status.is_server_error(),"error":value}).to_string());
     }
     value.get("result").cloned().ok_or_else(|| {
         value
@@ -1570,12 +1661,21 @@ async fn live_network_membership(
             member.healthy = if local {
                 true
             } else if let Some((endpoint, credential)) = connector {
-                client
-                    .get(format!("{}/api/handshake", endpoint.trim_end_matches('/')))
+                match client
+                    .get(format!("{}/api/health", endpoint.trim_end_matches('/')))
                     .bearer_auth(credential)
                     .send()
                     .await
-                    .is_ok()
+                {
+                    Ok(response) if response.status().is_success() => {
+                        response.json::<Value>().await.ok().is_some_and(|value| {
+                            value.get("ok").and_then(Value::as_bool) == Some(true)
+                                && value.get("deviceId").and_then(Value::as_str)
+                                    == Some(member.device_id.as_str())
+                        })
+                    }
+                    _ => false,
+                }
             } else {
                 false
             };
@@ -1691,7 +1791,11 @@ async fn dispatch_to_owner(
         let conn = config::connection_at(&db).map_err(|error| error.to_string())?;
         let server: Option<String> = conn
             .query_row(
-                "SELECT server_device_id FROM networks WHERE tombstoned_at IS NULL AND server_device_id IS NOT NULL ORDER BY created_at,id LIMIT 1",
+                "SELECT COALESCE(n.server_device_id,
+                    (SELECT c.device_id FROM coordinator_members c WHERE c.network_id=n.id AND c.voter=1
+                     AND (SELECT count(*) FROM coordinator_members v WHERE v.network_id=n.id AND v.voter=1)=1
+                     LIMIT 1))
+                 FROM networks n WHERE n.tombstoned_at IS NULL ORDER BY n.created_at,n.id LIMIT 1",
                 [],
                 |row| row.get(0),
             )
@@ -2011,6 +2115,11 @@ async fn dispatch_local(
                     .map_err(|e| e.to_string())?;
                 network::set_coordinator_health(&conn, &id, &device, true, true)
                     .map_err(|e| e.to_string())?;
+                conn.execute(
+                    "UPDATE networks SET server_device_id=?1 WHERE id=?2",
+                    params![device, id],
+                )
+                .map_err(|e| e.to_string())?;
                 id
             };
             drop(conn);
@@ -2918,14 +3027,40 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
+    #[test]
+    fn health_probe_identifies_swath_and_fixed_server_topology() {
+        let root = std::env::temp_dir().join(format!("swath-health-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let core = Core::start(root.clone(), ConnectorEvents::new()).unwrap();
+        catalog(&core, "a");
+        let conn = config::connection_at(&config::db_path_in(core.data_dir()).unwrap()).unwrap();
+        conn.execute("UPDATE networks SET server_device_id='a' WHERE id='n'", [])
+            .unwrap();
+        drop(conn);
+        let value = health_value(&context(core, "a"));
+        assert_eq!(value["ok"], true);
+        assert_eq!(value["deviceId"], "a");
+        assert_eq!(value["serverDeviceId"], "a");
+        assert_eq!(value["connectorEndpoint"], "http://127.0.0.1:0");
+        let _ = fs::remove_dir_all(root);
+    }
+
     #[tokio::test]
-    async fn catalog_mutation_does_not_depend_on_assigned_executor() {
+    async fn fixed_server_catalog_mutation_bypasses_assigned_executor() {
         let root = std::env::temp_dir().join(format!("swath-peer-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         let a = Core::start(root.join("a"), ConnectorEvents::new()).unwrap();
         let b = Core::start(root.join("b"), ConnectorEvents::new()).unwrap();
         catalog(&a, "a");
         catalog(&b, "b");
+        for core in [&a, &b] {
+            let conn =
+                config::connection_at(&config::db_path_in(core.data_dir()).unwrap()).unwrap();
+            conn.execute("UPDATE networks SET server_device_id='b' WHERE id='n'", [])
+                .unwrap();
+            conn.execute("UPDATE tasks SET assigned_device_id='a' WHERE id='t'", [])
+                .unwrap();
+        }
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let endpoint = format!("http://{}", listener.local_addr().unwrap());
         let b_context = context(b.clone(), "b");
@@ -2959,8 +3094,8 @@ mod tests {
         let b_title: String = b_conn
             .query_row("SELECT title FROM tasks WHERE id='t'", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(a_title, "reconnected without spawn");
-        assert_eq!(b_title, "before");
+        assert_eq!(a_title, "before");
+        assert_eq!(b_title, "reconnected without spawn");
         let _ = fs::remove_dir_all(root);
     }
 

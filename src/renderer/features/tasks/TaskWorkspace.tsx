@@ -7,6 +7,7 @@ import { TaskTabBar } from "../views/components/ViewTabBar";
 import { collectPanes } from "../../domain/layout/layoutTree";
 import { setViewedPanes } from "../tabTypes/piAgent/piActivity";
 import { reorderTaskPanes } from "../../domain/tasks/catalogMutations";
+import { reportError } from "../../lib/errorLog";
 
 /** Legacy imports sometimes stored the old pane id here; Pi's --session accepts a JSONL path/id. */
 export function piSessionMetadata(
@@ -527,8 +528,15 @@ export function TaskWorkspace(): JSX.Element {
         : undefined,
     [local.historicalTaskId, networkId, projection, task],
   );
-  const mutate = (request: Parameters<typeof window.swath.tasks.rpc>[0]) =>
-    void window.swath.tasks.rpc(request).then(refresh);
+  const mutate = (request: Parameters<typeof window.swath.tasks.rpc>[0]) => {
+    void window.swath.tasks
+      .rpc(request)
+      .then((reply) => {
+        if (!rpcOk(reply)) throw new Error(JSON.stringify(reply));
+      })
+      .catch((error: unknown) => reportError(`Task ${request.op}`, error))
+      .finally(() => void refresh().catch((error: unknown) => reportError("Refreshing tasks", error)));
+  };
   return (
     <div className="grid h-full min-h-0 grid-rows-[1fr] bg-swath-bg">
       <TaskTabBar
@@ -562,7 +570,7 @@ export function TaskWorkspace(): JSX.Element {
             const paneId = (reply as { paneId?: string }).paneId;
             if (paneId)
               setActiveViewIds((current) => ({ ...current, [taskId]: `task-view:${paneId}` }));
-          })
+          }).catch((error: unknown) => reportError("Creating task pane", error))
         }
         piOnly={legacyWorkspace?.isGroupRoot === true}
         onCreate={() => setCreateOpen(true)}

@@ -522,9 +522,40 @@ fn apply_catalog_projection(
                     invalid("invalid_request"),
                 );
             };
-            if action != "update" || field(payload, "name").is_none() { invalid("invalid_request") }
-            else if tx.execute("UPDATE networks SET name=?1,revision=revision+1 WHERE id=?2 AND revision=?3 AND tombstoned_at IS NULL", params![field(payload,"name").unwrap(),id,expected])? == 0 { conflict() }
-            else { committed(serde_json::json!({"networkId":id,"revision":expected+1}), expected + 1) }
+            if action == "set_server" {
+                let Some(server) = field(payload, "serverDeviceId") else {
+                    return record_catalog_result(
+                        tx,
+                        kind,
+                        operation_id,
+                        &hash,
+                        payload,
+                        invalid("invalid_request"),
+                    );
+                };
+                let valid: bool = tx.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM devices WHERE id=?1 AND network_id=?2 AND tombstoned_at IS NULL)",
+                    params![server, id],
+                    |row| row.get(0),
+                )?;
+                if !valid {
+                    invalid("device_network_mismatch")
+                } else if tx.execute("UPDATE networks SET server_device_id=?1,revision=revision+1 WHERE id=?2 AND revision=?3 AND tombstoned_at IS NULL", params![server,id,expected])? == 0 {
+                    conflict()
+                } else {
+                    tx.execute(
+                        "UPDATE coordinator_members SET voter=CASE WHEN device_id=?2 THEN 1 ELSE 0 END,healthy=CASE WHEN device_id=?2 THEN 1 ELSE 0 END WHERE network_id=?1",
+                        params![id, server],
+                    )?;
+                    committed(serde_json::json!({"networkId":id,"serverDeviceId":server,"revision":expected+1}), expected + 1)
+                }
+            } else if action != "update" || field(payload, "name").is_none() {
+                invalid("invalid_request")
+            } else if tx.execute("UPDATE networks SET name=?1,revision=revision+1 WHERE id=?2 AND revision=?3 AND tombstoned_at IS NULL", params![field(payload,"name").unwrap(),id,expected])? == 0 {
+                conflict()
+            } else {
+                committed(serde_json::json!({"networkId":id,"revision":expected+1}), expected + 1)
+            }
         }
         "device" if action == "join_request" => {
             let (Some(network), Some(enrollment), Some(secret)) = (
@@ -1650,6 +1681,8 @@ impl CatalogService {
             // Register before checking the receipt so an apply between the query and await cannot
             // be missed. Notify is only a wake-up edge; the durable receipt remains authoritative.
             let notified = self.raft.store.applied.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
             let applied = Connection::open(&self.db)
                 .and_then(|conn| {
                     conn.busy_timeout(std::time::Duration::from_secs(10))?;
@@ -1714,14 +1747,25 @@ impl CatalogService {
             Some(device_id) => Some(device_id),
             None => conn.query_row("SELECT id FROM devices WHERE network_id=?1 AND enrollment_id IN ('local-device', 'joined-device') AND tombstoned_at IS NULL ORDER BY created_at LIMIT 1", [&network_id], |r| r.get::<_, String>(0)).optional()?,
         };
-        if let Some(device_id) = local_device {
+        if let Some(device_id) = local_device.as_deref() {
             conn.execute("INSERT INTO raft_node_members(network_id,device_id,node_id,endpoint) VALUES(?1,?2,?3,?4) ON CONFLICT(network_id,device_id) DO UPDATE SET node_id=excluded.node_id,endpoint=excluded.endpoint", params![network_id,device_id,node_id as i64,endpoint])?;
         }
-        let bootstrap = conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM devices WHERE network_id=?1 AND enrollment_id='local-device' AND tombstoned_at IS NULL)",
+        let fixed_server: Option<String> = conn.query_row(
+            "SELECT server_device_id FROM networks WHERE id=?1",
             [&network_id],
-            |row| row.get::<_, bool>(0),
+            |row| row.get(0),
         )?;
+        let bootstrap = if let Some(server) = fixed_server {
+            local_device.as_deref() == Some(server.as_str())
+        } else if let Some(device) = local_device.as_deref() {
+            conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM devices WHERE id=?1 AND network_id=?2 AND enrollment_id='local-device' AND tombstoned_at IS NULL)",
+                params![device, network_id],
+                |row| row.get::<_, bool>(0),
+            )?
+        } else {
+            false
+        };
         drop(conn);
         let raft = Arc::new(CatalogRaft::new(node_id, &db, &network_id, token).await?);
         // Only the device that created the network bootstraps the cluster. Enrolled peers must
@@ -1743,6 +1787,24 @@ impl CatalogService {
         endpoint: impl Into<String>,
     ) -> anyhow::Result<Option<Self>> {
         let db = db.into();
+        // The connector owns the process's catalog lifetime. Command handlers reuse it without
+        // reopening SQLite, rediscovering identity, or publishing their placeholder endpoint.
+        {
+            let instances = catalog_instances().lock().await;
+            if let Some((network_id, raft)) =
+                instances.iter().find_map(|((path, network_id, _), value)| {
+                    (path == &db)
+                        .then(|| value.upgrade().map(|raft| (network_id.clone(), raft)))
+                        .flatten()
+                })
+            {
+                return Ok(Some(Self {
+                    raft,
+                    db,
+                    network_id,
+                }));
+            }
+        }
         let conn = Connection::open(&db)?;
         crate::network::migrate(&conn)?;
         let network_id: Option<String> = conn.query_row("SELECT id FROM networks WHERE tombstoned_at IS NULL ORDER BY created_at,id LIMIT 1", [], |r| r.get(0)).optional()?;
@@ -2097,7 +2159,7 @@ mod raft_tests {
         let database = path(NEXT.fetch_add(1, Ordering::Relaxed) + 40_000);
         let conn = Connection::open(&database).unwrap();
         crate::network::migrate(&conn).unwrap();
-        conn.execute_batch("INSERT INTO networks(id,name,schema_version,revision,created_at) VALUES('joined','n',2,1,0); INSERT INTO devices(id,network_id,display_name,hostname,platform,enrollment_id,revision,created_at) VALUES('peer','joined','Peer','peer','test','enrollment',1,0);").unwrap();
+        conn.execute_batch("INSERT INTO networks(id,name,schema_version,revision,created_at) VALUES('joined','n',2,1,0); INSERT INTO devices(id,network_id,display_name,hostname,platform,enrollment_id,revision,created_at) VALUES('server','joined','Server','server','test','local-device',1,0),('peer','joined','Peer','peer','test','joined-device',1,0); UPDATE networks SET server_device_id='server' WHERE id='joined'; INSERT INTO raft_node_members(network_id,device_id,node_id,endpoint) VALUES('joined','peer',42,'http://127.0.0.1:1');").unwrap();
         drop(conn);
         let service = CatalogService::open(
             &database,
@@ -2196,7 +2258,7 @@ mod raft_tests {
             .unwrap();
         node.initialize(BasicNode::new("n1")).await.unwrap();
         sleep(Duration::from_millis(300)).await;
-        node.store.db.lock().unwrap().execute("INSERT INTO networks(id,name,schema_version,revision,created_at) VALUES('catalog','before',2,1,0)", []).unwrap();
+        node.store.db.lock().unwrap().execute_batch("INSERT INTO networks(id,name,schema_version,revision,created_at) VALUES('catalog','before',2,1,0); INSERT INTO devices(id,network_id,display_name,hostname,platform,enrollment_id,revision,created_at) VALUES('server','catalog','Server','server','test','local-device',1,0); INSERT INTO coordinator_members(network_id,device_id,voter,healthy,promoted_at) VALUES('catalog','server',1,1,0);").unwrap();
         let request = CatalogRequest::Network {
             operation_id: "rename-1".into(),
             expected_revision: 1,
@@ -2218,6 +2280,28 @@ mod raft_tests {
             .unwrap()
             .data;
         assert_eq!(stale.status, "revision_conflict");
+        let topology = node
+            .client_write(CatalogRequest::Network {
+                operation_id: "single-server".into(),
+                expected_revision: 2,
+                payload: serde_json::json!({"action":"set_server","networkId":"catalog","serverDeviceId":"server"}),
+            })
+            .await
+            .unwrap()
+            .data;
+        assert_eq!(topology.revision, Some(3));
+        let server: String = node
+            .store
+            .db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT server_device_id FROM networks WHERE id='catalog'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(server, "server");
         node.shutdown().await;
     }
 
