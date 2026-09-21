@@ -81,6 +81,36 @@ fn reconciles_a_committed_pending_task_without_creating_a_duplicate() {
     let _ = fs::remove_dir_all(root);
 }
 
+#[test]
+fn reconciles_ready_task_path_for_local_executor() {
+    let root =
+        std::env::temp_dir().join(format!("swath-ready-task-reconcile-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    config::initialize(&root).unwrap();
+    let conn = config::connection_at(&config::db_path_in(&root).unwrap()).unwrap();
+    conn.execute_batch("INSERT INTO networks(id,name,schema_version,revision,created_at) VALUES('n','n',2,1,0); INSERT INTO local_device_identity(singleton,id) VALUES(1,'device'); INSERT INTO devices(id,network_id,display_name,hostname,platform,enrollment_id,revision,created_at) VALUES('device','n','Device','device','test','local-device',1,0); INSERT INTO projects(id,network_id,name,repository_source,default_branch,task_order,revision,created_at) VALUES('project','n','Project','/source','main','[]',1,0);").unwrap();
+    drop(conn);
+    let record = json!({
+        "project":{"id":"project","taskOrder":["task"],"revision":2},
+        "task":{"id":"task","projectId":"project","title":"Test","assignedDeviceId":"device","executionGeneration":1,"lifecycle":"active","paneOrder":[],"revision":2,"createdAt":10,"baseCommit":"abc","worktreePath":"/worktree","provisioningState":"ready","lastError":null},
+        "panes":[]
+    });
+    apply_task_record(&root, "task", &record).unwrap();
+    apply_task_record(&root, "task", &record).unwrap();
+    let conn = config::connection_at(&config::db_path_in(&root).unwrap()).unwrap();
+    let (path, revision): (String, i64) = conn
+        .query_row(
+            "SELECT path,revision FROM device_task_paths WHERE task_id='task' AND device_id='device'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(path, "/worktree");
+    assert_eq!(revision, 1);
+    drop(conn);
+    let _ = fs::remove_dir_all(root);
+}
+
 #[cfg(test)]
 mod integration_tests {
     use crate::git;

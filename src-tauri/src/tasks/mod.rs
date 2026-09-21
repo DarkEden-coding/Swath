@@ -100,6 +100,17 @@ fn apply_task_record(data_dir: &Path, task_id: &str, record: &Value) -> Result<(
     .map_err(|e| e.to_string())?;
     tx.execute("INSERT INTO tasks(id,project_id,title,assigned_device_id,execution_generation,lifecycle,pane_order,revision,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9) ON CONFLICT(id) DO UPDATE SET title=excluded.title,assigned_device_id=excluded.assigned_device_id,execution_generation=excluded.execution_generation,lifecycle=excluded.lifecycle,pane_order=excluded.pane_order,revision=excluded.revision",params![task["id"].as_str(),task["projectId"].as_str(),task["title"].as_str(),task["assignedDeviceId"].as_str(),task["executionGeneration"].as_i64(),task["lifecycle"].as_str(),task["paneOrder"].to_string(),task["revision"].as_i64(),task["createdAt"].as_i64()]).map_err(|e|e.to_string())?;
     tx.execute("INSERT INTO task_provisioning(task_id,base_commit,worktree_path,state,last_error,created_at) VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(task_id) DO UPDATE SET state=excluded.state,last_error=excluded.last_error",params![task["id"].as_str(),task["baseCommit"].as_str(),task["worktreePath"].as_str(),task["provisioningState"].as_str(),task["lastError"].as_str(),task["createdAt"].as_i64()]).map_err(|e|e.to_string())?;
+    if task["provisioningState"] == "ready" {
+        let worktree_path = task["worktreePath"]
+            .as_str()
+            .filter(|path| !path.is_empty())
+            .ok_or("ready_task_missing_worktree_path")?;
+        tx.execute(
+            "INSERT INTO device_task_paths(task_id,device_id,path,revision) VALUES(?1,?2,?3,1) ON CONFLICT(task_id,device_id) DO UPDATE SET path=excluded.path,revision=device_task_paths.revision+1 WHERE device_task_paths.path<>excluded.path",
+            params![task_id, task["assignedDeviceId"].as_str(), worktree_path],
+        )
+        .map_err(|e| e.to_string())?;
+    }
     if let Some(panes) = record["panes"].as_array() {
         for pane in panes {
             tx.execute("INSERT INTO task_panes(id,task_id,kind,title,session_id,revision,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(id) DO UPDATE SET title=excluded.title,session_id=excluded.session_id,revision=excluded.revision",params![pane["id"].as_str(),task_id,pane["kind"].as_str(),pane["title"].as_str(),pane["sessionId"].as_str(),pane["revision"].as_i64(),pane["createdAt"].as_i64()]).map_err(|e|e.to_string())?;
