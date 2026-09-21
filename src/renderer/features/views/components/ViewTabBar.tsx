@@ -205,7 +205,7 @@ export function TaskTabBar({
                 {expandedTaskId === task.id ? (
                   <div
                     ref={task.id === activeTaskId ? viewStripRef : undefined}
-                    className="ml-1 flex h-full items-center gap-1 border-l border-swath-border pl-1"
+                    className="ml-1 flex h-full items-center gap-1 border-l border-swath-border pl-1 [-webkit-app-region:no-drag] [app-region:no-drag]"
                     onDragOver={
                       task.id === activeTaskId ? viewReorder.handleNativeDragOver : undefined
                     }
@@ -220,75 +220,66 @@ export function TaskTabBar({
                     ).map((view, viewIndex) => {
                       const pane = task.panes.find((item) => view.id.endsWith(item.id));
                       return (
-                        <div key={view.id} className="flex shrink-0 items-center">
-                          <button
-                            draggable={task.id === activeTaskId}
-                            data-task-view-id={task.id === activeTaskId ? view.id : undefined}
-                            aria-grabbed={viewReorder.draggedId === view.id}
-                            aria-keyshortcuts="Alt+ArrowLeft Alt+ArrowRight"
-                            title="Alt+Left / Alt+Right to reorder tab"
-                            onKeyDown={(event) => {
-                              if (task.id !== activeTaskId || !event.altKey) return;
-                              const from = views.findIndex((item) => item.id === view.id);
-                              const direction =
-                                event.key === "ArrowLeft" ? -1 : event.key === "ArrowRight" ? 1 : 0;
-                              const to = from + direction;
-                              if (direction && from >= 0 && to >= 0 && to < views.length) {
-                                event.preventDefault();
-                                onReorderView(from, to);
-                              }
-                            }}
-                            onDragStart={(event) => {
-                              if (task.id === activeTaskId)
-                                viewReorder.startNativeDrag(
-                                  event,
-                                  view.id,
-                                  views.findIndex((item) => item.id === view.id),
-                                );
-                            }}
-                            onDragEnd={viewReorder.finishDrag}
-                            onMouseDown={(event) => {
-                              if (task.id === activeTaskId)
-                                viewReorder.startPointerDrag(event, view.id);
-                            }}
-                            onClick={() => {
-                              onSelect(task.id);
-                              onSelectView(view.id);
-                            }}
-                            className={`flex max-w-44 shrink-0 items-center gap-2 rounded px-2.5 py-1 text-left text-xs ${task.id === activeTaskId && view.id === activeViewId ? "bg-swath-accent/15 text-swath-text" : "text-swath-muted hover:bg-swath-bg"}`}
-                          >
-                            {pane?.kind === "piAgent" ? (
-                              <PiTabIndicator paneIds={[pane.id]} />
-                            ) : null}
-                            <span className="truncate">{view.title}</span>
-                          </button>
-                          {task.id === activeTaskId && views.length > 1 ? (
-                            <span className="flex items-center text-swath-muted">
-                              <button
-                                type="button"
-                                aria-label={`Move ${view.title} left`}
-                                title="Move tab left"
-                                disabled={viewIndex === 0}
-                                onClick={() => onReorderView(viewIndex, viewIndex - 1)}
-                                className="grid size-6 place-items-center rounded text-base [-webkit-app-region:no-drag] [app-region:no-drag] hover:bg-swath-bg hover:text-swath-text disabled:opacity-25"
-                              >
-                                ‹
-                              </button>
-                              <button
-                                type="button"
-                                aria-label={`Move ${view.title} right`}
-                                title="Move tab right"
-                                disabled={viewIndex === views.length - 1}
-                                onClick={() => onReorderView(viewIndex, viewIndex + 1)}
-                                className="grid size-6 place-items-center rounded text-base [-webkit-app-region:no-drag] [app-region:no-drag] hover:bg-swath-bg hover:text-swath-text disabled:opacity-25"
-                              >
-                                ›
-                              </button>
-                            </span>
+                        <Fragment key={view.id}>
+                          {task.id === activeTaskId && viewReorder.dropIndex === viewIndex ? (
+                            <span
+                              className="h-5 w-0.5 shrink-0 rounded bg-swath-accent"
+                              aria-hidden
+                            />
                           ) : null}
-                        </div>
+                          <div className="flex shrink-0 items-center">
+                            <button
+                              draggable={task.id === activeTaskId}
+                              data-task-view-id={task.id === activeTaskId ? view.id : undefined}
+                              aria-grabbed={viewReorder.draggedId === view.id}
+                              aria-keyshortcuts="Alt+ArrowLeft Alt+ArrowRight"
+                              title="Drag to reorder tab (Alt+Left / Alt+Right with keyboard)"
+                              onKeyDown={(event) => {
+                                if (task.id !== activeTaskId || !event.altKey) return;
+                                const from = views.findIndex((item) => item.id === view.id);
+                                const direction =
+                                  event.key === "ArrowLeft"
+                                    ? -1
+                                    : event.key === "ArrowRight"
+                                      ? 1
+                                      : 0;
+                                const to = from + direction;
+                                if (direction && from >= 0 && to >= 0 && to < views.length) {
+                                  event.preventDefault();
+                                  onReorderView(from, to);
+                                }
+                              }}
+                              onDragStart={(event) => {
+                                if (task.id === activeTaskId)
+                                  viewReorder.startNativeDrag(
+                                    event,
+                                    view.id,
+                                    views.findIndex((item) => item.id === view.id),
+                                  );
+                              }}
+                              onDragEnd={viewReorder.finishDrag}
+                              onMouseDown={(event) => {
+                                if (task.id === activeTaskId)
+                                  viewReorder.startPointerDrag(event, view.id);
+                              }}
+                              onClick={() => {
+                                onSelect(task.id);
+                                onSelectView(view.id);
+                              }}
+                              className={`flex max-w-44 shrink-0 cursor-grab items-center gap-2 rounded px-2.5 py-1 text-left text-xs [-webkit-app-region:no-drag] [app-region:no-drag] active:cursor-grabbing ${viewReorder.draggedId === view.id ? "opacity-50" : ""} ${task.id === activeTaskId && view.id === activeViewId ? "bg-swath-accent/15 text-swath-text" : "text-swath-muted hover:bg-swath-bg"}`}
+                            >
+                              {pane?.kind === "piAgent" ? (
+                                <PiTabIndicator paneIds={[pane.id]} />
+                              ) : null}
+                              <span className="truncate">{view.title}</span>
+                            </button>
+                          </div>
+                        </Fragment>
                       );
                     })}
+                    {task.id === activeTaskId && viewReorder.dropIndex === views.length ? (
+                      <span className="h-5 w-0.5 shrink-0 rounded bg-swath-accent" aria-hidden />
+                    ) : null}
                     <div className="relative flex h-full items-center">
                       <button
                         aria-label={`Add tab to ${task.title}`}
