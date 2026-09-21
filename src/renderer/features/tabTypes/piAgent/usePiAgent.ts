@@ -217,7 +217,6 @@ export function usePiAgent(
     cursor: null,
     conflicts: [],
   });
-  const [historyReady, setHistoryReady] = useState(!taskExecution?.taskId);
 
   // Republish every render so a remount (tab switch) restores the transcript synchronously.
   useEffect(() => {
@@ -422,14 +421,13 @@ export function usePiAgent(
     return unsubscribe;
   }, [paneId]);
 
-  // Load durable records before touching the executor. This is deliberately a read-only history
-  // RPC: completed/offline task inspection must never ensure or spawn Pi.
+  // Load durable records independently of the executor. This is deliberately a read-only history
+  // RPC: completed/offline task inspection must never ensure or spawn Pi. In particular, do not
+  // make process startup wait on replication: an unavailable remote peer must not leave an active
+  // task permanently at “Starting pi…”.
   useEffect(() => {
     if (!taskExecution?.taskId) return;
     let active = true;
-    queueMicrotask(() => {
-      if (active) setHistoryReady(false);
-    });
     const scope = {
       networkId: taskExecution.networkId ?? "",
       taskId: taskExecution.taskId,
@@ -477,8 +475,6 @@ export function usePiAgent(
         reportError("Syncing Pi history", error);
         if (cached && active) setHistory({ status: "local", cursor: cached.cursor, conflicts: [] });
         else if (active) setHistory({ status: "unavailable", cursor: null, conflicts: [] });
-      } finally {
-        if (active) setHistoryReady(true);
       }
     })();
     return () => {
@@ -497,15 +493,14 @@ export function usePiAgent(
   useEffect(() => {
     // A failed child stays failed across tab remounts. Only an explicit Restart clears it; a tab
     // switch must never turn a rapid process exit into an unbounded restart/replay loop.
-    if (historyReady && !taskExecution?.readOnly && !state.exited && !state.error) spawn();
-  }, [historyReady, spawn, state.error, state.exited, taskExecution?.readOnly]);
+    if (!taskExecution?.readOnly && !state.exited && !state.error) spawn();
+  }, [spawn, state.error, state.exited, taskExecution?.readOnly]);
 
   // A remote executor can answer before its event relay has finished subscribing. Retry the
   // idempotent state request until one response arrives, rather than leaving the pane forever on
   // “Starting pi…”. The first retry is delayed so local startup keeps its single fast handshake.
   useEffect(() => {
     if (
-      !historyReady ||
       taskExecution?.readOnly ||
       state.state ||
       state.error ||
@@ -527,7 +522,7 @@ export function usePiAgent(
       send({ id: "startup-state", type: "get_state" });
     }, 1_500);
     return () => window.clearInterval(timer);
-  }, [historyReady, paneId, send, state.error, state.exited, state.state, taskExecution?.readOnly]);
+  }, [paneId, send, state.error, state.exited, state.state, taskExecution?.readOnly]);
 
   return useMemo<PiAgentController>(
     () => ({
