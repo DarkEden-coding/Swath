@@ -151,7 +151,7 @@ done
 
 log "Building and installing the Mac and Scythe desktop apps"
 mac_was_running=0
-if pgrep -x Swath >/dev/null 2>&1; then
+if pgrep -x swath >/dev/null 2>&1; then
   mac_was_running=1
   osascript -e 'tell application "Swath" to quit' || true
   sleep 2
