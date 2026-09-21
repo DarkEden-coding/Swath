@@ -51,7 +51,7 @@ axum = { version = "0.8", features = ["ws"] }
 tokio = { version = "1", features = ["net", "sync", "rt-multi-thread", "macros", "signal", "io-util", "time"] }
 openraft = { version = "0.9.25", features = ["storage-v2", "serde", "generic-snapshot-data"] }
 futures-util = "0.3"
-tokio-tungstenite = "0.29"
+tokio-tungstenite = { version = "0.29", features = ["rustls-tls-webpki-roots"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 rust-embed = "8"
 mime_guess = "2"
