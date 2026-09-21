@@ -226,13 +226,16 @@ export function Composer({
   };
 
   /** Attaches images and appends their placeholders, kept in one place so both stay in sync. */
-  const attach = useCallback((added: PiImageContent[]): void => {
-    if (added.length === 0) return;
-    const next = attachImages(value, images, added);
-    onChange(next.text);
-    onImagesChange(next.images);
-    inputRef.current?.focus();
-  }, [images, onChange, onImagesChange, value]);
+  const attach = useCallback(
+    (added: PiImageContent[]): void => {
+      if (added.length === 0) return;
+      const next = attachImages(value, images, added);
+      onChange(next.text);
+      onImagesChange(next.images);
+      inputRef.current?.focus();
+    },
+    [images, onChange, onImagesChange, value],
+  );
 
   const addImages = async (list: FileList | File[]): Promise<void> => {
     const converted = await Promise.all(Array.from(list).map(fileToImage));
@@ -244,25 +247,28 @@ export function Composer({
    * image markers, the placeholder is the only thing in the prompt; the body rides in the pane
    * cache and is expanded back in on send.
    */
-  const attachPastes = useCallback((bodies: string[]): void => {
-    if (bodies.length === 0) return;
-    const added = makePastes(pastes, bodies);
-    const input = inputRef.current;
-    const start = input?.selectionStart ?? value.length;
-    const end = input?.selectionEnd ?? value.length;
-    const joined = added.map((paste) => paste.placeholder).join(" ");
-    const prefix = value.slice(0, start);
-    const next =
-      prefix && !prefix.endsWith(" ") && !prefix.endsWith("\n")
-        ? `${prefix} ${joined}`
-        : `${prefix}${joined}`;
-    onChange(`${next}${value.slice(end)}`);
-    onPastesChange([...pastes, ...added]);
-    const caret = next.length;
-    setCaret(caret);
-    window.requestAnimationFrame(() => inputRef.current?.setSelectionRange(caret, caret));
-    inputRef.current?.focus();
-  }, [onChange, onPastesChange, pastes, value]);
+  const attachPastes = useCallback(
+    (bodies: string[]): void => {
+      if (bodies.length === 0) return;
+      const added = makePastes(pastes, bodies);
+      const input = inputRef.current;
+      const start = input?.selectionStart ?? value.length;
+      const end = input?.selectionEnd ?? value.length;
+      const joined = added.map((paste) => paste.placeholder).join(" ");
+      const prefix = value.slice(0, start);
+      const next =
+        prefix && !prefix.endsWith(" ") && !prefix.endsWith("\n")
+          ? `${prefix} ${joined}`
+          : `${prefix}${joined}`;
+      onChange(`${next}${value.slice(end)}`);
+      onPastesChange([...pastes, ...added]);
+      const caret = next.length;
+      setCaret(caret);
+      window.requestAnimationFrame(() => inputRef.current?.setSelectionRange(caret, caret));
+      inputRef.current?.focus();
+    },
+    [onChange, onPastesChange, pastes, value],
+  );
 
   /** Drops the attachment a deleted placeholder stood for, image or paste. */
   const detachToken = (token: string): void => {
@@ -270,15 +276,18 @@ export function Composer({
     onPastesChange(pastes.filter((paste) => paste.placeholder !== token));
   };
 
-  const insertText = useCallback((text: string): void => {
-    const input = inputRef.current;
-    const current = value;
-    const start = input?.selectionStart ?? current.length;
-    const end = input?.selectionEnd ?? current.length;
-    onChange(current.slice(0, start) + text + current.slice(end));
-    setCaret(start + text.length);
-    input?.focus();
-  }, [onChange, value]);
+  const insertText = useCallback(
+    (text: string): void => {
+      const input = inputRef.current;
+      const current = value;
+      const start = input?.selectionStart ?? current.length;
+      const end = input?.selectionEnd ?? current.length;
+      onChange(current.slice(0, start) + text + current.slice(end));
+      setCaret(start + text.length);
+      input?.focus();
+    },
+    [onChange, value],
+  );
 
   /**
    * Reads the OS clipboard directly. The app menu binds Cmd/Ctrl+V to a custom item (see

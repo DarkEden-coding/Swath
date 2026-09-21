@@ -302,7 +302,10 @@ validate_local() {
   log "Running local validation"
   npm run typecheck
   npm run lint
-  npm run format:check
+  # Local operator notes and deployment secrets are intentionally untracked; validate only the
+  # versioned formatter-supported files that will actually be deployed.
+  git ls-files -z -- '*.css' '*.html' '*.js' '*.json' '*.jsx' '*.md' '*.ts' '*.tsx' '*.yaml' '*.yml' \
+    | xargs -0 npx prettier --check --ignore-unknown
   npm run test:unit
   npm test
   cargo fmt --all -- --check

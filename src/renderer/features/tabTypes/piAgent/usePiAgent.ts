@@ -193,14 +193,7 @@ export function usePiAgent(
           }
         : {}),
     }),
-    [
-      paneId,
-      hasTaskExecution,
-      taskId,
-      networkId,
-      executionGeneration,
-      readOnly,
-    ],
+    [paneId, hasTaskExecution, taskId, networkId, executionGeneration, readOnly],
   );
 
   // Read at spawn time only: a group gaining a folder must not restart a running conversation.

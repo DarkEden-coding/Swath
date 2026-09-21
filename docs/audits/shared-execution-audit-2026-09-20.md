@@ -39,17 +39,17 @@ No application implementation, production database, service configuration, deplo
 
 These are point-in-time counts, not an atomic distributed snapshot.
 
-| Observation | Value |
-| --- | ---: |
-| Mac history outbox records | 8,477 |
-| Mac unpublished history records | 6,755 |
-| Aggregate recorded history delivery attempts | 192,916 |
-| Pending records failing the current local task/pane/generation scope predicate | 1,963 |
-| Such invalid records among the first 64 selected by the worker | 64 of 64 |
-| Attempts per record in that first batch | 2,961–3,072 |
-| Pi history records on power-server / PiTwo / Scythe / server-two | 0 / 0 / 0 / 0 |
-| Largest individual history outbox payload | 2,492,087 bytes |
-| History payloads larger than 2 MiB | 1 |
+| Observation                                                                    |           Value |
+| ------------------------------------------------------------------------------ | --------------: |
+| Mac history outbox records                                                     |           8,477 |
+| Mac unpublished history records                                                |           6,755 |
+| Aggregate recorded history delivery attempts                                   |         192,916 |
+| Pending records failing the current local task/pane/generation scope predicate |           1,963 |
+| Such invalid records among the first 64 selected by the worker                 |        64 of 64 |
+| Attempts per record in that first batch                                        |     2,961–3,072 |
+| Pi history records on power-server / PiTwo / Scythe / server-two               |   0 / 0 / 0 / 0 |
+| Largest individual history outbox payload                                      | 2,492,087 bytes |
+| History payloads larger than 2 MiB                                             |               1 |
 
 The Mac database was approximately 212 MB. Its largest tables occupied approximately 80.5 MB for `transactional_outbox`, 77.4 MB for `pi_session_records`, and 28.0 MB for `pi_session_attachments`. These numbers demonstrate repeated storage of large history payloads; they do not by themselves establish that a copy is unnecessary.
 
@@ -287,14 +287,14 @@ Use one typed error/result envelope, retain operation IDs through every hop, and
 
 This should be a staged correction of ownership boundaries, rather than another wholesale rewrite or a replacement of OpenRaft.
 
-| Area | Current concentration/problem | Recommended boundary |
-| --- | --- | --- |
-| Replicated catalog | 2,098-line Raft module combines transport, state machine, schema projection, membership, receipts, and tests; snapshots cover the wrong state | Typed catalog commands and deterministic projector, complete snapshot codec, separate Raft storage/transport adapters |
-| Runtime routing | 3,103-line remote module combines HTTP/WS, auth, enrollment, routing, relays, sync, preview proxy, and domain dispatch | Thin HTTP/Tauri adapters over one persistent application service and one executor router |
-| Task operations | Provisioning and mutations assume local SQL freshness; generated IDs/preconditions are rebuilt on retry | Durable command receipts and explicit phase transitions; authoritative reads at defined consistency points |
-| Move/cleanup | 1,654-line module implements hashing, traversal, transfer transport, Git, process checks, receipts, deletion, and recovery | Shared executor fence, operation state machine, artifact manifest/transport, independent Git retention policy |
-| Renderer | 608-line TaskWorkspace plus legacy appActions and synthetic workspace projections | Native TaskView model with explicit shared-pane commands and local layout/focus store |
-| Pi sessions/history | Session path, conversation identity, generation, event cache, persisted records, attachments, and delivery state overlap | Conversation/session identity service; append-only history store; attachment store; per-peer replication progress |
+| Area                | Current concentration/problem                                                                                                                 | Recommended boundary                                                                                                  |
+| ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| Replicated catalog  | 2,098-line Raft module combines transport, state machine, schema projection, membership, receipts, and tests; snapshots cover the wrong state | Typed catalog commands and deterministic projector, complete snapshot codec, separate Raft storage/transport adapters |
+| Runtime routing     | 3,103-line remote module combines HTTP/WS, auth, enrollment, routing, relays, sync, preview proxy, and domain dispatch                        | Thin HTTP/Tauri adapters over one persistent application service and one executor router                              |
+| Task operations     | Provisioning and mutations assume local SQL freshness; generated IDs/preconditions are rebuilt on retry                                       | Durable command receipts and explicit phase transitions; authoritative reads at defined consistency points            |
+| Move/cleanup        | 1,654-line module implements hashing, traversal, transfer transport, Git, process checks, receipts, deletion, and recovery                    | Shared executor fence, operation state machine, artifact manifest/transport, independent Git retention policy         |
+| Renderer            | 608-line TaskWorkspace plus legacy appActions and synthetic workspace projections                                                             | Native TaskView model with explicit shared-pane commands and local layout/focus store                                 |
+| Pi sessions/history | Session path, conversation identity, generation, event cache, persisted records, attachments, and delivery state overlap                      | Conversation/session identity service; append-only history store; attachment store; per-peer replication progress     |
 
 Raw line count is not the issue by itself. The combined boundaries cause observed defects: the same intent has multiple mutation paths, and several paths disagree about ownership and state freshness. The seven inspected core files together total **10,029 lines**, but splitting those files without changing contracts would leave the bugs intact.
 
@@ -314,19 +314,19 @@ Until these gates pass, successful compilation and healthy coordinator status ar
 
 ## Validation performed
 
-| Check | Result |
-| --- | --- |
-| TypeScript `npm run typecheck` | Passed |
-| Existing frontend unit suite | 41 files, 249 tests passed |
-| Existing Rust headless library suite | 70 tests passed |
-| Isolated snapshot probe | Confirmed relational project omitted on snapshot installation |
-| Isolated operation retry probe | Confirmed same successful intent at rebased revision becomes operation-ID conflict |
-| Isolated Git replica probe | Confirmed existing replica resolves old main after source advances |
-| Pure projection probes | Confirmed stale session metadata and removed-pane retention |
-| Pure history probe | Confirmed other-session inclusion and previous-generation exclusion |
-| Live UI Diagnostics | Read existing decoding and revision-conflict incidents; closed settings afterward |
-| Read-only database inspection | Mac plus all four documented Linux devices |
-| Connector/process inspection | Scythe empty 502, no Swath process/listener; no service restart |
+| Check                                | Result                                                                             |
+| ------------------------------------ | ---------------------------------------------------------------------------------- |
+| TypeScript `npm run typecheck`       | Passed                                                                             |
+| Existing frontend unit suite         | 41 files, 249 tests passed                                                         |
+| Existing Rust headless library suite | 70 tests passed                                                                    |
+| Isolated snapshot probe              | Confirmed relational project omitted on snapshot installation                      |
+| Isolated operation retry probe       | Confirmed same successful intent at rebased revision becomes operation-ID conflict |
+| Isolated Git replica probe           | Confirmed existing replica resolves old main after source advances                 |
+| Pure projection probes               | Confirmed stale session metadata and removed-pane retention                        |
+| Pure history probe                   | Confirmed other-session inclusion and previous-generation exclusion                |
+| Live UI Diagnostics                  | Read existing decoding and revision-conflict incidents; closed settings afterward  |
+| Read-only database inspection        | Mac plus all four documented Linux devices                                         |
+| Connector/process inspection         | Scythe empty 502, no Swath process/listener; no service restart                    |
 
 The isolated probes assert the **currently defective behavior** to demonstrate it; they are not acceptance tests claiming correctness. Probe workspace: `/tmp/swath-shared-execution-audit`. Test output files: `/tmp/swath-audit-unit.log`, `/tmp/swath-audit-rust.log`, `/tmp/swath-audit-probes.log`.
 

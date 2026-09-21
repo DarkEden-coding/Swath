@@ -87,7 +87,10 @@ describe("pi history sync", () => {
         status: "synced",
         networkId: "network-a",
         cursor: "pi-history-v1:2",
-        records: [record("current", 1), { ...record("before-transfer", 2), executionGeneration: 0 }],
+        records: [
+          record("current", 1),
+          { ...record("before-transfer", 2), executionGeneration: 0 },
+        ],
       },
       scope,
     );

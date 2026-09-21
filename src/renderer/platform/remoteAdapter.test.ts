@@ -15,9 +15,7 @@ describe("remoteRpcError", () => {
         },
       }),
     );
-    expect(error.message).toBe(
-      "executor_unavailable → catalog_unavailable: database is locked",
-    );
+    expect(error.message).toBe("executor_unavailable → catalog_unavailable: database is locked");
     expect(error.codes).toEqual(["executor_unavailable", "catalog_unavailable"]);
     expect(error.retryable).toBe(true);
   });
@@ -26,4 +24,3 @@ describe("remoteRpcError", () => {
     expect(remoteRpcError("connection closed").message).toBe("connection closed");
   });
 });
-

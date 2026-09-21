@@ -56,13 +56,15 @@ export interface RemoteResponse {
   type: "response";
   id: string;
   result?: unknown;
-  error?: string | {
-    code: string;
-    message?: string;
-    retryable?: boolean;
-    stage?: string;
-    [key: string]: unknown;
-  };
+  error?:
+    | string
+    | {
+        code: string;
+        message?: string;
+        retryable?: boolean;
+        stage?: string;
+        [key: string]: unknown;
+      };
 }
 
 export interface RemoteEvent {

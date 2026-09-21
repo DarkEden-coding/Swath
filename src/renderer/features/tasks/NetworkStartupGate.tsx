@@ -500,10 +500,7 @@ export function MigrationConflictReview({
   conflicts: MigrationConflict[];
   busy: boolean;
   error: string | null;
-  onResolve(
-    conflict: MigrationConflict,
-    action: "keep_original" | "use_incoming",
-  ): Promise<void>;
+  onResolve(conflict: MigrationConflict, action: "keep_original" | "use_incoming"): Promise<void>;
   onApprove(conflict: MigrationConflict): Promise<void>;
 }): JSX.Element {
   return (
