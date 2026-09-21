@@ -1762,6 +1762,70 @@ async fn peer_rpc(
     }
 }
 
+/// After an offline multi-voter recovery, desktop projections may predate the server marker.
+/// Probe known authenticated voter endpoints for a *ready self-declared* fixed server and cache
+/// its identity locally. This avoids relying on stale membership counts or a local Raft leader.
+async fn discover_fixed_server(data_dir: &std::path::Path) -> Result<Option<String>, String> {
+    let db = config::db_path_in(data_dir).map_err(|error| error.to_string())?;
+    let conn = config::connection_at(&db).map_err(|error| error.to_string())?;
+    let network_id: Option<String> = conn
+        .query_row(
+            "SELECT id FROM networks WHERE tombstoned_at IS NULL ORDER BY created_at,id LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| error.to_string())?;
+    let Some(network_id) = network_id else {
+        return Ok(None);
+    };
+    let peers: Vec<(String, String)> = conn
+        .prepare("SELECT c.device_id,x.endpoint FROM coordinator_members c JOIN devices d ON d.id=c.device_id JOIN device_connectors x ON x.device_id=c.device_id WHERE c.network_id=?1 AND c.voter=1 AND d.tombstoned_at IS NULL")
+        .map_err(|error| error.to_string())?
+        .query_map([&network_id], |row| Ok((row.get(0)?, row.get(1)?)))
+        .map_err(|error| error.to_string())?
+        .collect::<Result<_, _>>()
+        .map_err(|error| error.to_string())?;
+    drop(conn);
+    let client = reqwest::Client::new();
+    let candidates = join_all(peers.into_iter().map(|(device_id, endpoint)| {
+        let client = client.clone();
+        let network_id = network_id.clone();
+        async move {
+            let response = client
+                .get(format!("{}/api/health", endpoint.trim_end_matches('/')))
+                .timeout(std::time::Duration::from_secs(3))
+                .send()
+                .await
+                .ok()?;
+            if !response.status().is_success() {
+                return None;
+            }
+            let health: Value = response.json().await.ok()?;
+            (health.get("networkId").and_then(Value::as_str) == Some(network_id.as_str())
+                && health.get("deviceId").and_then(Value::as_str) == Some(device_id.as_str())
+                && health.get("serverDeviceId").and_then(Value::as_str) == Some(device_id.as_str())
+                && health.pointer("/catalog/ready").and_then(Value::as_bool) == Some(true))
+            .then_some(device_id)
+        }
+    }))
+    .await;
+    let mut matches = candidates.into_iter().flatten();
+    let Some(server) = matches.next() else {
+        return Ok(None);
+    };
+    if matches.next().is_some() {
+        return Err("ambiguous_catalog_server".into());
+    }
+    let conn = config::connection_at(&db).map_err(|error| error.to_string())?;
+    conn.execute(
+        "UPDATE networks SET server_device_id=?1 WHERE id=?2 AND server_device_id IS NULL",
+        rusqlite::params![server, network_id],
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(Some(server))
+}
+
 async fn dispatch_to_owner(
     ctx: &ServerContext,
     method: &str,
@@ -1797,11 +1861,16 @@ async fn dispatch_to_owner(
                      LIMIT 1))
                  FROM networks n WHERE n.tombstoned_at IS NULL ORDER BY n.created_at,n.id LIMIT 1",
                 [],
-                |row| row.get(0),
+                |row| row.get::<_, Option<String>>(0),
             )
             .optional()
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| error.to_string())?
+            .flatten();
         drop(conn);
+        let server = match server {
+            Some(server) => Some(server),
+            None => discover_fixed_server(ctx.core.data_dir()).await?,
+        };
         if let Some(server) = server {
             if ctx.device_id.as_deref() == Some(server.as_str()) {
                 return dispatch_local(ctx, "catalog.rpc", params).await;
@@ -2968,6 +3037,57 @@ mod tests {
         }
         conn.execute("INSERT INTO projects(id,network_id,name,default_branch,revision,created_at) VALUES('p','n','p','main',1,0)", []).unwrap();
         conn.execute("INSERT INTO tasks(id,project_id,title,assigned_device_id,lifecycle,revision,created_at) VALUES('t','p','before','b','active',1,0)", []).unwrap();
+    }
+
+    #[tokio::test]
+    async fn stale_desktop_discovers_and_caches_ready_fixed_server() {
+        let root =
+            std::env::temp_dir().join(format!("swath-server-discovery-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        config::initialize(&root).unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let _ = axum::serve(
+                listener,
+                Router::new().route(
+                    "/api/health",
+                    axum::routing::get(|| async {
+                        Json(json!({"networkId":"n","deviceId":"server","serverDeviceId":"server","catalog":{"ready":true}}))
+                    }),
+                ),
+            )
+            .await;
+        });
+        let db = config::db_path_in(&root).unwrap();
+        let conn = config::connection_at(&db).unwrap();
+        conn.execute_batch("INSERT INTO networks(id,name,schema_version,revision,created_at) VALUES('n','n',2,1,0);
+            INSERT INTO devices(id,network_id,display_name,hostname,platform,enrollment_id,revision,created_at) VALUES('server','n','server','server','test','local-device',1,0);
+            INSERT INTO coordinator_members(network_id,device_id,voter,healthy,promoted_at) VALUES('n','server',1,1,0);")
+            .unwrap();
+        conn.execute(
+            "INSERT INTO device_connectors(device_id,endpoint,credential) VALUES('server',?1,'test')",
+            [&endpoint],
+        )
+        .unwrap();
+        drop(conn);
+        assert_eq!(
+            discover_fixed_server(&root).await.unwrap().as_deref(),
+            Some("server")
+        );
+        let conn = config::connection_at(&db).unwrap();
+        assert_eq!(
+            conn.query_row(
+                "SELECT server_device_id FROM networks WHERE id='n'",
+                [],
+                |row| row.get::<_, String>(0)
+            )
+            .unwrap(),
+            "server"
+        );
+        drop(conn);
+        server.abort();
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
