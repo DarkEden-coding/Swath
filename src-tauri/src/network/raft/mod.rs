@@ -1586,6 +1586,30 @@ fn catalog_instances(
 ) -> &'static tokio::sync::Mutex<HashMap<CatalogInstanceKey, std::sync::Weak<CatalogRaft>>> {
     CATALOG_INSTANCES.get_or_init(|| tokio::sync::Mutex::new(HashMap::new()))
 }
+fn refresh_catalog_endpoint(
+    db: &str,
+    network_id: &str,
+    node_id: NodeId,
+    endpoint: &str,
+) -> anyhow::Result<()> {
+    // Command-only callers use this sentinel because they do not own a listener. Never let one
+    // replace the routable address published by the connector that owns the cached Raft engine.
+    if endpoint == "http://127.0.0.1:0" {
+        return Ok(());
+    }
+    let conn = Connection::open(db)?;
+    conn.busy_timeout(std::time::Duration::from_secs(10))?;
+    conn.pragma_update(None, "journal_mode", "WAL")?;
+    conn.execute(
+        "UPDATE catalog_nodes SET endpoint=?1,updated_at=strftime('%s','now') WHERE network_id=?2 AND node_id=?3",
+        params![endpoint, network_id, node_id as i64],
+    )?;
+    conn.execute(
+        "UPDATE raft_node_members SET endpoint=?1 WHERE network_id=?2 AND node_id=?3",
+        params![endpoint, network_id, node_id as i64],
+    )?;
+    Ok(())
+}
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub struct CatalogError {
@@ -1611,6 +1635,7 @@ impl CatalogService {
         let key = (db.clone(), network_id.clone(), node_id);
         let mut instances = catalog_instances().lock().await;
         if let Some(raft) = instances.get(&key).and_then(std::sync::Weak::upgrade) {
+            refresh_catalog_endpoint(&db, &network_id, node_id, &endpoint)?;
             return Ok(Self {
                 raft,
                 db,
@@ -2022,6 +2047,38 @@ mod raft_tests {
         .await
         .unwrap();
         assert!(Arc::ptr_eq(service.raft(), reopened.raft()));
+        assert_eq!(
+            Connection::open(&database)
+                .unwrap()
+                .query_row(
+                    "SELECT endpoint FROM catalog_nodes WHERE network_id='joined' AND node_id=42",
+                    [],
+                    |row| row.get::<_, String>(0)
+                )
+                .unwrap(),
+            "http://127.0.0.1:1"
+        );
+        let republished = CatalogService::open(
+            &database,
+            "joined",
+            42,
+            "local-task-rpc",
+            "https://peer.example:9443/",
+        )
+        .await
+        .unwrap();
+        assert!(Arc::ptr_eq(service.raft(), republished.raft()));
+        assert_eq!(
+            Connection::open(&database)
+                .unwrap()
+                .query_row(
+                    "SELECT endpoint FROM catalog_nodes WHERE network_id='joined' AND node_id=42",
+                    [],
+                    |row| row.get::<_, String>(0)
+                )
+                .unwrap(),
+            "https://peer.example:9443/"
+        );
         sleep(Duration::from_millis(300)).await;
         assert!(service
             .raft
@@ -2031,6 +2088,7 @@ mod raft_tests {
             .current_leader
             .is_none());
         drop(reopened);
+        drop(republished);
         service.raft.shutdown().await;
     }
 
