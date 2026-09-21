@@ -183,7 +183,7 @@ pub async fn migrate_to_single_server(
 
 /// Destructively reseeds a broken multi-voter catalog as one server while retaining its catalog
 /// projection. This is an operator recovery command: it removes only the other *voter* devices,
-/// refuses to proceed if one owns an active task, and discards the old Raft log/snapshots.
+/// refuses to proceed if one owns an active task, and discards the old Raft consensus state.
 pub fn reseed_single_server(data_dir: std::path::PathBuf) -> anyhow::Result<()> {
     config::initialize(&data_dir)?;
     let db = config::db_path_in(&data_dir)?;
@@ -223,6 +223,9 @@ pub fn reseed_single_server(data_dir: std::path::PathBuf) -> anyhow::Result<()> 
         ));
     }
     let tx = conn.transaction()?;
+    tx.execute_batch(
+        "CREATE TABLE IF NOT EXISTS raft_catalog_state (network_id TEXT PRIMARY KEY, payload BLOB NOT NULL)",
+    )?;
     tx.execute(
         "UPDATE networks SET server_device_id=?1 WHERE id=?2",
         rusqlite::params![local_device, network_id],
@@ -262,8 +265,105 @@ pub fn reseed_single_server(data_dir: std::path::PathBuf) -> anyhow::Result<()> 
         "DELETE FROM raft_hard_state WHERE network_id=?1",
         [&network_id],
     )?;
+    // The state-machine record includes the last applied log ID and membership. Keeping it while
+    // deleting the log/snapshot strands the new single voter behind the old multi-voter quorum.
+    // Catalog projections (networks, devices, tasks, etc.) remain intact.
+    tx.execute(
+        "DELETE FROM raft_catalog_state WHERE network_id=?1",
+        [&network_id],
+    )?;
     tx.commit()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod single_server_recovery_tests {
+    use super::*;
+    use rusqlite::Connection;
+    use std::fs;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn reseed_discards_stale_membership_but_preserves_catalog_projection() {
+        let dir =
+            std::env::temp_dir().join(format!("swath-single-server-reseed-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        config::initialize(&dir).unwrap();
+        let db = config::db_path_in(&dir).unwrap();
+        let conn = Connection::open(&db).unwrap();
+        conn.execute_batch(
+            r#"CREATE TABLE IF NOT EXISTS raft_catalog_state (network_id TEXT PRIMARY KEY, payload BLOB NOT NULL);
+             INSERT INTO networks(id,name,schema_version,revision,created_at)
+                 VALUES('network','Network',2,1,0);
+             INSERT INTO devices(id,network_id,display_name,hostname,platform,enrollment_id,revision,created_at)
+                 VALUES('server','network','Server','server','test','local-device',1,0),
+                       ('client','network','Client','client','test','joined-device',1,0);
+             INSERT INTO coordinator_members(network_id,device_id,voter,healthy,promoted_at)
+                 VALUES('network','server',1,1,0);
+             INSERT INTO raft_node_members(network_id,device_id,node_id,endpoint)
+                 VALUES('network','server',42,'http://127.0.0.1:1');
+             INSERT INTO catalog_nodes(network_id,node_id,endpoint,updated_at)
+                 VALUES('network',42,'http://127.0.0.1:1',0);
+             INSERT INTO raft_catalog_state(network_id,payload)
+                 VALUES('network','{"last":{"index":123},"membership":{"configs":[[1,2,42]]},"data":{}}');
+             INSERT INTO raft_log(network_id,log_index,term,payload)
+                 VALUES('network',123,1,x'01');"#,
+        )
+        .unwrap();
+        drop(conn);
+
+        reseed_single_server(dir.clone()).unwrap();
+        let conn = Connection::open(&db).unwrap();
+        let count: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM raft_catalog_state WHERE network_id='network'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 0);
+        let count: i64 = conn
+            .query_row("SELECT count(*) FROM raft_log", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 0);
+        let fixed: String = conn
+            .query_row(
+                "SELECT server_device_id FROM networks WHERE id='network'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(fixed, "server");
+        let client_active: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM devices WHERE id='client' AND tombstoned_at IS NULL",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(client_active, 1);
+        drop(conn);
+        let service = network::raft::CatalogService::open(
+            db.to_string_lossy(),
+            "network",
+            42,
+            "0123456789abcdef",
+            "http://127.0.0.1:1",
+        )
+        .await
+        .unwrap();
+        let ready = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if service.raft().raft.metrics().borrow().current_leader == Some(42) {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+        })
+        .await;
+        assert!(ready.is_ok(), "reseeded single server must elect itself");
+        service.raft().shutdown().await;
+        let _ = fs::remove_dir_all(dir);
+    }
 }
 
 /// Starts a display-free executor runtime and authenticated connector.
