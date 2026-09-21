@@ -13,6 +13,11 @@ const emptyLocal: TaskInterfaceState = {
   historicalTaskId: null,
 };
 
+/** Local pane order is an optimistic overlay, never an authority across process restarts. */
+export function hydrateTaskInterfaceState(saved: Partial<TaskInterfaceState>): TaskInterfaceState {
+  return { ...emptyLocal, ...saved, paneOrderByTask: {} };
+}
+
 type TaskReply = { ok?: boolean; projects?: Project[]; tasks?: Task[]; panes?: TaskPane[] };
 
 interface TaskState {
@@ -59,7 +64,9 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     if (!get().loaded) {
       const saved = await window.swath.localState.load(snapshot.network.id);
       if (saved?.state && typeof saved.state === "object") {
-        previous = { ...emptyLocal, ...(saved.state as Partial<TaskInterfaceState>) };
+        // Pane order belongs to the server catalog. This field is only an in-flight optimistic
+        // overlay; persisting it across a crash/upgrade can indefinitely mask committed moves.
+        previous = hydrateTaskInterfaceState(saved.state as Partial<TaskInterfaceState>);
         localRevision = saved.revision;
       }
     }
@@ -139,19 +146,6 @@ export const useTaskStore = create<TaskState>((set, get) => ({
 let saveQueue = Promise.resolve();
 useTaskStore.subscribe((state, previous) => {
   if (!state.networkId || state.local === previous.local) return;
-  const persistedPaneOrder = (local: TaskInterfaceState, catalog: TaskCatalog) => {
-    const paneOrderByTask = { ...local.paneOrderByTask };
-    for (const task of catalog.tasks) {
-      const override = paneOrderByTask[task.id];
-      if (
-        override?.length === task.paneOrder.length &&
-        override.every((paneId, index) => paneId === task.paneOrder[index])
-      ) {
-        delete paneOrderByTask[task.id];
-      }
-    }
-    return { ...local, paneOrderByTask };
-  };
   const { networkId, local } = state;
   saveQueue = saveQueue
     .catch(() => undefined)
@@ -160,7 +154,7 @@ useTaskStore.subscribe((state, previous) => {
       if (current.networkId !== networkId) return;
       const saved = await window.swath.localState.save(
         networkId,
-        persistedPaneOrder(local, current.catalog),
+        { ...local, paneOrderByTask: {} },
         current.localRevision + 1,
       );
       if (useTaskStore.getState().networkId === networkId)
