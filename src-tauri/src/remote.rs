@@ -601,6 +601,12 @@ fn peer_authorized(ctx: &ServerContext, headers: &HeaderMap) -> bool {
         || (credentials.is_empty() && authorized(headers, &ctx.token))
 }
 
+fn socket_authorized(ctx: &ServerContext, headers: &HeaderMap) -> bool {
+    // Browser clients use the connector token. Native peer relays use the catalog-distributed
+    // credential, which can temporarily differ while credential rotation settles.
+    authorized(headers, &ctx.token) || peer_authorized(ctx, headers)
+}
+
 async fn raft_context(
     ctx: &ServerContext,
     headers: &HeaderMap,
@@ -871,7 +877,7 @@ async fn socket(
     State(ctx): State<ServerContext>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    if !origin_allowed(&headers, &ctx.allowed_origins) || !authorized(&headers, &ctx.token) {
+    if !origin_allowed(&headers, &ctx.allowed_origins) || !socket_authorized(&ctx, &headers) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
     if !headers
@@ -2813,7 +2819,19 @@ mod tests {
             header::AUTHORIZATION,
             "Bearer distributed-credential".parse().unwrap(),
         );
-        assert!(peer_authorized(&context(core, "a"), &headers));
+        assert!(peer_authorized(&context(core.clone(), "a"), &headers));
+        assert!(socket_authorized(&context(core.clone(), "a"), &headers));
+
+        headers.insert(
+            header::SEC_WEBSOCKET_PROTOCOL,
+            format!(
+                "swath-v2, auth.{}",
+                Base64UrlUnpadded::encode_string(b"distributed-credential")
+            )
+            .parse()
+            .unwrap(),
+        );
+        assert!(socket_authorized(&context(core, "a"), &headers));
         let _ = fs::remove_dir_all(root);
     }
 
