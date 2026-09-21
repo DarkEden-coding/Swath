@@ -1394,6 +1394,11 @@ fn ensure_peer_relay(ctx: &ServerContext, target: &str, params: &Value) {
                     update = receiver.recv() => match update {
                         Some(update) => {
                             let key = update["params"].to_string();
+                            // Every Pi command is routed independently and therefore asks for the
+                            // same pane subscription. Re-subscribing made the executor replay its
+                            // durable startup log again for every 1.5-second state probe, creating
+                            // a feedback loop of duplicate state events and catalog writes.
+                            if subscriptions.contains_key(&key) { continue; }
                             subscriptions.insert(key, update.clone());
                             if output.send(tokio_tungstenite::tungstenite::Message::Text(json!({"id":"relay","method":update["method"],"params":update["params"]}).to_string().into())).await.is_err() { break }
                         },

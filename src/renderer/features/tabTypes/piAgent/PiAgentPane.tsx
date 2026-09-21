@@ -10,6 +10,7 @@ import type { PiAgentTabRequest, PiCommand } from "../../../../shared/ipc/piRpc"
 import * as appActions from "../../../app/appActions";
 import { findPane } from "../../../domain/layout/layoutTree";
 import { AnsiText } from "../../../lib/ansi";
+import { reportError } from "../../../lib/errorLog";
 import { useUiStore } from "../../../state/uiStore";
 import { useConfigStore } from "../../../state/configStore";
 import { useTaskStore } from "../../../state/taskStore";
@@ -167,9 +168,13 @@ export function PiAgentPane({
     return () => window.clearTimeout(timer);
   }, [historyLabel]);
   const sessionFile = state.state?.sessionFile;
+  const sessionPersistenceRef = useRef<string | null>(null);
   useEffect(() => {
     if (sessionFile && sessionFile !== paneMeta?.metadata?.piSessionFile) {
       if (taskExecution?.taskId) {
+        const persistenceKey = `${taskExecution.taskId}:${paneId}:${sessionFile}`;
+        if (sessionPersistenceRef.current === persistenceKey) return;
+        sessionPersistenceRef.current = persistenceKey;
         void window.swath.tasks
           .rpc({
             op: "updatePane",
@@ -178,7 +183,20 @@ export function PiAgentPane({
             sessionId: sessionFile,
             operationId: `pane-session:${paneId}:${sessionFile}`,
           })
-          .then(() => useTaskStore.getState().refresh());
+          .then((reply) => {
+            if (
+              reply &&
+              typeof reply === "object" &&
+              "ok" in reply &&
+              (reply as { ok?: unknown }).ok === true
+            )
+              return useTaskStore.getState().refresh();
+          })
+          .catch((error: unknown) => {
+            // Session persistence is bookkeeping, not process health. Keep the live pane stable
+            // if the replicated catalog is briefly locked or behind its leader.
+            reportError("Persisting Pi session", error);
+          });
       } else {
         appActions.setPanePiSessionFile(workspace.id, view.id, paneId, sessionFile);
       }
