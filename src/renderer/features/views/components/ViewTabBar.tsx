@@ -270,7 +270,7 @@ export function TaskTabBar({
                                 title="Move tab left"
                                 disabled={viewIndex === 0}
                                 onClick={() => onReorderView(viewIndex, viewIndex - 1)}
-                                className="rounded px-0.5 text-sm hover:bg-swath-bg hover:text-swath-text disabled:opacity-25"
+                                className="grid size-6 place-items-center rounded text-base [-webkit-app-region:no-drag] [app-region:no-drag] hover:bg-swath-bg hover:text-swath-text disabled:opacity-25"
                               >
                                 ‹
                               </button>
@@ -280,7 +280,7 @@ export function TaskTabBar({
                                 title="Move tab right"
                                 disabled={viewIndex === views.length - 1}
                                 onClick={() => onReorderView(viewIndex, viewIndex + 1)}
-                                className="rounded px-0.5 text-sm hover:bg-swath-bg hover:text-swath-text disabled:opacity-25"
+                                className="grid size-6 place-items-center rounded text-base [-webkit-app-region:no-drag] [app-region:no-drag] hover:bg-swath-bg hover:text-swath-text disabled:opacity-25"
                               >
                                 ›
                               </button>
