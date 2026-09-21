@@ -7,6 +7,14 @@ import { TaskTabBar } from "../views/components/ViewTabBar";
 import { collectPanes } from "../../domain/layout/layoutTree";
 import { setViewedPanes } from "../tabTypes/piAgent/piActivity";
 
+/** Legacy imports sometimes stored the old pane id here; Pi's --session accepts a JSONL path/id. */
+export function piSessionMetadata(
+  sessionId: string | null | undefined,
+): { metadata: { piSessionFile: string } } | Record<string, never> {
+  const value = sessionId?.trim();
+  return value && !value.startsWith("pane_") ? { metadata: { piSessionFile: value } } : {};
+}
+
 /** Minimal legacy shape required by registered pane renderers; task ownership stays separate. */
 export function taskRendererProjection(
   task: { id: string; title: string },
@@ -33,7 +41,7 @@ export function taskRendererProjection(
           kind: pane.kind as PaneKind,
           title: pane.title ?? undefined,
           cwd,
-          metadata: pane.sessionId ? { piSessionFile: pane.sessionId } : undefined,
+          ...piSessionMetadata(pane.sessionId),
         };
       }
       const first = remap(node.first);
@@ -71,7 +79,7 @@ export function taskRendererProjection(
           kind: pane.kind as PaneKind,
           title: pane.title ?? undefined,
           cwd,
-          ...(pane.sessionId ? { metadata: { piSessionFile: pane.sessionId } } : {}),
+          ...piSessionMetadata(pane.sessionId),
         },
         activePaneId: pane.id,
       }));
@@ -110,7 +118,7 @@ export function taskRendererProjection(
     kind: pane.kind as PaneKind,
     title: pane.title ?? undefined,
     cwd,
-    ...(pane.sessionId ? { metadata: { piSessionFile: pane.sessionId } } : {}),
+    ...piSessionMetadata(pane.sessionId),
   }));
   const views: WorkspaceView[] = leaves.map((pane, index) => ({
     id: `task-view:${pane.id}`,

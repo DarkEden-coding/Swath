@@ -1,5 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { reorderedPaneIds, taskRendererProjection } from "./TaskWorkspace";
+import { piSessionMetadata, reorderedPaneIds, taskRendererProjection } from "./TaskWorkspace";
+
+describe("piSessionMetadata", () => {
+  it("does not pass a migrated pane id to pi as --session", () => {
+    expect(piSessionMetadata("pane_mtx8yd64_18mnuixptl0v2")).toEqual({});
+    expect(piSessionMetadata("/Users/dark/.pi/agent/sessions/chat.jsonl")).toEqual({
+      metadata: { piSessionFile: "/Users/dark/.pi/agent/sessions/chat.jsonl" },
+    });
+  });
+});
 
 describe("reorderedPaneIds", () => {
   it("moves task tabs in both directions using final indices", () => {

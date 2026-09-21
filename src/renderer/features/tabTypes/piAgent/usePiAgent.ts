@@ -52,7 +52,9 @@ function reducer(state: PiPaneState, action: Action): PiPaneState {
     case "exit":
       return { ...state, exited: true, isStreaming: false };
     case "error":
-      return { ...state, error: action.message };
+      // A failed startup fans out several handshake writes. Preserve the first error because it
+      // contains the child exit/stderr; later requests only say that the process is gone.
+      return { ...state, error: state.error ?? action.message };
     case "dismissDialog":
       return dismissDialog(state, action.id);
     case "dismissNotice":
@@ -212,6 +214,7 @@ export function usePiAgent(
       void window.swath.pi
         .rpc({ op: "send", ...target, ...operation, line: JSON.stringify(command) })
         .catch((error: unknown) => {
+          spawnedPanes.delete(paneId);
           dispatch({ type: "error", message: String(error) });
         });
     },
@@ -342,6 +345,7 @@ export function usePiAgent(
     function handleLine(eventPaneId: string, line?: string, exited?: boolean): void {
       if (eventPaneId !== paneId) return;
       if (exited) {
+        spawnedPanes.delete(paneId);
         dispatch({ type: "exit" });
         return;
       }
@@ -461,6 +465,25 @@ export function usePiAgent(
   useEffect(() => {
     if (historyReady && !taskExecution?.readOnly) spawn();
   }, [historyReady, spawn, taskExecution?.readOnly]);
+
+  // A remote executor can answer before its event relay has finished subscribing. Retry the
+  // idempotent state request until one response arrives, rather than leaving the pane forever on
+  // “Starting pi…”. The first retry is delayed so local startup keeps its single fast handshake.
+  useEffect(() => {
+    if (
+      !historyReady ||
+      taskExecution?.readOnly ||
+      state.state ||
+      state.error ||
+      state.exited ||
+      !spawnedPanes.has(paneId)
+    )
+      return;
+    const timer = window.setInterval(() => {
+      send({ id: "startup-state", type: "get_state" });
+    }, 1_500);
+    return () => window.clearInterval(timer);
+  }, [historyReady, paneId, send, state.error, state.exited, state.state, taskExecution?.readOnly]);
 
   return useMemo<PiAgentController>(
     () => ({
