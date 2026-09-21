@@ -431,7 +431,10 @@ impl RemoteServerManager {
 
 fn local_device_id(core: &Core) -> Option<String> {
     config::connection_at(&config::db_path_in(core.data_dir()).ok()?).ok()?.query_row(
-        "SELECT d.id FROM devices d JOIN networks n ON n.id=d.network_id LEFT JOIN catalog_nodes c ON c.network_id=d.network_id LEFT JOIN raft_node_members r ON r.network_id=d.network_id AND r.device_id=d.id WHERE (d.enrollment_id='local-device' OR r.node_id=c.node_id) AND d.tombstoned_at IS NULL AND n.tombstoned_at IS NULL ORDER BY n.created_at,d.id LIMIT 1", [], |row| row.get(0)).optional().ok().flatten()
+        // `local-device` is replicated legacy metadata, so every peer may contain such a row.
+        // The Raft node recorded for this database is the authoritative local identity; use the
+        // legacy marker only when a pre-Raft database has no catalog-node mapping yet.
+        "SELECT d.id FROM devices d JOIN networks n ON n.id=d.network_id LEFT JOIN catalog_nodes c ON c.network_id=d.network_id LEFT JOIN raft_node_members r ON r.network_id=d.network_id AND r.device_id=d.id WHERE (d.enrollment_id='local-device' OR r.node_id=c.node_id) AND d.tombstoned_at IS NULL AND n.tombstoned_at IS NULL ORDER BY CASE WHEN r.node_id=c.node_id THEN 0 ELSE 1 END,n.created_at,d.id LIMIT 1", [], |row| row.get(0)).optional().ok().flatten()
 }
 
 fn run_tailscale(args: &[&str]) -> Result<Output, String> {
@@ -2682,6 +2685,33 @@ mod tests {
             "Bearer distributed-credential".parse().unwrap(),
         );
         assert!(peer_authorized(&context(core, "a"), &headers));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn local_device_prefers_the_raft_node_over_replicated_legacy_marker() {
+        let root = std::env::temp_dir().join(format!(
+            "swath-local-device-resolution-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let core = Core::start(root.clone(), ConnectorEvents::new()).unwrap();
+        catalog(&core, "a");
+        let conn = config::connection_at(&config::db_path_in(core.data_dir()).unwrap()).unwrap();
+        conn.execute(
+            "INSERT INTO catalog_nodes(network_id,node_id,endpoint,updated_at) VALUES('n',22,'http://b',0)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO raft_node_members(network_id,device_id,node_id,endpoint) VALUES('n','b',22,'http://b')",
+            [],
+        )
+        .unwrap();
+
+        assert_eq!(local_device_id(&core).as_deref(), Some("b"));
+        drop(conn);
+        drop(core);
         let _ = fs::remove_dir_all(root);
     }
 
