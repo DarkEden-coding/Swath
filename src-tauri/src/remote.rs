@@ -379,8 +379,8 @@ impl RemoteServerManager {
                 })
                 .await;
         });
-        // A learner may have been offline while its connector address changed. Re-advertise it
-        // after the listener exists so the leader can resume replication without a manual DB edit.
+        // A node may have been offline while its connector address changed. Re-advertise it after
+        // the listener exists so the leader can resume replication without a manual DB edit.
         tokio::spawn(register_local_learner_endpoint(context.clone()));
         *self.running.lock().unwrap() = Some(RunningServer {
             options,
@@ -699,7 +699,7 @@ async fn raft_write(
         })
 }
 
-/// The leader updates an existing learner's network address through OpenRaft. This is deliberately
+/// The leader updates an existing node's network address through OpenRaft. This is deliberately
 /// not a catalog mutation: Raft membership owns node addresses, while the catalog owns projects.
 async fn raft_learner_endpoint(
     State(ctx): State<ServerContext>,
@@ -725,11 +725,11 @@ async fn raft_learner_endpoint(
             Json(json!({"error":error.to_string()})),
         )
     })?;
-    let registered: Option<(i64, i64)> = db
+    let registered: Option<i64> = db
         .query_row(
-            "SELECT r.node_id,COALESCE(c.voter,0) FROM raft_node_members r LEFT JOIN coordinator_members c ON c.network_id=r.network_id AND c.device_id=r.device_id WHERE r.device_id=?1",
+            "SELECT r.node_id FROM raft_node_members r WHERE r.device_id=?1",
             [&request.device_id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| row.get(0),
         )
         .optional()
         .map_err(|error| {
@@ -738,10 +738,10 @@ async fn raft_learner_endpoint(
                 Json(json!({"error":error.to_string()})),
             )
         })?;
-    if registered != Some((request.node_id, 0)) {
+    if registered != Some(request.node_id) {
         return Err((
             StatusCode::BAD_REQUEST,
-            Json(json!({"error":"learner_identity_mismatch"})),
+            Json(json!({"error":"node_identity_mismatch"})),
         ));
     }
     // A previously offline learner can be behind the leader's compacted log.  Make a fresh
@@ -752,7 +752,7 @@ async fn raft_learner_endpoint(
             Json(json!({"error":error.to_string()})),
         )
     })?;
-    raft.add_learner(
+    raft.update_node(
         request.node_id as network::raft::NodeId,
         BasicNode::new(request.endpoint),
     )
@@ -775,21 +775,18 @@ async fn register_local_learner_endpoint(ctx: ServerContext) {
     else {
         return;
     };
-    let local: Option<(String, i64, i64)> = db
+    let local: Option<(String, i64)> = db
         .query_row(
-            "SELECT r.network_id,r.node_id,COALESCE(c.voter,0) FROM raft_node_members r LEFT JOIN coordinator_members c ON c.network_id=r.network_id AND c.device_id=r.device_id WHERE r.device_id=?1",
+            "SELECT r.network_id,r.node_id FROM raft_node_members r WHERE r.device_id=?1",
             [device_id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .optional()
         .ok()
         .flatten();
-    let Some((network_id, node_id, voter)) = local else {
+    let Some((network_id, node_id)) = local else {
         return;
     };
-    if voter != 0 {
-        return;
-    }
     let peers: Vec<(String, String)> = db
         .prepare(
             "SELECT c.endpoint,c.credential FROM raft_node_members r JOIN device_connectors c ON c.device_id=r.device_id WHERE r.network_id=?1 AND r.device_id!=?2 ORDER BY r.node_id",
@@ -801,6 +798,18 @@ async fn register_local_learner_endpoint(ctx: ServerContext) {
         })
         .unwrap_or_default();
     drop(db);
+    if let Some(raft) = ctx.raft.as_ref() {
+        if raft
+            .update_node(
+                node_id as network::raft::NodeId,
+                BasicNode::new(ctx.connector_endpoint.clone()),
+            )
+            .await
+            .is_ok()
+        {
+            return;
+        }
+    }
     for (endpoint, credential) in peers {
         let response = reqwest::Client::new()
             .post(format!(

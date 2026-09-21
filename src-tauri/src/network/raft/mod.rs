@@ -1329,6 +1329,23 @@ impl RaftStateMachine<CatalogType> for SqliteStore {
                     r.push(response);
                 }
                 EntryPayload::Membership(m) => {
+                    // Raft membership is authoritative for node addresses. Mirror committed
+                    // address changes into the relational routing projection on every peer so
+                    // forwarded client writes do not keep dialing a stale connector URL.
+                    let c = self.db.lock().unwrap();
+                    for (node_id, node) in m.nodes() {
+                        c.execute(
+                            "UPDATE raft_node_members SET endpoint=?1 WHERE network_id=?2 AND node_id=?3",
+                            params![node.addr, self.network_id, *node_id as i64],
+                        )
+                        .map_err(Self::err)?;
+                        c.execute(
+                            "UPDATE device_connectors SET endpoint=?1,updated_at=strftime('%s','now') WHERE device_id=(SELECT device_id FROM raft_node_members WHERE network_id=?2 AND node_id=?3)",
+                            params![node.addr, self.network_id, *node_id as i64],
+                        )
+                        .map_err(Self::err)?;
+                    }
+                    drop(c);
                     s.membership = StoredMembership::new(Some(e.log_id), m);
                     r.push(CatalogResponse::legacy(None))
                 }
@@ -1931,6 +1948,21 @@ impl CatalogRaft {
         openraft::error::RaftError<NodeId, openraft::error::ClientWriteError<NodeId, BasicNode>>,
     > {
         self.raft.add_learner(id, node, true).await
+    }
+    pub async fn update_node(
+        &self,
+        id: NodeId,
+        node: BasicNode,
+    ) -> Result<
+        openraft::raft::ClientWriteResponse<CatalogType>,
+        openraft::error::RaftError<NodeId, openraft::error::ClientWriteError<NodeId, BasicNode>>,
+    > {
+        self.raft
+            .change_membership(
+                openraft::ChangeMembers::SetNodes(BTreeMap::from([(id, node)])),
+                true,
+            )
+            .await
     }
     pub async fn change_membership(
         &self,
