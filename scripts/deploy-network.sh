@@ -308,7 +308,7 @@ validate_local() {
     | xargs -0 npx prettier --check --ignore-unknown
   npm run test:unit
   npm test
-  cargo fmt --all -- --check
+  cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
   cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings
   cargo test --manifest-path src-tauri/Cargo.toml --all-targets --no-default-features
   cargo build --manifest-path src-tauri/Cargo.toml --no-default-features --bin swath-headless
