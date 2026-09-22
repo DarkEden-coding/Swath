@@ -1,6 +1,7 @@
 mod process;
 mod replay;
 
+use crate::events::EventSink;
 use crate::types::{
     PtyResizeRequest, TerminalDataEvent, TerminalExitEventPayload, TerminalSessionAttachRequest,
     TerminalSessionStartRequest, TerminalSessionStatus, TERMINAL_REPLAY_DETACHED_MAX_BYTES,
@@ -19,14 +20,15 @@ use std::sync::{
 };
 use std::thread;
 use std::time::Duration;
-use tauri::{AppHandle, Emitter, Window};
+#[cfg(feature = "desktop")]
+use tauri::{Emitter, Window};
 
 const DATA_EVENT: &str = "terminal:data";
 const EXIT_EVENT: &str = "terminal:exit";
 
 /// Owns and coordinates all PTY-backed terminal sessions.
 pub struct TerminalManager {
-    app: AppHandle,
+    events: EventSink,
     sessions: Mutex<HashMap<String, Arc<TerminalSession>>>,
 }
 
@@ -44,9 +46,9 @@ struct TerminalSession {
 
 impl TerminalManager {
     /// Creates a terminal manager that emits session events through `app`.
-    pub fn new(app: AppHandle) -> Self {
+    pub fn new(events: EventSink) -> Self {
         Self {
-            app,
+            events,
             sessions: Mutex::new(HashMap::new()),
         }
     }
@@ -62,14 +64,14 @@ impl TerminalManager {
             }
             Err(err) => {
                 // Make startup failures visible in the terminal pane, matching Electron behavior.
-                let _ = self.app.emit(
+                self.events.emit(
                     DATA_EVENT,
                     TerminalDataEvent {
                         session_id: session_id.clone(),
                         data: format!("\r\nFailed to start terminal: {err}\r\n"),
                     },
                 );
-                let _ = self.app.emit(
+                self.events.emit(
                     EXIT_EVENT,
                     TerminalExitEventPayload {
                         session_id,
@@ -108,7 +110,7 @@ impl TerminalManager {
         if let Some(session) = session {
             session.running.store(false, Ordering::SeqCst);
             let _ = session.child.lock().unwrap().kill();
-            let _ = self.app.emit(
+            self.events.emit(
                 EXIT_EVENT,
                 TerminalExitEventPayload {
                     session_id: session_id.to_string(),
@@ -158,6 +160,7 @@ impl TerminalManager {
     }
 
     /// Emits buffered output for a session to one window.
+    #[cfg(feature = "desktop")]
     pub fn replay_to_window(
         &self,
         window: &Window,
@@ -263,7 +266,7 @@ impl TerminalManager {
     }
 
     fn start_reader(&self, session: Arc<TerminalSession>, reader: &mut Box<dyn Read + Send>) {
-        let app = self.app.clone();
+        let events = self.events.clone();
         let mut reader = std::mem::replace(reader, Box::new(std::io::empty()));
         thread::spawn(move || {
             let mut buf = [0u8; 8192];
@@ -275,7 +278,7 @@ impl TerminalManager {
                         for data in decoder.push(&buf[..n]) {
                             append_replay(&session, &data);
                             if session.stream_to_ui.load(Ordering::Relaxed) {
-                                let _ = app.emit(
+                                events.emit(
                                     DATA_EVENT,
                                     TerminalDataEvent {
                                         session_id: session.id.clone(),
@@ -291,7 +294,7 @@ impl TerminalManager {
             if let Some(data) = decoder.finish() {
                 append_replay(&session, &data);
                 if session.stream_to_ui.load(Ordering::Relaxed) {
-                    let _ = app.emit(
+                    events.emit(
                         DATA_EVENT,
                         TerminalDataEvent {
                             session_id: session.id.clone(),
@@ -304,13 +307,13 @@ impl TerminalManager {
     }
 
     fn start_watcher(&self, session: Arc<TerminalSession>) {
-        let app = self.app.clone();
+        let events = self.events.clone();
         thread::spawn(move || {
             while session.running.load(Ordering::SeqCst) {
                 if let Ok(Some(status)) = session.child.lock().unwrap().try_wait() {
                     session.running.store(false, Ordering::SeqCst);
                     let code = status.exit_code() as i32;
-                    let _ = app.emit(
+                    events.emit(
                         EXIT_EVENT,
                         TerminalExitEventPayload {
                             session_id: session.id.clone(),
@@ -328,13 +331,13 @@ impl TerminalManager {
     fn replay_to_app(&self, session_id: &str) -> Result<()> {
         let data = self.replay_bytes(session_id)?;
         if !data.is_empty() {
-            self.app.emit(
+            self.events.emit(
                 DATA_EVENT,
                 TerminalDataEvent {
                     session_id: session_id.to_string(),
                     data,
                 },
-            )?;
+            );
         }
         Ok(())
     }

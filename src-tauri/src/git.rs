@@ -1,3 +1,4 @@
+use crate::events::EventSink;
 use crate::types::{GitDataEvent, GIT_RUN_MAX_BUFFER_BYTES};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
@@ -6,7 +7,6 @@ use std::io::Read;
 use std::path::{Component, Path};
 use std::process::{Command, Stdio};
 use std::thread;
-use tauri::{AppHandle, Emitter};
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
@@ -29,7 +29,7 @@ struct RunGitResult {
 
 /// Optional live-output sink for a single git RPC run.
 struct StreamTarget {
-    app: AppHandle,
+    events: EventSink,
     run_id: String,
 }
 
@@ -38,7 +38,7 @@ impl StreamTarget {
         if data.is_empty() {
             return;
         }
-        let _ = self.app.emit(
+        self.events.emit(
             GIT_DATA_EVENT,
             GitDataEvent {
                 run_id: self.run_id.clone(),
@@ -119,7 +119,7 @@ fn run_git(cwd: &str, args: &[&str], stream: Option<&StreamTarget>) -> RunGitRes
         read_capped(
             stdout,
             stream.map(|s| StreamTarget {
-                app: s.app.clone(),
+                events: s.events.clone(),
                 run_id: s.run_id.clone(),
             }),
         )
@@ -128,7 +128,7 @@ fn run_git(cwd: &str, args: &[&str], stream: Option<&StreamTarget>) -> RunGitRes
         read_capped(
             stderr,
             stream.map(|s| StreamTarget {
-                app: s.app.clone(),
+                events: s.events.clone(),
                 run_id: s.run_id.clone(),
             }),
         )
@@ -189,13 +189,13 @@ fn paths_field(v: &Value) -> Option<Vec<String>> {
         .collect()
 }
 
-fn stream_from_request(app: &AppHandle, request: &Value) -> Option<StreamTarget> {
+fn stream_from_request(events: &EventSink, request: &Value) -> Option<StreamTarget> {
     let run_id = str_field(request, "runId")?.trim();
     if run_id.is_empty() {
         return None;
     }
     Some(StreamTarget {
-        app: app.clone(),
+        events: events.clone(),
         run_id: run_id.to_string(),
     })
 }
@@ -526,7 +526,7 @@ fn list_branches(cwd: &str) -> Value {
 }
 
 /// Dispatches a JSON Git request and returns its JSON response.
-pub fn rpc(app: &AppHandle, request: Value) -> GitResult<Value> {
+pub fn rpc(events: &EventSink, request: Value) -> GitResult<Value> {
     let op = str_field(&request, "op").unwrap_or("");
     let cwd = str_field(&request, "cwd").unwrap_or("").trim();
     if cwd.is_empty() {
@@ -534,7 +534,7 @@ pub fn rpc(app: &AppHandle, request: Value) -> GitResult<Value> {
             json!({ "ok": false, "error": "Invalid git request", "exitCode": 1, "stdout": "", "stderr": "Invalid git request" }),
         );
     }
-    let stream = stream_from_request(app, &request);
+    let stream = stream_from_request(events, &request);
     Ok(match op {
         "getStatus" => get_status(cwd),
         "stagePaths" => {

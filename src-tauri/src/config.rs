@@ -1,12 +1,18 @@
 use crate::types::*;
 use anyhow::{anyhow, Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
-use std::{collections::HashMap, fs, path::PathBuf};
+use std::{
+    collections::HashMap,
+    fs,
+    path::{Path, PathBuf},
+};
+#[cfg(feature = "desktop")]
 use tauri::{AppHandle, Manager};
 
 const DB_FILE: &str = "swath.sqlite3";
 
 /// Resolves and creates the application data directory for the config database.
+#[cfg(feature = "desktop")]
 fn db_path(app: &AppHandle) -> Result<PathBuf> {
     let dir = app
         .path()
@@ -17,11 +23,19 @@ fn db_path(app: &AppHandle) -> Result<PathBuf> {
 }
 
 /// Opens the config database and ensures its schema is ready.
+#[cfg(feature = "desktop")]
 fn connection(app: &AppHandle) -> Result<Connection> {
     let file = db_path(app)?;
     migrate_legacy_sqlite_db(app, &file).ok();
+    connection_at(&file)
+}
+
+fn connection_at(file: &Path) -> Result<Connection> {
+    if let Some(parent) = file.parent() {
+        fs::create_dir_all(parent)?;
+    }
     let conn =
-        Connection::open(&file).with_context(|| format!("failed to open {}", file.display()))?;
+        Connection::open(file).with_context(|| format!("failed to open {}", file.display()))?;
     conn.pragma_update(None, "journal_mode", "WAL")?;
     conn.execute(
         "CREATE TABLE IF NOT EXISTS app_config (
@@ -35,6 +49,7 @@ fn connection(app: &AppHandle) -> Result<Connection> {
 }
 
 /// Copies a legacy database into the current app data directory when needed.
+#[cfg(feature = "desktop")]
 fn migrate_legacy_sqlite_db(_app: &AppHandle, new_path: &PathBuf) -> Result<()> {
     if new_path.exists() {
         return Ok(());
@@ -52,6 +67,7 @@ fn migrate_legacy_sqlite_db(_app: &AppHandle, new_path: &PathBuf) -> Result<()> 
     Ok(())
 }
 
+#[cfg(feature = "desktop")]
 fn legacy_user_data_path() -> Option<PathBuf> {
     #[cfg(target_os = "macos")]
     {
@@ -77,8 +93,16 @@ fn legacy_user_data_path() -> Option<PathBuf> {
 }
 
 /// Loads and normalizes the persisted application configuration.
+#[cfg(feature = "desktop")]
 pub fn load(app: &AppHandle) -> Result<AppConfig> {
-    let conn = connection(app)?;
+    load_connection(connection(app)?)
+}
+
+pub fn load_in(data_dir: &Path) -> Result<AppConfig> {
+    load_connection(connection_at(&data_dir.join(DB_FILE))?)
+}
+
+fn load_connection(conn: Connection) -> Result<AppConfig> {
     let json: Option<String> = conn
         .query_row("SELECT json FROM app_config WHERE id = 1", [], |row| {
             row.get(0)
@@ -96,8 +120,16 @@ pub fn load(app: &AppHandle) -> Result<AppConfig> {
 }
 
 /// Normalizes and persists the application configuration.
+#[cfg(feature = "desktop")]
 pub fn save(app: &AppHandle, config: &AppConfig) -> Result<()> {
-    let conn = connection(app)?;
+    save_connection(connection(app)?, config)
+}
+
+pub fn save_in(data_dir: &Path, config: &AppConfig) -> Result<()> {
+    save_connection(connection_at(&data_dir.join(DB_FILE))?, config)
+}
+
+fn save_connection(conn: Connection, config: &AppConfig) -> Result<()> {
     let mut normalized = config.clone();
     normalize_config(&mut normalized);
     if normalized.version != 2 {

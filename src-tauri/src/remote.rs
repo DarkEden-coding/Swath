@@ -3,7 +3,7 @@
 //! One WebSocket multiplexes RPC responses and live terminal/Git/Pi events. This avoids polling,
 //! duplicates no pane logic, and lets the exact same renderer run in a browser.
 
-use crate::{ask_images, config, files, git, pi_agent, AppState};
+use crate::{ask_images, config, events::EventSink, files, git, pi_agent, AppState};
 use axum::{
     body::Body,
     extract::{
@@ -23,11 +23,14 @@ use serde_json::{json, Value};
 use std::{
     collections::HashMap,
     net::IpAddr,
-    path::Path,
+    path::{Path, PathBuf},
     process::{Command, Output},
     sync::Mutex,
 };
+#[cfg(feature = "desktop")]
 use tauri::{AppHandle, Listener};
+#[cfg(not(feature = "desktop"))]
+type AppHandle = ();
 use tokio::{
     net::TcpListener,
     sync::{broadcast, oneshot},
@@ -71,7 +74,8 @@ struct RunningServer {
 }
 
 pub struct RemoteServerManager {
-    app: AppHandle,
+    app: Option<AppHandle>,
+    data_dir: Option<PathBuf>,
     machine_id: String,
     running: Mutex<Option<RunningServer>>,
     events: broadcast::Sender<String>,
@@ -79,7 +83,9 @@ pub struct RemoteServerManager {
 
 #[derive(Clone)]
 struct ServerContext {
-    app: AppHandle,
+    app: Option<AppHandle>,
+    data_dir: Option<PathBuf>,
+    events_sink: EventSink,
     swath: AppState,
     token: String,
     machine_id: String,
@@ -87,6 +93,7 @@ struct ServerContext {
 }
 
 impl RemoteServerManager {
+    #[cfg(feature = "desktop")]
     pub fn new(app: AppHandle) -> Self {
         let hostname = hostname::get()
             .ok()
@@ -106,10 +113,39 @@ impl RemoteServerManager {
             });
         }
         Self {
-            app,
+            app: Some(app),
+            data_dir: None,
             machine_id,
             running: Mutex::new(None),
             events,
+        }
+    }
+
+    pub fn new_headless(data_dir: PathBuf) -> Self {
+        let hostname = hostname::get()
+            .ok()
+            .and_then(|v| v.into_string().ok())
+            .unwrap_or_else(|| "swath-device".into());
+        let machine_id = hostname
+            .to_lowercase()
+            .replace(|c: char| !c.is_ascii_alphanumeric() && c != '-', "-");
+        let (events, _) = broadcast::channel(1024);
+        Self {
+            app: None,
+            data_dir: Some(data_dir),
+            machine_id,
+            running: Mutex::new(None),
+            events,
+        }
+    }
+
+    pub fn event_sink(&self) -> EventSink {
+        match &self.app {
+            #[cfg(feature = "desktop")]
+            Some(app) => EventSink::Desktop(app.clone()),
+            None => EventSink::Headless(self.events.clone()),
+            #[cfg(not(feature = "desktop"))]
+            Some(_) => EventSink::Headless(self.events.clone()),
         }
     }
 
@@ -151,6 +187,8 @@ impl RemoteServerManager {
             .map_err(|e| format!("Unable to bind connector: {e}"))?;
         let context = ServerContext {
             app: self.app.clone(),
+            data_dir: self.data_dir.clone(),
+            events_sink: self.event_sink(),
             swath,
             token: options.token.clone(),
             machine_id: self.machine_id.clone(),
@@ -190,6 +228,26 @@ impl RemoteServerManager {
             if server.options.tailscale_https {
                 let _ = run_tailscale(&["serve", "--https=443", "off"]);
             }
+        }
+    }
+}
+
+impl ServerContext {
+    fn load_config(&self) -> anyhow::Result<crate::types::AppConfig> {
+        match (&self.app, &self.data_dir) {
+            #[cfg(feature = "desktop")]
+            (Some(app), _) => config::load(app),
+            (_, Some(dir)) => config::load_in(dir),
+            _ => anyhow::bail!("remote server has no config storage"),
+        }
+    }
+
+    fn save_config(&self, value: &crate::types::AppConfig) -> anyhow::Result<()> {
+        match (&self.app, &self.data_dir) {
+            #[cfg(feature = "desktop")]
+            (Some(app), _) => config::save(app, value),
+            (_, Some(dir)) => config::save_in(dir, value),
+            _ => anyhow::bail!("remote server has no config storage"),
         }
     }
 }
@@ -296,7 +354,7 @@ async fn handshake(State(ctx): State<ServerContext>, headers: HeaderMap) -> impl
             Json(json!({"error":"unauthorized"})),
         );
     }
-    match config::load(&ctx.app) {
+    match ctx.load_config() {
         Ok(mut cfg) => {
             cfg.remote_connections = None;
             (
@@ -369,16 +427,17 @@ fn field<T: serde::de::DeserializeOwned>(params: &Value, name: &str) -> Result<T
 async fn dispatch(ctx: &ServerContext, method: &str, params: Value) -> Result<Value, String> {
     match method {
         "config.load" => {
-            let mut value = config::load(&ctx.app).map_err(|e| e.to_string())?;
+            let mut value = ctx.load_config().map_err(|e| e.to_string())?;
             value.remote_connections = None;
             serde_json::to_value(value).map_err(|e| e.to_string())
         }
         "config.save" => {
             let mut value: crate::types::AppConfig = field(&params, "config")?;
-            value.remote_connections = config::load(&ctx.app)
+            value.remote_connections = ctx
+                .load_config()
                 .ok()
                 .and_then(|saved| saved.remote_connections);
-            config::save(&ctx.app, &value).map_err(|e| e.to_string())?;
+            ctx.save_config(&value).map_err(|e| e.to_string())?;
             Ok(Value::Null)
         }
         "terminal.create" => {
@@ -450,10 +509,10 @@ async fn dispatch(ctx: &ServerContext, method: &str, params: Value) -> Result<Va
                 .is_busy(&field::<String>(&params, "sessionId")?)
                 .map_err(|e| e.to_string())?,
         )),
-        "git.rpc" => git::rpc(&ctx.app, params).map_err(|e| e.to_string()),
+        "git.rpc" => git::rpc(&ctx.events_sink, params).map_err(|e| e.to_string()),
         "files.rpc" => files::rpc(params),
         "askImages.load" => ask_images::load(params),
-        "pi.rpc" => pi_agent::rpc(&ctx.app, &ctx.swath.pi, params),
+        "pi.rpc" => pi_agent::rpc(&ctx.events_sink, &ctx.swath.pi, params),
         "directories.list" => list_directories(params),
         _ => Err(format!("unsupported remote method: {method}")),
     }
@@ -576,9 +635,13 @@ fn asset_impl(
 
 #[cfg(test)]
 mod tests {
-    use super::{list_directories, tailscale_https_url};
+    use super::{
+        dispatch, list_directories, tailscale_https_url, RemoteServerManager, ServerContext,
+    };
+    use crate::{pi_agent::PiManager, terminal::TerminalManager, AppState};
     use serde_json::json;
     use std::fs;
+    use std::sync::Arc;
 
     #[test]
     fn directory_browser_returns_folders_only() {
@@ -610,5 +673,77 @@ mod tests {
             tailscale_https_url(output).as_deref(),
             Some("https://swath.example.ts.net/")
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn headless_uses_main_rpc_and_event_protocol() {
+        let dir = std::env::temp_dir().join(format!(
+            "swath-headless-rpc-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let remote = Arc::new(RemoteServerManager::new_headless(dir.clone()));
+        let state = AppState {
+            terminal: Arc::new(TerminalManager::new(remote.event_sink())),
+            pi: Arc::new(PiManager::new()),
+            remote: remote.clone(),
+        };
+        let context = ServerContext {
+            app: None,
+            data_dir: Some(dir.clone()),
+            events_sink: remote.event_sink(),
+            swath: state.clone(),
+            token: "test-token".into(),
+            machine_id: "test-machine".into(),
+            events: remote.events.clone(),
+        };
+        let config = dispatch(&context, "config.load", json!({})).await.unwrap();
+        assert_eq!(config["version"], 2);
+        dispatch(&context, "config.save", json!({"config":config}))
+            .await
+            .unwrap();
+        assert_eq!(
+            dispatch(&context, "config.load", json!({})).await.unwrap()["version"],
+            2
+        );
+        let git = dispatch(&context, "git.rpc", json!({"op":"getStatus","cwd":dir}))
+            .await
+            .unwrap();
+        assert!(git.is_object());
+
+        let mut events = remote.events.subscribe();
+        dispatch(
+            &context,
+            "terminal.create",
+            json!({
+                "sessionId":"headless-test", "cwd":dir, "cols":80, "rows":24,
+                "shellProfile":{"id":"test","name":"test","command":"/bin/sh",
+                    "args":["-c","printf headless-event-ok"]}
+            }),
+        )
+        .await
+        .unwrap();
+        let observed = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while let Ok(message) = events.recv().await {
+                let value: serde_json::Value = serde_json::from_str(&message).unwrap();
+                if value["channel"] == "terminal:data"
+                    && value["payload"]["data"]
+                        .as_str()
+                        .is_some_and(|text| text.contains("headless-event-ok"))
+                {
+                    return true;
+                }
+            }
+            false
+        })
+        .await
+        .unwrap();
+        assert!(observed);
+        state.terminal.kill_all();
+        fs::remove_dir_all(dir).unwrap();
     }
 }

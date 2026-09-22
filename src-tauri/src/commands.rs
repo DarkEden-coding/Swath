@@ -157,7 +157,7 @@ pub async fn git_rpc(
     request: serde_json::Value,
 ) -> CommandResult<serde_json::Value> {
     tauri::async_runtime::spawn_blocking(move || {
-        git::rpc(&app, request).map_err(|err| err.to_string())
+        git::rpc(&crate::events::EventSink::Desktop(app), request).map_err(|err| err.to_string())
     })
     .await
     .map_err(|err| err.to_string())?
@@ -183,7 +183,7 @@ pub fn pi_rpc(
     state: State<'_, AppState>,
     request: serde_json::Value,
 ) -> CommandResult<serde_json::Value> {
-    pi_agent::rpc(&app, &state.pi, request)
+    pi_agent::rpc(&crate::events::EventSink::Desktop(app), &state.pi, request)
 }
 
 #[tauri::command]

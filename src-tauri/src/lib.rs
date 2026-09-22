@@ -1,18 +1,23 @@
 mod ask_images;
+#[cfg(feature = "desktop")]
 mod commands;
 mod config;
+mod events;
 mod files;
 mod git;
-#[cfg(target_os = "macos")]
+#[cfg(all(feature = "desktop", target_os = "macos"))]
 mod menu;
 mod pi_agent;
+#[cfg(feature = "desktop")]
 mod platform;
 mod remote;
 mod terminal;
 mod types;
+#[cfg(feature = "desktop")]
 mod window_state;
 
 use std::sync::Arc;
+#[cfg(feature = "desktop")]
 use tauri::{Manager, RunEvent, WindowEvent};
 
 use pi_agent::PiManager;
@@ -26,13 +31,16 @@ pub struct AppState {
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
+#[cfg(feature = "desktop")]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
-            let terminal = Arc::new(TerminalManager::new(app.handle().clone()));
+            let terminal = Arc::new(TerminalManager::new(events::EventSink::Desktop(
+                app.handle().clone(),
+            )));
             let pi = Arc::new(PiManager::new());
             let remote = Arc::new(remote::RemoteServerManager::new(app.handle().clone()));
             let state = AppState {
@@ -130,4 +138,59 @@ pub fn run() {
                 }
             }
         });
+}
+
+/// Run the existing v1 connector and execution RPCs without creating a Tauri window.
+pub async fn run_headless(
+    data_dir: std::path::PathBuf,
+    options: remote::RemoteServerOptions,
+) -> anyhow::Result<()> {
+    use fs2::FileExt;
+    use std::fs::{self, File};
+    if !data_dir.is_absolute() {
+        anyhow::bail!("SWATH_DATA_DIR must be an absolute path");
+    }
+    fs::create_dir_all(&data_dir)?;
+    let lock = File::create(data_dir.join("runtime.lock"))?;
+    lock.try_lock_exclusive()
+        .map_err(|_| anyhow::anyhow!("another Swath runtime owns {}", data_dir.display()))?;
+    let remote = Arc::new(remote::RemoteServerManager::new_headless(data_dir));
+    let state = AppState {
+        terminal: Arc::new(TerminalManager::new(remote.event_sink())),
+        pi: Arc::new(PiManager::new()),
+        remote: remote.clone(),
+    };
+    remote
+        .start(options, state.clone())
+        .await
+        .map_err(anyhow::Error::msg)?;
+    #[cfg(unix)]
+    {
+        let mut terminate =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+        tokio::select! {
+            result = tokio::signal::ctrl_c() => result?,
+            _ = terminate.recv() => {},
+        }
+    }
+    #[cfg(not(unix))]
+    tokio::signal::ctrl_c().await?;
+    remote.stop().await;
+    state.terminal.kill_all();
+    state.pi.kill_all();
+    drop(lock);
+    Ok(())
+}
+
+pub fn headless_options(token: String) -> remote::RemoteServerOptions {
+    remote::RemoteServerOptions {
+        bind: std::env::var("SWATH_CONNECTOR_BIND").unwrap_or_else(|_| "127.0.0.1".into()),
+        port: std::env::var("SWATH_CONNECTOR_PORT")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(7878),
+        token,
+        tailscale_https: std::env::var("SWATH_CONNECTOR_TAILSCALE_HTTPS")
+            .is_ok_and(|v| !matches!(v.as_str(), "0" | "false" | "no")),
+    }
 }

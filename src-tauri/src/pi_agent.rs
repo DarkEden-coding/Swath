@@ -4,16 +4,16 @@
 //! commands are written to stdin verbatim. Nothing here parses the RPC schema, so new pi
 //! commands and events need no Rust change.
 
+use crate::events::EventSink;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
 use std::path::Path;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::{Arc, Mutex};
-#[cfg(target_os = "windows")]
-use std::os::windows::process::CommandExt;
-use tauri::{AppHandle, Emitter};
 
 /// Event channel carrying `{ paneId, line }` stdout records and `{ paneId, exit }` notices.
 const PI_EVENT: &str = "pi:event";
@@ -56,7 +56,13 @@ impl PiManager {
         }
     }
 
-    fn spawn(&self, app: &AppHandle, pane_id: &str, cwd: &str, extra_args: &[String]) -> PiResult {
+    fn spawn(
+        &self,
+        events: &EventSink,
+        pane_id: &str,
+        cwd: &str,
+        extra_args: &[String],
+    ) -> PiResult {
         self.kill(pane_id)?;
 
         let temp_dir = std::env::temp_dir();
@@ -103,7 +109,7 @@ impl PiManager {
         // stdout: one JSON record per line. `BufRead::lines()` splits on `\n` only, which is
         // what the RPC framing rules require (U+2028/U+2029 are legal inside JSON strings).
         {
-            let app = app.clone();
+            let events = events.clone();
             let pane_id = pane_id.to_string();
             std::thread::spawn(move || {
                 let reader = BufReader::new(stdout);
@@ -112,9 +118,9 @@ impl PiManager {
                     if line.is_empty() {
                         continue;
                     }
-                    let _ = app.emit(PI_EVENT, json!({ "paneId": &pane_id, "line": line }));
+                    events.emit(PI_EVENT, json!({ "paneId": &pane_id, "line": line }));
                 }
-                let _ = app.emit(PI_EVENT, json!({ "paneId": &pane_id, "exit": true }));
+                events.emit(PI_EVENT, json!({ "paneId": &pane_id, "exit": true }));
             });
         }
 
@@ -399,8 +405,12 @@ fn walk_files(root: &Path, limit: usize) -> Vec<String> {
 }
 
 /// Dispatches a JSON pi RPC request from the renderer.
-pub fn rpc(app: &AppHandle, manager: &PiManager, request: Value) -> PiResult {
-    let op = request.get("op").and_then(Value::as_str).unwrap_or("").trim();
+pub fn rpc(events: &EventSink, manager: &PiManager, request: Value) -> PiResult {
+    let op = request
+        .get("op")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim();
     let pane_id = request
         .get("paneId")
         .and_then(Value::as_str)
@@ -431,7 +441,7 @@ pub fn rpc(app: &AppHandle, manager: &PiManager, request: Value) -> PiResult {
                         .collect()
                 })
                 .unwrap_or_default();
-            manager.spawn(app, pane_id, cwd, &args)
+            manager.spawn(events, pane_id, cwd, &args)
         }
         "send" => {
             let line = request
