@@ -35,6 +35,16 @@ export function formatCost(value: number | undefined): string {
   return value < 0.01 ? `$${value.toFixed(4)}` : `$${value.toFixed(3)}`;
 }
 
+/** Returns whether the selected model can be routed through Codex Everywhere. */
+export function supportsCodexEverywhere(model: PiModel | null | undefined): boolean {
+  return model?.provider === "openai-codex";
+}
+
+/** Reads the persisted routing state published by the Codex Everywhere extension. */
+export function isCodexEverywhereEnabled(status: Record<string, string>): boolean {
+  return status["codex-everywhere"] === "Codex Everywhere: on";
+}
+
 interface PickerProps<T extends string> {
   label: string;
   options: { value: T; label: string }[];
@@ -97,6 +107,7 @@ interface ChromeProps {
   exited: boolean;
   onSetModel: (model: string) => void;
   onSetThinking: (level: PiThinkingLevel) => void;
+  onToggleCodexEverywhere: () => void;
   onAbort: () => void;
   onRestart: () => void;
 }
@@ -116,6 +127,7 @@ export function Chrome({
   exited,
   onSetModel,
   onSetThinking,
+  onToggleCodexEverywhere,
   onAbort,
   onRestart,
 }: ChromeProps): JSX.Element {
@@ -171,6 +183,17 @@ export function Chrome({
             }))}
             onPick={onSetModel}
           />
+          {supportsCodexEverywhere(model) ? (
+            <button
+              type="button"
+              aria-pressed={isCodexEverywhereEnabled(status)}
+              disabled={streaming}
+              className="border border-[var(--pi-border)] px-2 hover:text-[var(--pi-text)] disabled:cursor-not-allowed disabled:opacity-40"
+              onClick={onToggleCodexEverywhere}
+            >
+              CE: {isCodexEverywhereEnabled(status) ? "on" : "off"}
+            </button>
+          ) : null}
           <Picker
             label={`• ${thinkingLevel ?? "?"}`}
             options={thinkingLevels.map((level) => ({ value: level, label: level }))}

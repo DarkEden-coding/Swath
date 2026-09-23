@@ -499,6 +499,7 @@ export function PiAgentPane({ workspace, view, pane }: PaneComponentProps): JSX.
               exited={state.exited}
               onSetModel={agent.setModel}
               onSetThinking={agent.setThinking}
+              onToggleCodexEverywhere={() => agent.prompt("/codex-everywhere toggle")}
               onAbort={agent.abort}
               onRestart={agent.restart}
             />
