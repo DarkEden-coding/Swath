@@ -1,6 +1,7 @@
 use crate::types::*;
 use anyhow::{anyhow, Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
+use serde::Serialize;
 use std::{
     collections::HashMap,
     fs,
@@ -45,6 +46,18 @@ fn connection_at(file: &Path) -> Result<Connection> {
         )",
         [],
     )?;
+    let has_revision = conn
+        .prepare("PRAGMA table_info(app_config)")?
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<rusqlite::Result<Vec<_>>>()?
+        .iter()
+        .any(|column| column == "revision");
+    if !has_revision {
+        conn.execute(
+            "ALTER TABLE app_config ADD COLUMN revision INTEGER NOT NULL DEFAULT 0",
+            [],
+        )?;
+    }
     Ok(conn)
 }
 
@@ -138,10 +151,94 @@ fn save_connection(conn: Connection, config: &AppConfig) -> Result<()> {
     let json = serde_json::to_string_pretty(&normalized)?;
     conn.execute(
         "INSERT INTO app_config (id, json, updated_at) VALUES (1, ?1, strftime('%s','now'))
-         ON CONFLICT(id) DO UPDATE SET json = excluded.json, updated_at = excluded.updated_at",
+         ON CONFLICT(id) DO UPDATE SET json = excluded.json, updated_at = excluded.updated_at, revision = app_config.revision + 1",
         params![json],
     )?;
     Ok(())
+}
+
+#[derive(Serialize)]
+pub struct ConfigSnapshot {
+    pub config: AppConfig,
+    pub revision: u64,
+}
+
+#[cfg(feature = "desktop")]
+pub fn snapshot(app: &AppHandle) -> Result<ConfigSnapshot> {
+    snapshot_connection(connection(app)?)
+}
+
+pub fn snapshot_in(data_dir: &Path) -> Result<ConfigSnapshot> {
+    snapshot_connection(connection_at(&data_dir.join(DB_FILE))?)
+}
+
+fn snapshot_connection(conn: Connection) -> Result<ConfigSnapshot> {
+    let row: Option<(String, u64)> = conn
+        .query_row(
+            "SELECT json, revision FROM app_config WHERE id = 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    let (mut config, revision) = match row {
+        Some((json, revision)) => (serde_json::from_str(&json)?, revision),
+        None => (default_config(), 0),
+    };
+    normalize_config(&mut config);
+    Ok(ConfigSnapshot { config, revision })
+}
+
+#[cfg(feature = "desktop")]
+pub fn commit(app: &AppHandle, config: &AppConfig, revision: u64) -> Result<ConfigSnapshot> {
+    commit_connection(connection(app)?, config, revision)
+}
+
+pub fn commit_in(data_dir: &Path, config: &AppConfig, revision: u64) -> Result<ConfigSnapshot> {
+    commit_connection(connection_at(&data_dir.join(DB_FILE))?, config, revision)
+}
+
+fn commit_connection(
+    mut conn: Connection,
+    config: &AppConfig,
+    revision: u64,
+) -> Result<ConfigSnapshot> {
+    let mut normalized = config.clone();
+    normalize_config(&mut normalized);
+    let tx = conn.transaction()?;
+    if normalized.remote_connections.is_none() {
+        let existing: Option<String> = tx
+            .query_row("SELECT json FROM app_config WHERE id = 1", [], |row| {
+                row.get(0)
+            })
+            .optional()?;
+        if let Some(existing) =
+            existing.and_then(|json| serde_json::from_str::<AppConfig>(&json).ok())
+        {
+            normalized.remote_connections = existing.remote_connections;
+        }
+    }
+    let json = serde_json::to_string_pretty(&normalized)?;
+    let changed = if revision == 0 {
+        tx.execute(
+            "INSERT INTO app_config (id, json, revision, updated_at) VALUES (1, ?1, 1, strftime('%s','now')) ON CONFLICT(id) DO UPDATE SET json = excluded.json, revision = 1, updated_at = strftime('%s','now') WHERE app_config.revision = 0",
+            params![json],
+        )?
+    } else {
+        tx.execute(
+            "UPDATE app_config SET json = ?1, revision = revision + 1, updated_at = strftime('%s','now') WHERE id = 1 AND revision = ?2",
+            params![json, revision],
+        )?
+    };
+    if changed == 0 {
+        return Err(anyhow!(
+            "config conflict: configuration changed; reload and retry"
+        ));
+    }
+    tx.commit()?;
+    Ok(ConfigSnapshot {
+        config: normalized,
+        revision: revision + 1,
+    })
 }
 
 /// Repairs defaults and marks workspaces whose paths are temporarily unavailable.
@@ -281,6 +378,42 @@ pub fn default_shell_profiles() -> Vec<ShellProfile> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn revision_conflicts_and_migrates_legacy_rows() {
+        // A file-backed database exercises the same schema migration as production.
+        let path =
+            std::env::temp_dir().join(format!("swath-config-cas-{}.sqlite3", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let old = Connection::open(&path).unwrap();
+        old.execute_batch("CREATE TABLE app_config (id INTEGER PRIMARY KEY, json TEXT NOT NULL, updated_at INTEGER NOT NULL);").unwrap();
+        drop(old);
+        let config = default_config();
+        assert_eq!(
+            snapshot_connection(connection_at(&path).unwrap())
+                .unwrap()
+                .revision,
+            0
+        );
+        assert_eq!(
+            commit_connection(connection_at(&path).unwrap(), &config, 0)
+                .unwrap()
+                .revision,
+            1
+        );
+        assert!(commit_connection(connection_at(&path).unwrap(), &config, 0)
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("conflict"));
+        assert_eq!(
+            commit_connection(connection_at(&path).unwrap(), &config, 1)
+                .unwrap()
+                .revision,
+            2
+        );
+        let _ = std::fs::remove_file(path);
+    }
 
     #[test]
     fn retains_missing_workspaces_without_persisting_the_missing_flag() {

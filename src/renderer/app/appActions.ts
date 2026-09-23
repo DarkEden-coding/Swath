@@ -11,7 +11,6 @@ import * as settingsActions from "../domain/settings/settingsActions";
 import * as viewActions from "../domain/views/viewActions";
 import * as groupActions from "../domain/workspaces/groupActions";
 import * as workspaceActions from "../domain/workspaces/workspaceActions";
-import { configClient } from "../services/configClient";
 import { dialogClient } from "../services/dialogClient";
 import { useConfigStore } from "../state/configStore";
 import { useUiStore } from "../state/uiStore";
@@ -26,21 +25,16 @@ import { toRemotePath } from "../../shared/ipc/remote";
 import type { RemoteConnection } from "../../shared/types";
 
 /** Commits configuration state and schedules persistence. */
-function commit(config: AppConfig, activePaneId?: string | null): void {
-  useConfigStore.getState().setConfig(config);
-  if (activePaneId !== undefined) useUiStore.getState().setActivePaneId(activePaneId);
-  void configClient.save(config);
-}
-
 /** Applies a mutation to a cloned current configuration. */
 function withConfig(
   mutator: (config: AppConfig) => { config: AppConfig; activePaneId?: string | null } | AppConfig,
 ): void {
-  const current = useConfigStore.getState().config;
-  if (!current) return;
-  const result = mutator(structuredClone(current));
-  if ("config" in result) commit(result.config, result.activePaneId);
-  else commit(result);
+  useConfigStore.getState().mutate((config) => {
+    const result = mutator(config);
+    if ("config" in result && result.activePaneId !== undefined)
+      useUiStore.getState().setActivePaneId(result.activePaneId);
+    return "config" in result ? result.config : result;
+  });
 }
 
 /** Collects all panes belonging to a workspace. */
@@ -172,19 +166,21 @@ export function addRemoteWorkspace(connectionId: string, path: string, name: str
 }
 
 export async function forgetRemote(connectionId: string): Promise<void> {
-  const config = useConfigStore.getState().config;
-  if (!config) return;
-  const nextWorkspaces = config.workspaces.filter(
-    (workspace) => workspace.remoteConnectionId !== connectionId,
-  );
   window.swath.remote.forget(connectionId);
-  commit({
-    ...config,
-    workspaces: nextWorkspaces,
-    remoteConnections: (config.remoteConnections ?? []).filter((item) => item.id !== connectionId),
-    activeWorkspaceId: nextWorkspaces.some((w) => w.id === config.activeWorkspaceId)
-      ? config.activeWorkspaceId
-      : (nextWorkspaces[0]?.id ?? null),
+  withConfig((config) => {
+    const workspaces = config.workspaces.filter(
+      (workspace) => workspace.remoteConnectionId !== connectionId,
+    );
+    return {
+      ...config,
+      workspaces,
+      remoteConnections: (config.remoteConnections ?? []).filter(
+        (item) => item.id !== connectionId,
+      ),
+      activeWorkspaceId: workspaces.some((workspace) => workspace.id === config.activeWorkspaceId)
+        ? config.activeWorkspaceId
+        : (workspaces[0]?.id ?? null),
+    };
   });
 }
 
@@ -203,11 +199,18 @@ export async function addWorkspaceFromFolder(): Promise<void> {
  * Dissolving a group deletes its root, and the root owns real running panes (pi children), so the
  * teardown cannot be attached to the explicit remove path alone.
  */
-function commitDroppingWorkspaces(config: AppConfig, next: AppConfig): void {
+function commitDroppingWorkspaces(
+  config: AppConfig,
+  next: AppConfig,
+  mutate: (config: AppConfig) => AppConfig,
+): void {
   const survivors = new Set(next.workspaces.map((workspace) => workspace.id));
   const dropped = config.workspaces.filter((workspace) => !survivors.has(workspace.id));
   dropped.forEach((workspace) => closeRegisteredPanes(panesForWorkspace(config, workspace.id)));
-  commit(next, workspaceActions.getActivePaneIdForConfig(next));
+  withConfig((current) => {
+    const result = mutate(current);
+    return { config: result, activePaneId: workspaceActions.getActivePaneIdForConfig(result) };
+  });
 }
 
 /** Confirms and removes a workspace and its panes. */
@@ -228,7 +231,11 @@ export async function removeWorkspace(workspaceId: string): Promise<void> {
     });
     if (!confirmed) return;
   }
-  commitDroppingWorkspaces(config, workspaceActions.removeWorkspace(config, workspaceId));
+  commitDroppingWorkspaces(
+    config,
+    workspaceActions.removeWorkspace(config, workspaceId),
+    (current) => workspaceActions.removeWorkspace(current, workspaceId),
+  );
 }
 
 /** Confirms a group mutation that would close shared agents, then applies it. */
@@ -252,7 +259,7 @@ async function applyGroupChange(mutate: (config: AppConfig) => AppConfig): Promi
     });
     if (!confirmed) return;
   }
-  commitDroppingWorkspaces(config, next);
+  commitDroppingWorkspaces(config, next, mutate);
 }
 
 /** Groups two projects into a new group, and opens its shared agents surface. */
@@ -289,10 +296,11 @@ export function renameWorkspace(workspaceId: string, name: string): void {
 
 /** Selects a workspace and its active pane. */
 export function selectWorkspace(workspaceId: string): void {
-  withConfig((config) => {
-    const next = workspaceActions.selectWorkspace(config, workspaceId);
-    return { config: next, activePaneId: workspaceActions.getActivePaneIdForConfig(next) };
-  });
+  const current = useConfigStore.getState().config;
+  if (!current) return;
+  const next = workspaceActions.selectWorkspace(current, workspaceId);
+  useConfigStore.getState().setConfig(next);
+  useUiStore.getState().setActivePaneId(workspaceActions.getActivePaneIdForConfig(next));
 }
 
 /** Moves a workspace between list positions. */
@@ -312,11 +320,17 @@ export function createPiAgentTab(
   start: PiAgentStartOptions,
 ): void {
   let launch: { paneId: string; cwd: string; groupPaths: string[] } | undefined;
+  let createdView: ReturnType<typeof createPiAgentView> | undefined;
   withConfig((config) => ({
     ...config,
     workspaces: config.workspaces.map((workspace) => {
       if (workspace.id !== workspaceId) return workspace;
-      const view = createPiAgentView(title, workspace.path, config.settings, start);
+      const view = (createdView ??= createPiAgentView(
+        title,
+        workspace.path,
+        config.settings,
+        start,
+      ));
       launch = {
         paneId: view.activePaneId,
         cwd: workspace.path,
@@ -352,14 +366,17 @@ export function closeView(workspaceId: string, viewId: string): void {
     )
       return;
     closeRegisteredPanes(panes);
-    const result = viewActions.closeView(config, workspaceId, viewId);
-    commit(result.config, result.activePaneId);
+    withConfig((current) => viewActions.closeView(current, workspaceId, viewId));
   })().catch((error: unknown) => reportError("Closing tab", error));
 }
 
 /** Selects a workspace view. */
 export function selectView(workspaceId: string, viewId: string): void {
-  withConfig((config) => viewActions.selectView(config, workspaceId, viewId));
+  const current = useConfigStore.getState().config;
+  if (current)
+    useConfigStore
+      .getState()
+      .setConfig(viewActions.selectView(current, workspaceId, viewId).config);
 }
 
 /** Renames a workspace view. */
@@ -402,17 +419,18 @@ export function closePane(workspaceId: string, viewId: string, paneId: string): 
     )
       return;
     closeRegisteredPanes([pane]);
-    const result = paneActions.closePane(config, workspaceId, viewId, paneId);
-    commit(result.config, result.activePaneId);
+    withConfig((current) => paneActions.closePane(current, workspaceId, viewId, paneId));
   })().catch((error: unknown) => reportError("Closing pane", error));
 }
 
 /** Sets the active pane for a view. */
 export function setActivePane(workspaceId: string, viewId: string, paneId: string): void {
-  withConfig((config) => ({
-    config: paneActions.setActivePane(config, workspaceId, viewId, paneId),
-    activePaneId: paneId,
-  }));
+  const current = useConfigStore.getState().config;
+  if (!current) return;
+  useConfigStore
+    .getState()
+    .setConfig(paneActions.setActivePane(current, workspaceId, viewId, paneId));
+  useUiStore.getState().setActivePaneId(paneId);
 }
 
 /** Updates a split ratio in a view. */

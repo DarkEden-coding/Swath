@@ -53,13 +53,16 @@ impl TerminalManager {
         }
     }
 
-    /// Replaces any existing session with the same ID and starts a new PTY.
+    /// Starts a PTY only if the session ID is not already in use.
     pub fn create(&self, request: TerminalSessionStartRequest) -> Result<()> {
         let session_id = request.session_id.clone();
-        self.kill(&session_id).ok();
+        let mut sessions = self.sessions.lock().unwrap();
+        if sessions.contains_key(&session_id) {
+            return Ok(());
+        }
         match self.spawn_session(request) {
             Ok(session) => {
-                self.sessions.lock().unwrap().insert(session_id, session);
+                sessions.insert(session_id, session);
                 Ok(())
             }
             Err(err) => {
@@ -151,7 +154,7 @@ impl TerminalManager {
     /// Restarts a session using its original start request.
     pub fn restart(&self, session_id: &str) -> Result<TerminalSessionStatus> {
         let request = self.get(session_id)?.request.clone();
-        self.kill(session_id).ok();
+        self.kill(session_id)?;
         self.create(request)?;
         Ok(TerminalSessionStatus {
             session_id: session_id.to_string(),
@@ -183,14 +186,19 @@ impl TerminalManager {
         })
     }
 
-    /// Replays through the global event bus used by remote connector subscribers.
-    pub fn replay_to_connector(&self, session_id: &str) -> Result<TerminalSessionStatus> {
-        let running = self.get(session_id)?.running.load(Ordering::SeqCst);
-        self.replay_to_app(session_id)?;
-        Ok(TerminalSessionStatus {
-            session_id: session_id.to_string(),
-            running,
-        })
+    /// Returns buffered output to the requesting connector socket only.
+    pub fn replay_to_connector(&self, session_id: &str) -> Result<(TerminalSessionStatus, String)> {
+        let session = self.get(session_id)?;
+        let replay = session.replay.lock().unwrap();
+        let data = replay.text();
+        let running = session.running.load(Ordering::SeqCst);
+        Ok((
+            TerminalSessionStatus {
+                session_id: session_id.to_string(),
+                running,
+            },
+            data,
+        ))
     }
 
     /// Enables live UI events and adjusts replay capacity for attachment state.
@@ -418,6 +426,33 @@ fn synthetic_iterm_session_id(session_id: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::synthetic_iterm_session_id;
+
+    #[cfg(unix)]
+    #[test]
+    fn duplicate_create_preserves_running_session() {
+        use super::{EventSink, TerminalManager};
+        let (sender, _) = tokio::sync::broadcast::channel(16);
+        let manager = TerminalManager::new(EventSink::Headless(sender));
+        let request = serde_json::from_value(serde_json::json!({
+            "sessionId": "duplicate-test", "cwd": "/", "cols": 80, "rows": 24,
+            "shellProfile": {"id": "test", "name": "test", "command": "/bin/sh", "args": ["-c", "sleep 10"]}
+        })).unwrap();
+        manager.create(request).unwrap();
+        let first = manager.get("duplicate-test").unwrap();
+        manager
+            .create(
+                serde_json::from_value(serde_json::json!({
+                    "sessionId": "duplicate-test", "cwd": "/", "cols": 40, "rows": 10
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+        assert!(std::sync::Arc::ptr_eq(
+            &first,
+            &manager.get("duplicate-test").unwrap()
+        ));
+        manager.kill_all();
+    }
 
     #[test]
     fn iterm_session_id_includes_session_id() {

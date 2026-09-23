@@ -1,6 +1,6 @@
 use crate::types::*;
 use crate::{ask_images, config, files, git, pi_agent, platform, AppState};
-use tauri::{AppHandle, State, Window};
+use tauri::{AppHandle, Emitter, State, Window};
 
 pub type CommandResult<T> = Result<T, String>;
 
@@ -17,6 +17,26 @@ pub fn config_load(app: AppHandle) -> CommandResult<AppConfig> {
 #[tauri::command]
 pub fn config_save(app: AppHandle, config: AppConfig) -> CommandResult<()> {
     config::save(&app, &config).map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+pub fn config_snapshot(app: AppHandle) -> CommandResult<config::ConfigSnapshot> {
+    config::snapshot(&app).map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+pub fn config_commit(
+    app: AppHandle,
+    config: AppConfig,
+    revision: u64,
+) -> CommandResult<config::ConfigSnapshot> {
+    let snapshot = config::commit(&app, &config, revision).map_err(|err| err.to_string())?;
+    app.emit(
+        "config:changed",
+        serde_json::json!({ "revision": snapshot.revision }),
+    )
+    .map_err(|err| err.to_string())?;
+    Ok(snapshot)
 }
 
 #[tauri::command]

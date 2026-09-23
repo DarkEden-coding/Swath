@@ -17,6 +17,8 @@ import type { PiRpcRequest } from "./piRpc";
 /** Rust command identifiers used by the renderer's Tauri transport. */
 export const TauriCommands = {
   configLoad: "config_load",
+  configSnapshot: "config_snapshot",
+  configCommit: "config_commit",
   configSave: "config_save",
   dialogSelectFolder: "dialog_select_folder",
   dialogConfirm: "dialog_confirm",
@@ -74,10 +76,21 @@ export interface RemoteFolderListing {
   folders: Array<{ name: string; path: string }>;
 }
 
+export interface ConfigSnapshot {
+  config: AppConfig;
+  revision: number;
+}
+
 /** Stable host API exposed as `window.swath` in both Tauri and browser development. */
 export interface SwathApi {
   platform: NodeJS.Platform | string;
-  config: { load(): Promise<AppConfig>; save(config: AppConfig): Promise<void> };
+  config: {
+    load(): Promise<AppConfig>;
+    save(config: AppConfig): Promise<void>;
+    snapshot(): Promise<ConfigSnapshot>;
+    commit(request: ConfigSnapshot): Promise<ConfigSnapshot>;
+    onChanged(callback: (event: { revision: number }) => void): () => void;
+  };
   dialog: {
     selectFolder(): Promise<FolderSelectResult>;
     confirm(request: ConfirmDialogRequest): Promise<boolean>;

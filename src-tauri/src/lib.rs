@@ -91,6 +91,8 @@ pub fn run() {
             commands::platform,
             commands::config_load,
             commands::config_save,
+            commands::config_snapshot,
+            commands::config_commit,
             commands::dialog_select_folder,
             commands::dialog_confirm,
             commands::clipboard_read_for_terminal,

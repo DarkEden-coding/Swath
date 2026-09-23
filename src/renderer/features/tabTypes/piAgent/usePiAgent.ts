@@ -7,6 +7,12 @@
  */
 
 import { useCallback, useEffect, useMemo, useReducer, useRef } from "react";
+
+// The shared IPC union is updated by the host integration; keep this feature scoped to its owner.
+const attachPi = (paneId: string): Promise<{ running: boolean }> =>
+  window.swath.pi.rpc({ op: "attach", paneId } as unknown as Parameters<
+    typeof window.swath.pi.rpc
+  >[0]) as Promise<{ running: boolean }>;
 import {
   parsePiLine,
   agentTabRequestFrom,
@@ -116,15 +122,17 @@ export function prewarmPiAgent(
     ...(start.reasoningLevel ? ["--thinking", start.reasoningLevel] : []),
     ...groupPathArgs(cwd, groupPaths),
   ];
-  void window.swath.pi
-    .rpc({ op: "spawn", paneId, cwd, args })
-    .then(() =>
-      window.swath.pi.rpc({
-        op: "send",
-        paneId,
-        line: JSON.stringify({ type: "prompt", message: start.task }),
-      }),
-    )
+  void attachPi(paneId)
+    .then((result) => {
+      if ((result as { running: boolean }).running) return;
+      return window.swath.pi.rpc({ op: "spawn", paneId, cwd, args }).then(() =>
+        window.swath.pi.rpc({
+          op: "send",
+          paneId,
+          line: JSON.stringify({ type: "prompt", message: start.task }),
+        }),
+      );
+    })
     .catch(() => spawnedPanes.delete(paneId));
 }
 
@@ -152,6 +160,7 @@ export function usePiAgent(
   );
   const needsInitialPromptRef = useRef(Boolean(initialStart));
   const restartingRef = useRef(false);
+  const startupRef = useRef(0);
 
   // Republish every render so a remount (tab switch) restores the transcript synchronously.
   useEffect(() => {
@@ -182,39 +191,11 @@ export function usePiAgent(
     send({ id: "init-stats", type: "get_session_stats" });
   }, [send]);
 
-  // Kept in a ref so reattaching can consult the restored transcript without re-running `spawn`
-  // (and re-subscribing everything) on every reducer update.
-  const hasTranscriptRef = useRef(state.entries.length > 0);
-  useEffect(() => {
-    hasTranscriptRef.current = state.entries.length > 0;
-  }, [state.entries.length]);
-
-  /**
-   * Resync for a pane whose child is still running — a tab switch, not a spawn.
-   *
-   * `piPaneCache` keeps reducing events while the pane is unmounted, so the restored transcript is
-   * already current and `get_messages` would only replace it with an identical copy. Skipping it
-   * keeps a long conversation off the tab-switch path entirely; only the cheap footer state is
-   * refreshed. A pane whose cache was dropped still needs the full handshake.
-   */
-  const requestResync = useCallback(() => {
-    if (!hasTranscriptRef.current) {
-      requestFullState();
-      return;
-    }
-    send({ id: "resync-state", type: "get_state" });
-    send({ id: "resync-stats", type: "get_session_stats" });
-  }, [requestFullState, send]);
-
   const spawn = useCallback(() => {
     if (!cwd) return;
-    // The process outlives an unmount: reattach and pull anything missed while hidden.
-    if (spawnedPanes.has(paneId)) {
-      requestResync();
-      return;
-    }
+    // The backend owns the process; the local set only deduplicates concurrent mount attempts.
     spawnedPanes.add(paneId);
-    dispatch({ type: "reset" });
+    const generation = ++startupRef.current;
     // Reopen the session this pane last reported. Legacy panes have no stored file, so continue
     // the newest session for their project once and persist the exact file from pi's state.
     const sessionFile = resumedSessions.get(paneId) ?? initialSessionFile;
@@ -231,40 +212,62 @@ export function usePiAgent(
           ...(initialStart.reasoningLevel ? ["--thinking", initialStart.reasoningLevel] : []),
         ]
       : [];
-    void window.swath.pi
-      .rpc({
-        op: "spawn",
-        paneId,
-        cwd,
-        args: [...sessionArgs, ...startupArgs, ...groupPathArgs(cwd, groupPathsRef.current)],
-      })
-      .then((result) => {
-        // The host rejects on failure, but a transport that resolves with `{ ok: false }`
-        // (the browser fixture) must not leave the pane silently stuck on "Starting pi…".
-        const failure = result as { ok?: boolean; error?: string } | null;
-        if (failure && failure.ok === false) {
-          spawnedPanes.delete(paneId);
-          dispatch({ type: "error", message: failure.error ?? "Unable to start pi" });
+    void attachPi(paneId)
+      .then((attached) => {
+        if (generation !== startupRef.current) return;
+        if ((attached as { running: boolean }).running) {
+          requestFullState();
           return;
         }
-        requestFullState();
-        if (isFreshStart && initialStart) {
-          needsInitialPromptRef.current = false;
-          send({ type: "prompt", message: initialStart.task });
-        }
+        return window.swath.pi
+          .rpc({
+            op: "spawn",
+            paneId,
+            cwd,
+            args: [...sessionArgs, ...startupArgs, ...groupPathArgs(cwd, groupPathsRef.current)],
+          })
+          .then((result) => {
+            if (generation !== startupRef.current) return;
+            // The host rejects on failure, but a transport that resolves with `{ ok: false }`
+            // (the browser fixture) must not leave the pane silently stuck on "Starting pi…".
+            const failure = result as { ok?: boolean; error?: string } | null;
+            if (failure && failure.ok === false) {
+              spawnedPanes.delete(paneId);
+              dispatch({ type: "error", message: failure.error ?? "Unable to start pi" });
+              return;
+            }
+            dispatch({ type: "reset" });
+            requestFullState();
+            if (isFreshStart && initialStart) {
+              needsInitialPromptRef.current = false;
+              send({ type: "prompt", message: initialStart.task });
+            }
+          });
       })
       .catch((error: unknown) => {
+        if (generation !== startupRef.current) return;
         restartingRef.current = false;
+        if (String(error).includes("already running for pane")) {
+          requestFullState();
+          return;
+        }
         spawnedPanes.delete(paneId);
         dispatch({ type: "error", message: String(error) });
       });
-  }, [paneId, cwd, initialSessionFile, initialStart, requestFullState, requestResync, send]);
+  }, [paneId, cwd, initialSessionFile, initialStart, requestFullState, send]);
 
   /** Explicit user restart: tear the child down first, then spawn a fresh one. */
   const restart = useCallback(() => {
     restartingRef.current = true;
+    ++startupRef.current;
     spawnedPanes.delete(paneId);
-    void window.swath.pi.rpc({ op: "kill", paneId }).finally(spawn);
+    void window.swath.pi
+      .rpc({ op: "kill", paneId })
+      .then(spawn)
+      .catch((error: unknown) => {
+        restartingRef.current = false;
+        dispatch({ type: "error", message: String(error) });
+      });
   }, [paneId, spawn]);
 
   // Kept in a ref so the subscription is created once per pane rather than on every render.
@@ -340,6 +343,15 @@ export function usePiAgent(
 
     return unsubscribe;
   }, [paneId]);
+
+  // A browser may miss streamed events while its socket is disconnected. Pi supplies a fresh
+  // transcript and state after reconnect; the live subscription remains mounted.
+  useEffect(() => {
+    if (window.swath.platform !== "web") return;
+    return window.swath.remote.onStatus((_id, status) => {
+      if (status === "connected") requestFullState();
+    });
+  }, [requestFullState]);
 
   // No teardown on unmount: the pane is unmounted on every tab switch, and killing pi there is
   // what forced the reload. `piAgentTabType.closePane` disposes the pane for real.

@@ -103,7 +103,13 @@ impl RemoteServerManager {
             .to_lowercase()
             .replace(|c: char| !c.is_ascii_alphanumeric() && c != '-', "-");
         let (events, _) = broadcast::channel(1024);
-        for channel in ["terminal:data", "terminal:exit", "git:data", "pi:event"] {
+        for channel in [
+            "terminal:data",
+            "terminal:exit",
+            "git:data",
+            "pi:event",
+            "config:changed",
+        ] {
             let tx = events.clone();
             app.listen(channel, move |event| {
                 let payload = serde_json::from_str::<Value>(event.payload()).unwrap_or(Value::Null);
@@ -242,13 +248,36 @@ impl ServerContext {
         }
     }
 
-    fn save_config(&self, value: &crate::types::AppConfig) -> anyhow::Result<()> {
-        match (&self.app, &self.data_dir) {
+    fn snapshot_config(&self) -> anyhow::Result<Value> {
+        let snapshot = match (&self.app, &self.data_dir) {
             #[cfg(feature = "desktop")]
-            (Some(app), _) => config::save(app, value),
-            (_, Some(dir)) => config::save_in(dir, value),
+            (Some(app), _) => config::snapshot(app)?,
+            (_, Some(dir)) => config::snapshot_in(dir)?,
             _ => anyhow::bail!("remote server has no config storage"),
-        }
+        };
+        let mut snapshot = serde_json::to_value(snapshot)?;
+        snapshot["config"]["remoteConnections"] = Value::Null;
+        Ok(snapshot)
+    }
+
+    fn commit_config(
+        &self,
+        value: &crate::types::AppConfig,
+        revision: u64,
+    ) -> anyhow::Result<Value> {
+        let mut value = value.clone();
+        value.remote_connections = None; // Backend preserves credentials transactionally.
+        let result = match (&self.app, &self.data_dir) {
+            #[cfg(feature = "desktop")]
+            (Some(app), _) => config::commit(app, &value, revision)?,
+            (_, Some(dir)) => config::commit_in(dir, &value, revision)?,
+            _ => anyhow::bail!("remote server has no config storage"),
+        };
+        let mut result = serde_json::to_value(result)?;
+        result["config"]["remoteConnections"] = Value::Null;
+        self.events_sink
+            .emit("config:changed", json!({"revision": result["revision"]}));
+        Ok(result)
     }
 }
 
@@ -426,20 +455,19 @@ fn field<T: serde::de::DeserializeOwned>(params: &Value, name: &str) -> Result<T
 
 async fn dispatch(ctx: &ServerContext, method: &str, params: Value) -> Result<Value, String> {
     match method {
+        "config.snapshot" => ctx.snapshot_config().map_err(|e| e.to_string()),
+        "config.commit" => {
+            let value: crate::types::AppConfig = field(&params, "config")?;
+            let revision: u64 = field(&params, "revision")?;
+            ctx.commit_config(&value, revision)
+                .map_err(|e| e.to_string())
+        }
         "config.load" => {
             let mut value = ctx.load_config().map_err(|e| e.to_string())?;
             value.remote_connections = None;
             serde_json::to_value(value).map_err(|e| e.to_string())
         }
-        "config.save" => {
-            let mut value: crate::types::AppConfig = field(&params, "config")?;
-            value.remote_connections = ctx
-                .load_config()
-                .ok()
-                .and_then(|saved| saved.remote_connections);
-            ctx.save_config(&value).map_err(|e| e.to_string())?;
-            Ok(Value::Null)
-        }
+        "config.save" => Err("config.save is obsolete; use revision-checked config.commit".into()),
         "terminal.create" => {
             let request = serde_json::from_value(params).map_err(|e| e.to_string())?;
             ctx.swath
@@ -472,13 +500,18 @@ async fn dispatch(ctx: &ServerContext, method: &str, params: Value) -> Result<Va
                 .map_err(|e| e.to_string())?;
             Ok(Value::Null)
         }
-        "terminal.attach" => serde_json::to_value(
-            ctx.swath
-                .terminal
-                .attach(serde_json::from_value(params).map_err(|e| e.to_string())?)
-                .map_err(|e| e.to_string())?,
-        )
-        .map_err(|e| e.to_string()),
+        "terminal.attach" => {
+            let mut request: crate::types::TerminalSessionAttachRequest =
+                serde_json::from_value(params).map_err(|e| e.to_string())?;
+            request.replay = Some(false);
+            serde_json::to_value(
+                ctx.swath
+                    .terminal
+                    .attach(request)
+                    .map_err(|e| e.to_string())?,
+            )
+            .map_err(|e| e.to_string())
+        }
         "terminal.restart" => serde_json::to_value(
             ctx.swath
                 .terminal
@@ -486,13 +519,16 @@ async fn dispatch(ctx: &ServerContext, method: &str, params: Value) -> Result<Va
                 .map_err(|e| e.to_string())?,
         )
         .map_err(|e| e.to_string()),
-        "terminal.replay" => serde_json::to_value(
-            ctx.swath
+        "terminal.replay" => {
+            let (status, data) = ctx
+                .swath
                 .terminal
                 .replay_to_connector(&field::<String>(&params, "sessionId")?)
-                .map_err(|e| e.to_string())?,
-        )
-        .map_err(|e| e.to_string()),
+                .map_err(|e| e.to_string())?;
+            let mut result = serde_json::to_value(status).map_err(|e| e.to_string())?;
+            result["data"] = serde_json::Value::String(data);
+            Ok(result)
+        }
         "terminal.setStreaming" => {
             ctx.swath
                 .terminal
@@ -703,13 +739,44 @@ mod tests {
         };
         let config = dispatch(&context, "config.load", json!({})).await.unwrap();
         assert_eq!(config["version"], 2);
-        dispatch(&context, "config.save", json!({"config":config}))
+        assert!(dispatch(&context, "config.save", json!({"config":config}))
             .await
-            .unwrap();
+            .is_err());
         assert_eq!(
             dispatch(&context, "config.load", json!({})).await.unwrap()["version"],
             2
         );
+        let snapshot = dispatch(&context, "config.snapshot", json!({}))
+            .await
+            .unwrap();
+        assert!(snapshot["revision"].is_number());
+        assert!(snapshot["config"]["remoteConnections"].is_null());
+        let mut changed = remote.events.subscribe();
+        let committed = dispatch(
+            &context,
+            "config.commit",
+            json!({
+                "config": snapshot["config"], "revision": snapshot["revision"]
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            committed["revision"],
+            snapshot["revision"].as_u64().unwrap() + 1
+        );
+        let event: serde_json::Value = serde_json::from_str(&changed.try_recv().unwrap()).unwrap();
+        assert_eq!(event["channel"], "config:changed");
+        assert_eq!(event["payload"]["revision"], committed["revision"]);
+        assert!(dispatch(
+            &context,
+            "config.commit",
+            json!({
+                "config": snapshot["config"], "revision": snapshot["revision"]
+            })
+        )
+        .await
+        .is_err());
         let git = dispatch(&context, "git.rpc", json!({"op":"getStatus","cwd":dir}))
             .await
             .unwrap();

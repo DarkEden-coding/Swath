@@ -132,6 +132,13 @@ class RemoteClient {
     else pending.resolve(message.result);
   }
 
+  deliverReplay(sessionId: string, data: string): void {
+    if (data)
+      this.eventListeners.forEach((listener) =>
+        listener({ type: "event", channel: "terminal:data", payload: { sessionId, data } }),
+      );
+  }
+
   async call<T>(method: RemoteMethod, params?: unknown): Promise<T> {
     await this.open();
     const id = this.nextId++;
@@ -216,14 +223,24 @@ export function createHybridSwath(local: SwathApi): SwathApi {
     };
   }
 
-  const originalLoad = local.config.load;
-  local.config.load = async () => {
-    const config = await originalLoad();
+  function connectProfiles(config: { remoteConnections?: RemoteConnection[] }): void {
     for (const profile of config.remoteConnections ?? []) {
       const remote = client(profile);
       void remote.open().catch(() => undefined);
     }
+  }
+
+  const originalLoad = local.config.load;
+  local.config.load = async () => {
+    const config = await originalLoad();
+    connectProfiles(config);
     return config;
+  };
+  const originalSnapshot = local.config.snapshot;
+  local.config.snapshot = async () => {
+    const snapshot = await originalSnapshot();
+    connectProfiles(snapshot.config);
+    return snapshot;
   };
 
   return {
@@ -260,9 +277,17 @@ export function createHybridSwath(local: SwathApi): SwathApi {
       restart: async (sessionId) =>
         clients.get(terminalOwners.get(sessionId) ?? "")?.call("terminal.restart", { sessionId }) ??
         local.terminal.restart(sessionId),
-      replay: async (sessionId) =>
-        clients.get(terminalOwners.get(sessionId) ?? "")?.call("terminal.replay", { sessionId }) ??
-        local.terminal.replay(sessionId),
+      replay: async (sessionId) => {
+        const remote = clients.get(terminalOwners.get(sessionId) ?? "");
+        if (!remote) return local.terminal.replay(sessionId);
+        const { data, ...status } = await remote.call<{
+          data: string;
+          sessionId: string;
+          running: boolean;
+        }>("terminal.replay", { sessionId });
+        remote.deliverReplay(sessionId, data);
+        return status;
+      },
       setStreaming: (sessionId, enabled) => {
         const remote = clients.get(terminalOwners.get(sessionId) ?? "");
         remote
@@ -358,6 +383,20 @@ export function createRemoteWebSwath(): SwathApi {
     platform: "web",
     config: {
       load: () => client.call("config.load"),
+      snapshot: () => client.call("config.snapshot"),
+      commit: (request) => client.call("config.commit", request),
+      onChanged: (callback) => {
+        const offEvent = client.onEvent((event) => {
+          if (event.channel === "config:changed") callback(event.payload as { revision: number });
+        });
+        const offStatus = client.onStatus((status) => {
+          if (status === "connected") callback({ revision: Number.MAX_SAFE_INTEGER });
+        });
+        return () => {
+          offEvent();
+          offStatus();
+        };
+      },
       save: (config) => client.call("config.save", { config }),
     },
     dialog: {
@@ -384,7 +423,15 @@ export function createRemoteWebSwath(): SwathApi {
       kill: (sessionId) => void client.call("terminal.kill", { sessionId }),
       attach: (r) => client.call("terminal.attach", r),
       restart: (sessionId) => client.call("terminal.restart", { sessionId }),
-      replay: (sessionId) => client.call("terminal.replay", { sessionId }),
+      replay: async (sessionId) => {
+        const { data, ...status } = await client.call<{
+          data: string;
+          sessionId: string;
+          running: boolean;
+        }>("terminal.replay", { sessionId });
+        client.deliverReplay(sessionId, data);
+        return status;
+      },
       setStreaming: (sessionId, enabled) =>
         void client.call("terminal.setStreaming", { sessionId, enabled }),
       isBusy: (sessionId) => client.call("terminal.isBusy", { sessionId }),

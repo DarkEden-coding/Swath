@@ -81,11 +81,27 @@ export const browserDevConfig: AppConfig = {
 
 export function createBrowserStubSwath(): SwathApi {
   let saved: AppConfig = structuredClone(browserDevConfig);
+  let revision = 0;
+  const listeners = new Set<(event: { revision: number }) => void>();
 
   return {
     platform: detectHostPlatform(),
     config: {
       load: async () => structuredClone(saved),
+      snapshot: async () => ({ config: structuredClone(saved), revision }),
+      commit: async (request) => {
+        if (request.revision !== revision) throw new Error("config conflict");
+        saved = structuredClone(request.config);
+        revision++;
+        listeners.forEach((listener) => listener({ revision }));
+        return { config: structuredClone(saved), revision };
+      },
+      onChanged: (callback) => {
+        listeners.add(callback);
+        return () => {
+          listeners.delete(callback);
+        };
+      },
       save: async (config: AppConfig) => {
         saved = structuredClone(config);
       },

@@ -219,15 +219,22 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
       exitStateSetters.get(paneId)?.(false);
 
       sessionReady = terminalClient
-        .create({
+        .attach({
           sessionId: paneId,
           cwd: currentCwd,
           cols: terminal.cols,
           rows: terminal.rows,
           shellProfile: sessionInputRef.current.shellProfile,
           env: sessionInputRef.current.env ?? initialSettingsRef.current.globalEnv,
+          replay: false,
         })
-        .then(() => {
+        .then((status) => {
+          if (status && !status.running) {
+            startedSessions.delete(paneId);
+            setRunning(false);
+            if (entry) entry.stopped = true;
+            exitStateSetters.get(paneId)?.(true);
+          }
           sessionReady = null;
         })
         .catch((error: unknown) => {
@@ -268,6 +275,7 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
       },
     });
 
+    let lastSentSize = "";
     const fitAndResize = (): void => {
       if (!termRef.current || !fitRef.current) return;
       const dimensions = fitDimensions(fitRef.current);
@@ -276,8 +284,11 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
       if (terminal.cols !== dimensions.cols || terminal.rows !== dimensions.rows) {
         terminal.resize(dimensions.cols, dimensions.rows);
       }
-      if (startedSessions.has(paneId))
+      const size = `${terminal.cols}x${terminal.rows}`;
+      if (startedSessions.has(paneId) && size !== lastSentSize) {
+        lastSentSize = size;
         terminalClient.resize({ sessionId: paneId, cols: terminal.cols, rows: terminal.rows });
+      }
     };
 
     const observer = new ResizeObserver(() => fitAndResize());
@@ -294,11 +305,20 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
           updateScrollToBottomButton();
         });
         terminal.focus();
-      } else if (startedSessions.has(paneId)) {
-        void terminalClient.replay(paneId);
       } else {
-        const prompt = `${currentCwd} % `;
-        writeOutput(prompt);
+        // Attach before replay: a second frontend must never replace the existing PTY.
+        void startPty()
+          .then(() => terminalClient.replay(paneId))
+          .then((status) => {
+            if (status && !status.running) {
+              startedSessions.delete(paneId);
+              setRunning(false);
+              exitStateSetters.get(paneId)?.(true);
+              const entry = terminalCache.get(paneId);
+              if (entry) entry.stopped = true;
+            }
+          })
+          .catch(() => undefined);
         terminal.focus();
       }
     });

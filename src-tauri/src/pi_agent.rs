@@ -63,7 +63,18 @@ impl PiManager {
         cwd: &str,
         extra_args: &[String],
     ) -> PiResult {
-        self.kill(pane_id)?;
+        let mut procs = self.procs.lock().map_err(|_| "pi state poisoned")?;
+        if let Some(proc) = procs.get_mut(pane_id) {
+            if proc
+                .child
+                .try_wait()
+                .map_err(|err| err.to_string())?
+                .is_none()
+            {
+                return Err(format!("Pi process already running for pane {pane_id}"));
+            }
+            procs.remove(pane_id);
+        }
 
         let temp_dir = std::env::temp_dir();
         let sudo_extension = temp_dir.join("swath-pi-sudo.ts");
@@ -140,7 +151,6 @@ impl PiManager {
             });
         }
 
-        let mut procs = self.procs.lock().map_err(|_| "pi state poisoned")?;
         procs.insert(
             pane_id.to_string(),
             PiProcess {
@@ -150,6 +160,22 @@ impl PiManager {
             },
         );
         Ok(json!({ "ok": true }))
+    }
+
+    fn attach(&self, pane_id: &str) -> PiResult {
+        let mut procs = self.procs.lock().map_err(|_| "pi state poisoned")?;
+        let running = match procs.get_mut(pane_id) {
+            Some(proc) => proc
+                .child
+                .try_wait()
+                .map_err(|err| err.to_string())?
+                .is_none(),
+            None => false,
+        };
+        if !running {
+            procs.remove(pane_id);
+        }
+        Ok(json!({ "running": running }))
     }
 
     /// Writes one newline-terminated JSON command to a pane's pi stdin.
@@ -421,6 +447,7 @@ pub fn rpc(events: &EventSink, manager: &PiManager, request: Value) -> PiResult 
     }
 
     match op {
+        "attach" => manager.attach(pane_id),
         "spawn" => {
             let cwd = request
                 .get("cwd")
@@ -553,6 +580,30 @@ mod tests {
         // The pane's own folder is the working directory; listing it twice would duplicate it.
         assert_eq!(walk_group_files(&api, &[]), vec!["src/main.rs".to_string()]);
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn attach_reports_live_and_missing_children() {
+        let manager = PiManager::new();
+        assert_eq!(manager.attach("pane").unwrap()["running"], false);
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .arg("--ignored")
+            .arg("--exact")
+            .arg("no_such_test")
+            .spawn()
+            .unwrap();
+        child.wait().unwrap();
+        manager.procs.lock().unwrap().insert(
+            "pane".into(),
+            PiProcess {
+                child,
+                stdin: None,
+                stderr: Arc::new(Mutex::new(String::new())),
+            },
+        );
+        // The test executable exits promptly; attach reaps stale children rather than claiming
+        // they are still running.
+        assert_eq!(manager.attach("pane").unwrap()["running"], false);
     }
 
     /// Windows must target npm's `.cmd` shim explicitly; CreateProcess does not use PATHEXT.

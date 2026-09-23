@@ -3,6 +3,8 @@ export const REMOTE_PROTOCOL_VERSION = 1 as const;
 export type RemoteMethod =
   | "config.load"
   | "config.save"
+  | "config.snapshot"
+  | "config.commit"
   | "terminal.create"
   | "terminal.write"
   | "terminal.resize"
@@ -34,7 +36,7 @@ export interface RemoteResponse {
 
 export interface RemoteEvent {
   type: "event";
-  channel: "terminal:data" | "terminal:exit" | "git:data" | "pi:event";
+  channel: "config:changed" | "terminal:data" | "terminal:exit" | "git:data" | "pi:event";
   payload: unknown;
 }
 

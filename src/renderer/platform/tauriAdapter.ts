@@ -16,6 +16,22 @@ export function createTauriSwath(): SwathApi {
     platform: detectHostPlatform(),
     config: {
       load: () => invoke(TauriCommands.configLoad),
+      snapshot: () => invoke(TauriCommands.configSnapshot),
+      commit: ({ config, revision }) => invoke(TauriCommands.configCommit, { config, revision }),
+      onChanged: (callback) => {
+        let disposed = false;
+        let unsubscribe: (() => void) | undefined;
+        void listen<{ revision: number }>("config:changed", (event) =>
+          callback(event.payload),
+        ).then((off) => {
+          unsubscribe = off;
+          if (disposed) off();
+        });
+        return () => {
+          disposed = true;
+          unsubscribe?.();
+        };
+      },
       save: (config: AppConfig) => invoke(TauriCommands.configSave, { config }),
     },
     dialog: {
