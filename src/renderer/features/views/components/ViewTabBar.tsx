@@ -43,7 +43,18 @@ function PiTabIndicator({ paneIds }: { paneIds: string[] }): JSX.Element {
   const finished = usePiActivityStore((state) =>
     paneIds.some((id) => state.activity[id] === "done"),
   );
+  const questioning = usePiActivityStore((state) => paneIds.some((id) => state.questioning[id]));
 
+  if (questioning) {
+    return (
+      <span
+        className="grid size-4 shrink-0 place-items-center text-sm font-bold leading-none text-yellow-400"
+        title="Pi needs an answer"
+      >
+        ?
+      </span>
+    );
+  }
   if (working) {
     return (
       <span

@@ -55,6 +55,7 @@ function cacheHiddenPaneEvent(paneId: string, line?: string, exited?: boolean): 
       : entry.state;
   piPaneCache.set(paneId, { ...entry, state });
   usePiActivityStore.getState().reportStreaming(paneId, state.isStreaming);
+  usePiActivityStore.getState().reportQuestioning(paneId, state.dialogs.length > 0);
 }
 /** Session files adopted while a pane is running, before its persisted metadata updates. */
 export const resumedSessions = new Map<string, string>();
