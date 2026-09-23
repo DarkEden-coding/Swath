@@ -1,5 +1,6 @@
 [package]
 name = "swath"
+default-run = "swath"
 version = "0.1.0"
 description = "A lightweight terminal-first project/workspace manager for coding agents."
 authors = ["Generated with ChatGPT"]
