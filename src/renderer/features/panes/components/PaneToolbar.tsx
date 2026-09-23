@@ -14,6 +14,7 @@ interface PaneToolbarProps {
 function statusDotClass(statusClass: string): string {
   if (statusClass === "running") return "bg-swath-good shadow-[0_0_10px_rgba(63,185,80,0.45)]";
   if (statusClass === "exited") return "bg-swath-danger";
+  if (statusClass === "question") return "bg-yellow-400";
   return "bg-swath-muted-2";
 }
 

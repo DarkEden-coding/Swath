@@ -185,15 +185,13 @@ export function Chrome({
               stop
             </button>
           ) : null}
-          {exited ? (
-            <button
-              type="button"
-              className="border border-[var(--pi-border)] px-2 hover:text-[var(--pi-text)]"
-              onClick={onRestart}
-            >
-              restart
-            </button>
-          ) : null}
+          <button
+            type="button"
+            className="border border-[var(--pi-border)] px-2 hover:text-[var(--pi-text)]"
+            onClick={onRestart}
+          >
+            restart
+          </button>
         </div>
       </div>
     </div>

@@ -151,6 +151,7 @@ export function usePiAgent(
     (id) => piPaneCache.get(id)?.state ?? initialPiPaneState(),
   );
   const needsInitialPromptRef = useRef(Boolean(initialStart));
+  const restartingRef = useRef(false);
 
   // Republish every render so a remount (tab switch) restores the transcript synchronously.
   useEffect(() => {
@@ -252,6 +253,7 @@ export function usePiAgent(
         }
       })
       .catch((error: unknown) => {
+        restartingRef.current = false;
         spawnedPanes.delete(paneId);
         dispatch({ type: "error", message: String(error) });
       });
@@ -259,6 +261,7 @@ export function usePiAgent(
 
   /** Explicit user restart: tear the child down first, then spawn a fresh one. */
   const restart = useCallback(() => {
+    restartingRef.current = true;
     spawnedPanes.delete(paneId);
     void window.swath.pi.rpc({ op: "kill", paneId }).finally(spawn);
   }, [paneId, spawn]);
@@ -287,10 +290,11 @@ export function usePiAgent(
     function handleLine(eventPaneId: string, line?: string, exited?: boolean): void {
       if (eventPaneId !== paneId) return;
       if (exited) {
-        dispatch({ type: "exit" });
+        if (!restartingRef.current) dispatch({ type: "exit" });
         return;
       }
       if (!line) return;
+      restartingRef.current = false;
       dispatch({ type: "line", line });
 
       const event = parsePiLine(line);
