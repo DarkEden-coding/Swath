@@ -168,6 +168,7 @@ export function createTauriSwath(): SwathApi {
       },
       serverStart: (options) => invoke(TauriCommands.remoteServerStart, { options }),
       serverStop: () => invoke(TauriCommands.remoteServerStop),
+      serverAutoStart: (enabled) => invoke(TauriCommands.remoteServerAutoStart, { enabled }),
       serverStatus: () => invoke(TauriCommands.remoteServerStatus),
     },
   };

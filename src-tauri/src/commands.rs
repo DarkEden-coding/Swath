@@ -216,8 +216,16 @@ pub async fn remote_server_start(
 
 #[tauri::command]
 pub async fn remote_server_stop(state: State<'_, AppState>) -> CommandResult<()> {
-    state.remote.stop().await;
+    state.remote.stop().await?;
     Ok(())
+}
+
+#[tauri::command]
+pub fn remote_server_auto_start(
+    state: State<'_, AppState>,
+    enabled: bool,
+) -> CommandResult<crate::remote::RemoteServerStatus> {
+    state.remote.set_auto_start(enabled)
 }
 
 #[tauri::command]

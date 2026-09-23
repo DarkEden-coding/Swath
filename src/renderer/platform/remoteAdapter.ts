@@ -365,6 +365,7 @@ export function createHybridSwath(local: SwathApi): SwathApi {
       },
       serverStart: (options) => local.remote.serverStart(options),
       serverStop: () => local.remote.serverStop(),
+      serverAutoStart: (enabled) => local.remote.serverAutoStart(enabled),
       serverStatus: () => local.remote.serverStatus(),
     },
   };
@@ -376,6 +377,7 @@ export function createRemoteWebSwath(): SwathApi {
   const client = new RemoteClient({ id, url: location.origin, token: "" });
   const noServer = async (): Promise<RemoteServerStatus> => ({
     running: true,
+    startOnLaunch: false,
     machineId: id,
     platform: "web",
   });
@@ -483,6 +485,7 @@ export function createRemoteWebSwath(): SwathApi {
       listFolders: (_connectionId, path) => client.call("directories.list", path ? { path } : {}),
       serverStart: noServer,
       serverStop: async () => undefined,
+      serverAutoStart: noServer,
       serverStatus: noServer,
     },
   });

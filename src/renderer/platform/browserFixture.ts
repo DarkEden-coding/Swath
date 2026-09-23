@@ -288,9 +288,25 @@ index 1111111..2222222 100644
       status: () => "offline",
       onStatus: () => () => {},
       listFolders: async () => ({ path: "/", parent: null, folders: [] }),
-      serverStart: async () => ({ running: false, machineId: "browser", platform: "web" }),
+      serverStart: async () => ({
+        running: false,
+        startOnLaunch: false,
+        machineId: "browser",
+        platform: "web",
+      }),
       serverStop: async () => {},
-      serverStatus: async () => ({ running: false, machineId: "browser", platform: "web" }),
+      serverAutoStart: async () => ({
+        running: false,
+        startOnLaunch: false,
+        machineId: "browser",
+        platform: "web",
+      }),
+      serverStatus: async () => ({
+        running: false,
+        startOnLaunch: false,
+        machineId: "browser",
+        platform: "web",
+      }),
     },
   };
 }

@@ -322,6 +322,7 @@ function RemoteHostingSection({ open }: { open: boolean }): JSX.Element {
   const [bind, setBind] = useState("127.0.0.1");
   const [port, setPort] = useState(7878);
   const [tailscaleHttps, setTailscaleHttps] = useState(true);
+  const [startOnLaunch, setStartOnLaunch] = useState(false);
   const [token, setToken] = useState(makeToken);
   const [activeToken, setActiveToken] = useState("");
   const [status, setStatus] = useState<RemoteServerStatus | null>(null);
@@ -335,6 +336,12 @@ function RemoteHostingSection({ open }: { open: boolean }): JSX.Element {
           if (next.bind) setBind(next.bind);
           if (next.port) setPort(next.port);
           if (next.tailscaleHttps !== undefined) setTailscaleHttps(next.tailscaleHttps);
+          setStartOnLaunch(next.startOnLaunch);
+          if (next.token) {
+            setToken(next.token);
+            setActiveToken(next.token);
+          }
+          setError(next.startupError ?? "");
         })
         .catch(() => undefined);
   }, [open]);
@@ -342,15 +349,35 @@ function RemoteHostingSection({ open }: { open: boolean }): JSX.Element {
   const start = async (): Promise<void> => {
     setError("");
     try {
-      setStatus(await window.swath.remote.serverStart({ bind, port, token, tailscaleHttps }));
+      setStatus(
+        await window.swath.remote.serverStart({ bind, port, token, tailscaleHttps, startOnLaunch }),
+      );
       setActiveToken(token);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     }
   };
+  const toggleAutoStart = async (enabled: boolean): Promise<void> => {
+    setStartOnLaunch(enabled);
+    if (!status?.running && enabled) return;
+    try {
+      setStatus(await window.swath.remote.serverAutoStart(enabled));
+      setError("");
+    } catch (reason) {
+      setStartOnLaunch(!enabled);
+      setError(reason instanceof Error ? reason.message : String(reason));
+    }
+  };
   const stop = async (): Promise<void> => {
-    await window.swath.remote.serverStop();
-    setStatus(await window.swath.remote.serverStatus());
+    try {
+      await window.swath.remote.serverStop();
+      const next = await window.swath.remote.serverStatus();
+      setStatus(next);
+      setStartOnLaunch(next.startOnLaunch);
+      setError(next.startupError ?? "");
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    }
   };
   return (
     <section className="mt-6 border-t border-swath-border pt-[18px]">
@@ -389,6 +416,7 @@ function RemoteHostingSection({ open }: { open: boolean }): JSX.Element {
           <input
             className={`${fieldInput} font-mono`}
             value={token}
+            readOnly={status?.running}
             onChange={(e) => setToken(e.target.value)}
           />
         </label>
@@ -399,6 +427,14 @@ function RemoteHostingSection({ open }: { open: boolean }): JSX.Element {
             onChange={(event) => setTailscaleHttps(event.target.checked)}
           />
           Publish securely with Tailscale Serve on HTTPS port 443
+        </label>
+        <label className="col-span-2 flex items-center gap-2 text-xs font-semibold text-swath-muted max-[980px]:col-span-1">
+          <input
+            type="checkbox"
+            checked={startOnLaunch}
+            onChange={(event) => void toggleAutoStart(event.target.checked)}
+          />
+          Start connector automatically when Swath opens
         </label>
       </div>
       {status?.running ? (
@@ -426,7 +462,11 @@ function RemoteHostingSection({ open }: { open: boolean }): JSX.Element {
             Start connector
           </button>
         )}
-        <button className={secondaryBtn} onClick={() => setToken(makeToken())}>
+        <button
+          className={secondaryBtn}
+          disabled={status?.running}
+          onClick={() => setToken(makeToken())}
+        >
           Regenerate token
         </button>
       </div>

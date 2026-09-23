@@ -11,7 +11,10 @@ Open **Settings → Remote connector & Web UI**, leave the backend bound to `127
 loopback connector and asks Tailscale Serve to publish it at
 `https://<device>.<tailnet>.ts.net/`. Tailscale terminates TLS on port 443 and proxies HTTP to the
 loopback port; the backend is not exposed directly to the LAN or tailnet. Tokens must be at least
-16 characters and remain required in addition to tailnet access.
+16 characters and remain required in addition to tailnet access. Enable **Start connector
+automatically when Swath opens** to keep hosting after a restart. Swath saves the token and
+connector settings in a private `connector-startup.json` file in its app data directory. **Stop
+hosting** also disables auto-start.
 
 MagicDNS and HTTPS certificates must be enabled for the tailnet. Tailscale Serve normally handles
 certificate provisioning automatically. If Tailscale is installed somewhere the app cannot find,

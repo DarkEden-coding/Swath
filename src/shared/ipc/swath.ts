@@ -41,6 +41,7 @@ export const TauriCommands = {
   piRpc: "pi_rpc",
   remoteServerStart: "remote_server_start",
   remoteServerStop: "remote_server_stop",
+  remoteServerAutoStart: "remote_server_auto_start",
   remoteServerStatus: "remote_server_status",
 } as const;
 
@@ -50,10 +51,14 @@ export interface RemoteServerOptions {
   token: string;
   /** Publishes the loopback connector through Tailscale Serve on HTTPS port 443. */
   tailscaleHttps?: boolean;
+  startOnLaunch?: boolean;
 }
 
 export interface RemoteServerStatus {
   running: boolean;
+  startOnLaunch: boolean;
+  token?: string;
+  startupError?: string;
   bind?: string;
   port?: number;
   tailscaleHttps?: boolean;
@@ -144,6 +149,7 @@ export interface SwathApi {
     listFolders(connectionId: string, path?: string): Promise<RemoteFolderListing>;
     serverStart(options: RemoteServerOptions): Promise<RemoteServerStatus>;
     serverStop(): Promise<void>;
+    serverAutoStart(enabled: boolean): Promise<RemoteServerStatus>;
     serverStatus(): Promise<RemoteServerStatus>;
   };
 }

@@ -41,7 +41,7 @@ use tower_http::cors::CorsLayer;
 #[folder = "../dist"]
 struct WebAssets;
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RemoteServerOptions {
     pub bind: String,
@@ -49,6 +49,8 @@ pub struct RemoteServerOptions {
     pub token: String,
     #[serde(default)]
     pub tailscale_https: bool,
+    #[serde(default)]
+    pub start_on_launch: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -65,6 +67,11 @@ pub struct RemoteServerStatus {
     pub https_url: Option<String>,
     pub machine_id: String,
     pub platform: String,
+    pub start_on_launch: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub startup_error: Option<String>,
 }
 
 struct RunningServer {
@@ -79,6 +86,7 @@ pub struct RemoteServerManager {
     machine_id: String,
     running: Mutex<Option<RunningServer>>,
     events: broadcast::Sender<String>,
+    startup_error: Mutex<Option<String>>,
 }
 
 #[derive(Clone)]
@@ -124,6 +132,7 @@ impl RemoteServerManager {
             machine_id,
             running: Mutex::new(None),
             events,
+            startup_error: Mutex::new(None),
         }
     }
 
@@ -142,6 +151,7 @@ impl RemoteServerManager {
             machine_id,
             running: Mutex::new(None),
             events,
+            startup_error: Mutex::new(None),
         }
     }
 
@@ -157,21 +167,65 @@ impl RemoteServerManager {
 
     pub fn status(&self) -> RemoteServerStatus {
         let running = self.running.lock().unwrap();
+        let saved = if running.is_none() {
+            self.load_startup_options().ok().flatten()
+        } else {
+            None
+        };
+        let options = running.as_ref().map(|v| &v.options).or(saved.as_ref());
         RemoteServerStatus {
             running: running.is_some(),
-            bind: running.as_ref().map(|v| v.options.bind.clone()),
-            port: running.as_ref().map(|v| v.options.port),
-            tailscale_https: running.as_ref().map(|v| v.options.tailscale_https),
+            bind: options.map(|v| v.bind.clone()),
+            port: options.map(|v| v.port),
+            tailscale_https: options.map(|v| v.tailscale_https),
             https_url: running.as_ref().and_then(|v| v.https_url.clone()),
             machine_id: self.machine_id.clone(),
             platform: std::env::consts::OS.into(),
+            start_on_launch: options.is_some_and(|v| v.start_on_launch),
+            token: options.map(|v| v.token.clone()),
+            startup_error: self.startup_error.lock().unwrap().clone(),
         }
+    }
+
+    pub fn set_auto_start(&self, enabled: bool) -> Result<RemoteServerStatus, String> {
+        let mut running = self.running.lock().unwrap();
+        let Some(server) = running.as_mut() else {
+            if enabled {
+                return Err("Start the connector before enabling auto-start".into());
+            }
+            self.save_startup_options(None)?;
+            drop(running);
+            return Ok(self.status());
+        };
+        let mut options = server.options.clone();
+        options.start_on_launch = enabled;
+        self.save_startup_options(enabled.then_some(&options))?;
+        server.options.start_on_launch = enabled;
+        drop(running);
+        Ok(self.status())
     }
 
     pub async fn start(
         &self,
+        options: RemoteServerOptions,
+        swath: AppState,
+    ) -> Result<RemoteServerStatus, String> {
+        self.start_inner(options, swath, true).await
+    }
+
+    pub async fn start_from_launch(
+        &self,
+        options: RemoteServerOptions,
+        swath: AppState,
+    ) -> Result<RemoteServerStatus, String> {
+        self.start_inner(options, swath, false).await
+    }
+
+    async fn start_inner(
+        &self,
         mut options: RemoteServerOptions,
         swath: AppState,
+        persist: bool,
     ) -> Result<RemoteServerStatus, String> {
         if options.token.trim().len() < 16 {
             return Err("Connector token must be at least 16 characters".into());
@@ -187,7 +241,13 @@ impl RemoteServerManager {
                 "Tailscale Serve requires a loopback backend; use bind address 127.0.0.1".into(),
             );
         }
-        self.stop().await;
+        let previous_https = self
+            .running
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|v| v.options.tailscale_https);
+        self.stop_server(!previous_https || !options.tailscale_https);
         let listener = TcpListener::bind((ip, options.port))
             .await
             .map_err(|e| format!("Unable to bind connector: {e}"))?;
@@ -220,6 +280,20 @@ impl RemoteServerManager {
                 })
                 .await;
         });
+        if let Err(err) = if persist {
+            self.save_startup_options(options.start_on_launch.then_some(&options))
+        } else {
+            Ok(())
+        } {
+            let _ = stop_tx.send(());
+            if options.tailscale_https && !previous_https {
+                let _ = run_tailscale(&["serve", "--https=443", "off"]);
+            }
+            return Err(format!(
+                "Connector started but could not save launch settings: {err}"
+            ));
+        }
+        *self.startup_error.lock().unwrap() = None;
         *self.running.lock().unwrap() = Some(RunningServer {
             options,
             https_url,
@@ -228,13 +302,89 @@ impl RemoteServerManager {
         Ok(self.status())
     }
 
-    pub async fn stop(&self) {
+    fn startup_path(&self) -> Result<PathBuf, String> {
+        #[cfg(feature = "desktop")]
+        if let Some(app) = &self.app {
+            use tauri::Manager;
+            return app
+                .path()
+                .app_data_dir()
+                .map(|dir| dir.join("connector-startup.json"))
+                .map_err(|e| format!("Unable to locate connector settings: {e}"));
+        }
+        self.data_dir
+            .as_ref()
+            .map(|dir| dir.join("connector-startup.json"))
+            .ok_or_else(|| "Connector settings directory unavailable".into())
+    }
+
+    pub fn load_startup_options(&self) -> Result<Option<RemoteServerOptions>, String> {
+        let path = self.startup_path()?;
+        let bytes = match std::fs::read(path) {
+            Ok(bytes) => bytes,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(format!("Unable to read connector settings: {e}")),
+        };
+        let options: RemoteServerOptions = serde_json::from_slice(&bytes)
+            .map_err(|e| format!("Invalid connector settings: {e}"))?;
+        Ok(options.start_on_launch.then_some(options))
+    }
+
+    fn save_startup_options(&self, options: Option<&RemoteServerOptions>) -> Result<(), String> {
+        let path = self.startup_path()?;
+        if options.is_none() {
+            return match std::fs::remove_file(path) {
+                Ok(()) => Ok(()),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(e) => Err(format!("Unable to disable connector auto-start: {e}")),
+            };
+        }
+        let parent = path.parent().ok_or("Invalid connector settings path")?;
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("Unable to create connector settings directory: {e}"))?;
+        let temp = parent.join(format!(".connector-startup-{}.tmp", std::process::id()));
+        let result = (|| -> std::io::Result<()> {
+            let mut builder = std::fs::OpenOptions::new();
+            builder.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                builder.mode(0o600);
+            }
+            let mut file = builder.open(&temp)?;
+            use std::io::Write;
+            file.write_all(&serde_json::to_vec(options.unwrap()).map_err(std::io::Error::other)?)?;
+            file.sync_all()?;
+            std::fs::rename(&temp, &path)?;
+            Ok(())
+        })();
+        if result.is_err() {
+            let _ = std::fs::remove_file(&temp);
+        }
+        result.map_err(|e| format!("Unable to save connector settings: {e}"))
+    }
+
+    pub fn report_startup_error(&self, error: String) {
+        *self.startup_error.lock().unwrap() = Some(error);
+    }
+
+    fn stop_server(&self, disable_serve: bool) {
         if let Some(server) = self.running.lock().unwrap().take() {
             let _ = server.stop.send(());
-            if server.options.tailscale_https {
+            if disable_serve && server.options.tailscale_https {
                 let _ = run_tailscale(&["serve", "--https=443", "off"]);
             }
         }
+    }
+
+    pub fn shutdown(&self) {
+        self.stop_server(true);
+    }
+
+    pub async fn stop(&self) -> Result<(), String> {
+        self.save_startup_options(None)?;
+        self.stop_server(true);
+        Ok(())
     }
 }
 
@@ -812,5 +962,47 @@ mod tests {
         assert!(observed);
         state.terminal.kill_all();
         fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod startup_settings_tests {
+    use super::*;
+
+    #[test]
+    fn roundtrip_permissions_disable_and_restart() {
+        let dir = std::env::temp_dir().join(format!(
+            "swath-connector-test-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let manager = RemoteServerManager::new_headless(dir.clone());
+        let options = RemoteServerOptions {
+            bind: "127.0.0.1".into(),
+            port: 7878,
+            token: "private-test-token-123".into(),
+            tailscale_https: false,
+            start_on_launch: true,
+        };
+        manager.save_startup_options(Some(&options)).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(manager.startup_path().unwrap())
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+        }
+        let restarted = RemoteServerManager::new_headless(dir.clone());
+        let loaded = restarted.load_startup_options().unwrap().unwrap();
+        assert_eq!(loaded.token, options.token);
+        assert!(loaded.start_on_launch);
+        restarted.save_startup_options(None).unwrap();
+        assert!(manager.load_startup_options().unwrap().is_none());
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

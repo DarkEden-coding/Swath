@@ -50,7 +50,21 @@ pub fn run() {
             };
             app.manage(state.clone());
             // Headless/server installations can opt into hosting at launch without UI automation.
-            if let Ok(token) = std::env::var("SWATH_CONNECTOR_TOKEN") {
+            let env_token = std::env::var("SWATH_CONNECTOR_TOKEN").ok();
+            let saved = if env_token.is_none() {
+                remote.load_startup_options()
+            } else {
+                Ok(None)
+            };
+            let saved = match saved {
+                Ok(value) => value,
+                Err(err) => {
+                    eprintln!("failed to load connector settings: {err}");
+                    remote.report_startup_error(err);
+                    None
+                }
+            };
+            if env_token.is_some() || saved.is_some() {
                 let bind =
                     std::env::var("SWATH_CONNECTOR_BIND").unwrap_or_else(|_| "127.0.0.1".into());
                 let port = std::env::var("SWATH_CONNECTOR_PORT")
@@ -59,20 +73,17 @@ pub fn run() {
                     .unwrap_or(7878);
                 let tailscale_https = std::env::var("SWATH_CONNECTOR_TAILSCALE_HTTPS")
                     .is_ok_and(|value| !matches!(value.as_str(), "0" | "false" | "no"));
+                let options = saved.unwrap_or_else(|| remote::RemoteServerOptions {
+                    bind,
+                    port,
+                    token: env_token.unwrap(),
+                    tailscale_https,
+                    start_on_launch: false,
+                });
                 tauri::async_runtime::spawn(async move {
-                    if let Err(err) = remote
-                        .start(
-                            remote::RemoteServerOptions {
-                                bind,
-                                port,
-                                token,
-                                tailscale_https,
-                            },
-                            state,
-                        )
-                        .await
-                    {
+                    if let Err(err) = remote.start_from_launch(options, state).await {
                         eprintln!("failed to auto-start remote connector: {err}");
+                        remote.report_startup_error(err);
                     }
                 });
             }
@@ -114,6 +125,7 @@ pub fn run() {
             commands::pi_rpc,
             commands::remote_server_start,
             commands::remote_server_stop,
+            commands::remote_server_auto_start,
             commands::remote_server_status,
         ])
         .build(tauri::generate_context!())
@@ -177,7 +189,7 @@ pub async fn run_headless(
     }
     #[cfg(not(unix))]
     tokio::signal::ctrl_c().await?;
-    remote.stop().await;
+    remote.shutdown();
     state.terminal.kill_all();
     state.pi.kill_all();
     drop(lock);
@@ -192,6 +204,7 @@ pub fn headless_options(token: String) -> remote::RemoteServerOptions {
             .and_then(|v| v.parse().ok())
             .unwrap_or(7878),
         token,
+        start_on_launch: false,
         tailscale_https: std::env::var("SWATH_CONNECTOR_TAILSCALE_HTTPS")
             .is_ok_and(|v| !matches!(v.as_str(), "0" | "false" | "no")),
     }
