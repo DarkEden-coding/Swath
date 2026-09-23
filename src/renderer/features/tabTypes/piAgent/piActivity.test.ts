@@ -1,6 +1,7 @@
 import { describe, expect, it, beforeEach } from "vitest";
 import {
   countPiAgents,
+  reportQuestioning,
   reportStreaming,
   usePiActivityStore,
   type PiPaneActivity,
@@ -12,7 +13,7 @@ function activityOf(paneId: string): PiPaneActivity {
 
 describe("pi activity store", () => {
   beforeEach(() => {
-    usePiActivityStore.setState({ activity: {}, viewedPaneIds: [] });
+    usePiActivityStore.setState({ activity: {}, questioning: {}, viewedPaneIds: [] });
   });
 
   it("moves a pane idle -> running -> done as it streams", () => {
@@ -63,14 +64,26 @@ describe("pi activity store", () => {
     expect(activityOf("p1")).toBe("idle");
   });
 
-  it("counts running and finished panes", () => {
+  it("tracks panes waiting for an answer", () => {
+    reportQuestioning("p1", true);
+    expect(usePiActivityStore.getState().questioning.p1).toBe(true);
+    usePiActivityStore.getState().disposePane("p1");
+    expect(usePiActivityStore.getState().questioning.p1).toBeUndefined();
+  });
+
+  it("counts running, finished, and questioning panes", () => {
     reportStreaming("a", true);
+    reportQuestioning("a", true);
     reportStreaming("b", true);
     reportStreaming("b", false);
     reportStreaming("c", true);
     reportStreaming("c", false);
     expect(
-      countPiAgents(usePiActivityStore.getState().activity, ["a", "b", "c", "missing"]),
-    ).toEqual({ running: 1, done: 2 });
+      countPiAgents(
+        usePiActivityStore.getState().activity,
+        ["a", "b", "c", "missing"],
+        usePiActivityStore.getState().questioning,
+      ),
+    ).toEqual({ running: 1, done: 2, questioning: 1 });
   });
 });

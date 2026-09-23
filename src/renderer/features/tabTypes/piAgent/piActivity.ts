@@ -18,13 +18,17 @@ export interface PiAgentCounts {
   running: number;
   /** Finished a run since the owning tab or project was last selected. */
   done: number;
+  /** Waiting for the user to answer a Pi dialog. */
+  questioning: number;
 }
 
 interface PiActivityState {
   activity: Record<string, PiPaneActivity>;
+  questioning: Record<string, boolean>;
   /** Pi panes in the project the user currently has selected. */
   viewedPaneIds: readonly string[];
   reportStreaming: (paneId: string, streaming: boolean) => void;
+  reportQuestioning: (paneId: string, questioning: boolean) => void;
   setViewedPanes: (paneIds: readonly string[]) => void;
   acknowledgePanes: (paneIds: readonly string[]) => void;
   disposePane: (paneId: string) => void;
@@ -52,6 +56,13 @@ export const usePiActivityStore = create<PiActivityState>((set) => ({
       if (previous === next) return state;
       return { activity: { ...state.activity, [paneId]: next } };
     }),
+  reportQuestioning: (paneId, questioning) =>
+    set((state) => {
+      const previous = state.questioning[paneId] ?? false;
+      if (previous === questioning) return state;
+      return { questioning: { ...state.questioning, [paneId]: questioning } };
+    }),
+  questioning: {},
   setViewedPanes: (paneIds) =>
     set((state) => {
       const viewedPaneIds = sameIdList(state.viewedPaneIds, paneIds)
@@ -74,16 +85,23 @@ export const usePiActivityStore = create<PiActivityState>((set) => ({
     }),
   disposePane: (paneId) =>
     set((state) => {
-      if (!(paneId in state.activity)) return state;
+      if (!(paneId in state.activity) && !(paneId in state.questioning)) return state;
       const activity = { ...state.activity };
       delete activity[paneId];
-      return { activity };
+      const questioning = { ...state.questioning };
+      delete questioning[paneId];
+      return { activity, questioning };
     }),
 }));
 
 /** Records a streaming transition from anywhere (mounted pane or hidden-pane event cache). */
 export function reportStreaming(paneId: string, streaming: boolean): void {
   usePiActivityStore.getState().reportStreaming(paneId, streaming);
+}
+
+/** Records whether a pane is blocked on a user-facing Pi dialog. */
+export function reportQuestioning(paneId: string, questioning: boolean): void {
+  usePiActivityStore.getState().reportQuestioning(paneId, questioning);
 }
 
 /** Marks which pi panes belong to the project the user currently has selected. */
@@ -107,11 +125,13 @@ export function piPaneIdsOfWorkspace(workspace: { views: WorkspaceView[] }): str
 export function countPiAgents(
   activity: Record<string, PiPaneActivity>,
   paneIds: readonly string[],
+  questioning: Record<string, boolean> = {},
 ): PiAgentCounts {
-  const counts: PiAgentCounts = { running: 0, done: 0 };
+  const counts: PiAgentCounts = { running: 0, done: 0, questioning: 0 };
   for (const id of paneIds) {
     if (activity[id] === "running") counts.running += 1;
     else if (activity[id] === "done") counts.done += 1;
+    if (questioning[id]) counts.questioning += 1;
   }
   return counts;
 }

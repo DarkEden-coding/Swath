@@ -77,6 +77,7 @@ export function Sidebar({ onToggleCollapse }: SidebarProps): JSX.Element {
   }, [config.workspaces, config.activeWorkspaceId]);
 
   const agentActivity = usePiActivityStore((state) => state.activity);
+  const agentQuestions = usePiActivityStore((state) => state.questioning);
   const acknowledgePanes = usePiActivityStore((state) => state.acknowledgePanes);
 
   return (
@@ -146,7 +147,11 @@ export function Sidebar({ onToggleCollapse }: SidebarProps): JSX.Element {
                 <GroupHeaderItem
                   {...shared}
                   memberCount={members.length}
-                  agentCounts={countPiAgents(agentActivity, piPaneIdsOfWorkspace(workspace))}
+                  agentCounts={countPiAgents(
+                    agentActivity,
+                    piPaneIdsOfWorkspace(workspace),
+                    agentQuestions,
+                  )}
                   collapsed={workspace.groupCollapsed === true}
                   onToggleCollapsed={() =>
                     appActions.setGroupCollapsed(workspace.id, workspace.groupCollapsed !== true)
@@ -157,7 +162,11 @@ export function Sidebar({ onToggleCollapse }: SidebarProps): JSX.Element {
                   <WorkspaceItem
                     {...shared}
                     grouped={workspace.groupId !== undefined}
-                    agentCounts={countPiAgents(agentActivity, piPaneIdsOfWorkspace(workspace))}
+                    agentCounts={countPiAgents(
+                      agentActivity,
+                      piPaneIdsOfWorkspace(workspace),
+                      agentQuestions,
+                    )}
                     groupTargets={groupableTargets(config, workspace.id)}
                     pairTargets={pairableProjects(config, workspace.id)}
                   />
@@ -536,6 +545,16 @@ const SIDEBAR_RING_CIRCUMFERENCE = 2 * Math.PI * SIDEBAR_RING_RADIUS;
  */
 function AgentActivityIndicator({ counts }: { counts: PiAgentCounts }): JSX.Element | null {
   const total = counts.running + counts.done;
+  if (counts.questioning > 0) {
+    return (
+      <span
+        className="ml-auto grid size-[18px] shrink-0 place-items-center text-sm font-bold leading-none text-yellow-400"
+        title="Pi needs an answer"
+      >
+        ?
+      </span>
+    );
+  }
   if (total === 0) return null;
   const spinning = counts.running > 0;
   const title = spinning
