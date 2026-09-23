@@ -65,12 +65,17 @@ function useAskpass(command: string, helper: string): string {
 export default function sudoPrompt(pi: ExtensionAPI): void {
   let credentials: { dir: string; helper: string; secret: string } | undefined;
   let expiryTimer: ReturnType<typeof setTimeout> | undefined;
+  const remoteCredentials = new Map<string, { dir: string; secret: string }>();
   const remoteCredentialDirs = new Set<string>();
 
   const clearCredentials = (): void => {
     if (credentials) rmSync(credentials.dir, { recursive: true, force: true });
+    for (const credential of remoteCredentials.values()) {
+      rmSync(credential.dir, { recursive: true, force: true });
+    }
     for (const dir of remoteCredentialDirs) rmSync(dir, { recursive: true, force: true });
     remoteCredentialDirs.clear();
+    remoteCredentials.clear();
     credentials = undefined;
     clearTimeout(expiryTimer);
   };
@@ -83,17 +88,35 @@ export default function sudoPrompt(pi: ExtensionAPI): void {
     }
 
     if (usesRemoteSudo(input.command)) {
-      const password = await ctx.ui.input(PASSWORD_TITLE, "Remote sudo password");
-      if (password === undefined) {
-        return { block: true, reason: "Sudo password entry was cancelled" };
+      // Only cache when the SSH destination is unambiguous; other forms still prompt per call.
+      const host = input.command.match(
+        /\bssh\s+(?:(?:-[piloFWJ]\s+\S+|-[^\s]+)\s+)*([^\s"';&|]+)/,
+      )?.[1];
+      let credential = host ? remoteCredentials.get(host) : undefined;
+      if (!credential) {
+        const password = await ctx.ui.input(PASSWORD_TITLE, "Remote sudo password");
+        if (password === undefined) {
+          return { block: true, reason: "Sudo password entry was cancelled" };
+        }
+        credential = createAskpass(password);
+        remoteCredentialDirs.add(credential.dir);
+        if (host) {
+          remoteCredentials.set(host, credential);
+          const saved = credential;
+          setTimeout(() => {
+            rmSync(saved.dir, { recursive: true, force: true });
+            remoteCredentialDirs.delete(saved.dir);
+            if (remoteCredentials.get(host) === saved) remoteCredentials.delete(host);
+          }, TEN_MINUTES);
+        } else {
+          const dir = credential.dir;
+          setTimeout(() => {
+            rmSync(dir, { recursive: true, force: true });
+            remoteCredentialDirs.delete(dir);
+          }, TEN_MINUTES);
+        }
       }
-      const remoteCredentials = createAskpass(password);
-      remoteCredentialDirs.add(remoteCredentials.dir);
-      setTimeout(() => {
-        rmSync(remoteCredentials.dir, { recursive: true, force: true });
-        remoteCredentialDirs.delete(remoteCredentials.dir);
-      }, TEN_MINUTES);
-      input.command = useRemotePassword(input.command, remoteCredentials.secret);
+      input.command = useRemotePassword(input.command, credential.secret);
       return;
     }
 
