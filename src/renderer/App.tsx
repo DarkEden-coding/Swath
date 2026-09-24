@@ -29,6 +29,7 @@ export function App(): JSX.Element {
   const sidebarCollapsed = useUiStore((state) => state.sidebarCollapsed);
   const sidebarWidthPx = useUiStore((state) => state.sidebarWidthPx);
   const toggleSidebarCollapsed = useUiStore((state) => state.toggleSidebarCollapsed);
+  const embeddedRemote = window.swath.platform === "web" && location.hash === "#swath-embedded";
 
   const beginSidebarResize = (event: ReactPointerEvent<HTMLDivElement>): void => {
     event.preventDefault();
@@ -116,8 +117,10 @@ export function App(): JSX.Element {
 
   if (!loaded || !config) {
     return (
-      <div className="grid h-full min-h-0 grid-rows-[auto_minmax(0,1fr)] bg-swath-bg">
-        <WindowTitleBar />
+      <div
+        className={`grid h-full min-h-0 bg-swath-bg ${embeddedRemote ? "grid-rows-[minmax(0,1fr)]" : "grid-rows-[auto_minmax(0,1fr)]"}`}
+      >
+        {!embeddedRemote && <WindowTitleBar />}
         <div className={bootScreenClass}>Loading…</div>
       </div>
     );
@@ -128,8 +131,10 @@ export function App(): JSX.Element {
     : `${sidebarWidthPx}px minmax(0,1fr)`;
 
   return (
-    <div className="relative grid h-full min-h-0 grid-rows-[auto_minmax(0,1fr)] bg-swath-bg">
-      <WindowTitleBar />
+    <div
+      className={`relative grid h-full min-h-0 bg-swath-bg ${embeddedRemote ? "grid-rows-[minmax(0,1fr)]" : "grid-rows-[auto_minmax(0,1fr)]"}`}
+    >
+      {!embeddedRemote && <WindowTitleBar />}
       <main className="grid min-h-0 w-full bg-swath-bg" style={{ gridTemplateColumns }}>
         {sidebarCollapsed ? (
           <div className="pointer-events-none min-w-0 w-0 overflow-hidden" aria-hidden="true" />

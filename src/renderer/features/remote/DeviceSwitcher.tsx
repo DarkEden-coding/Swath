@@ -44,6 +44,7 @@ export function DeviceSwitcher(): JSX.Element {
     url.search = "";
     url.hash = "";
     url.searchParams.set("token", connection.token);
+    url.hash = "swath-embedded";
     const browser = new Webview(getCurrentWindow(), `device-${currentGeneration}`, {
       url: url.toString(),
       x: 0,

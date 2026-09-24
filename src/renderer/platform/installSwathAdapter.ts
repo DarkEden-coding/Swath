@@ -10,7 +10,10 @@ type SwathWindow = Window & { swath: SwathApi };
 export function attachSwathAdapterIfMissing(): void {
   if (typeof window === "undefined" || ("swath" in window && window.swath)) return;
 
-  if (isTauriRuntime()) {
+  if (location.hash === "#swath-embedded") {
+    // Tauri may inject its globals into child webviews; the connector must still use its own RPC.
+    (window as SwathWindow).swath = createRemoteWebSwath();
+  } else if (isTauriRuntime()) {
     (window as SwathWindow).swath = createHybridSwath(createTauriSwath());
   } else if (location.pathname !== "/" || new URLSearchParams(location.search).has("fixture")) {
     (window as SwathWindow).swath = createBrowserStubSwath();
