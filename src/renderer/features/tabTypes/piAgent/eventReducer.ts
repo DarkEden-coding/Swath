@@ -267,6 +267,9 @@ function applyExtensionUi(state: PiPaneState, event: PiExtensionUiRequest): PiPa
       return { ...state, dialogs: [...state.dialogs, event] };
 
     case "notify":
+      if (event.message.startsWith("Prompt cache miss:")) {
+        return appendInlineNotice(state, event.notifyType ?? "info", event.message);
+      }
       return {
         ...state,
         seq: state.seq + 1,

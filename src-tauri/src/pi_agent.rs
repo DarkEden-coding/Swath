@@ -24,6 +24,7 @@ const STDERR_MAX_BYTES: usize = 64 * 1024;
 /// Swath-owned Pi extensions injected into every managed agent.
 const PI_SUDO_EXTENSION: &str = include_str!("pi_sudo.ts");
 const PI_SECRETS_EXTENSION: &str = include_str!("pi_secrets.ts");
+const PI_CACHE_EXTENSION: &str = include_str!("pi_cache.ts");
 
 type PiResult = Result<Value, String>;
 
@@ -79,10 +80,13 @@ impl PiManager {
         let temp_dir = std::env::temp_dir();
         let sudo_extension = temp_dir.join("swath-pi-sudo.ts");
         let secrets_extension = temp_dir.join("swath-pi-secrets.ts");
+        let cache_extension = temp_dir.join("swath-pi-cache.ts");
         fs::write(&sudo_extension, PI_SUDO_EXTENSION)
             .map_err(|err| format!("Unable to prepare Pi sudo integration: {err}"))?;
         fs::write(&secrets_extension, PI_SECRETS_EXTENSION)
             .map_err(|err| format!("Unable to prepare Pi secrets integration: {err}"))?;
+        fs::write(&cache_extension, PI_CACHE_EXTENSION)
+            .map_err(|err| format!("Unable to prepare Pi cache integration: {err}"))?;
 
         let mut command = pi_command();
         command
@@ -92,6 +96,8 @@ impl PiManager {
             .arg(sudo_extension)
             .arg("--extension")
             .arg(secrets_extension)
+            .arg("--extension")
+            .arg(cache_extension)
             .args(extra_args)
             .current_dir(cwd)
             .stdin(Stdio::piped())

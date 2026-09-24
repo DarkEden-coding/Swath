@@ -362,9 +362,9 @@ export function PiAgentPane({ workspace, view, pane }: PaneComponentProps): JSX.
       >
         <div className="pi-agent relative flex h-full min-h-0 overflow-hidden">
           <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-            {state.notices.length > 0 ? (
+            {state.notices.some((notice) => !notice.message.startsWith("Prompt cache may have expired")) ? (
               <div className="shrink-0 border-b border-[var(--pi-border-muted)]">
-                {state.notices.slice(-3).map((notice) => (
+                {state.notices.filter((notice) => !notice.message.startsWith("Prompt cache may have expired")).slice(-3).map((notice) => (
                   <NoticeRow key={notice.id} notice={notice} onDismiss={agent.dismissNotice} />
                 ))}
               </div>
@@ -456,6 +456,10 @@ export function PiAgentPane({ workspace, view, pane }: PaneComponentProps): JSX.
             </div>
 
             {renderWidgets(widgetsAbove)}
+
+            {state.notices.filter((notice) => notice.message.startsWith("Prompt cache may have expired")).map((notice) => (
+              <NoticeRow key={notice.id} notice={notice} onDismiss={agent.dismissNotice} />
+            ))}
 
             <Composer
               paneId={paneId}

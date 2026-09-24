@@ -159,6 +159,19 @@ describe("history hydration from get_messages", () => {
 });
 
 describe("reducePiEvent", () => {
+  it("places cache misses inline while keeping expiry and ordinary notifications as notices", () => {
+    const state = run([
+      { type: "extension_ui_request", id: "miss", method: "notify", message: "Prompt cache miss: not read", notifyType: "warning" },
+      { type: "extension_ui_request", id: "expiry", method: "notify", message: "Prompt cache may have expired", notifyType: "info" },
+      { type: "extension_ui_request", id: "ordinary", method: "notify", message: "Other notice", notifyType: "info" },
+    ]);
+    expect(state.entries).toMatchObject([{ kind: "inlineNotice", text: "Prompt cache miss: not read", level: "warning" }]);
+    expect(state.notices.map(({ message }) => message)).toEqual([
+      "Prompt cache may have expired",
+      "Other notice",
+    ]);
+  });
+
   it("replaces cumulative message content rather than appending it", () => {
     const state = run([
       { type: "message_start", message: { role: "assistant", content: [] } },
