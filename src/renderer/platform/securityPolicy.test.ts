@@ -29,6 +29,14 @@ describe("renderer content security policy", () => {
     );
   });
 
+  it("enables Tauri child webviews for remote device views", () => {
+    const manifest = readFileSync(
+      resolve(import.meta.dirname, "../../../src-tauri/Cargo.toml"),
+      "utf8",
+    );
+    expect(manifest).toMatch(/tauri = \{[^\n]*features = \["unstable"\]/);
+  });
+
   it("limits native webview permissions to the local UI", () => {
     const capability = JSON.parse(
       readFileSync(
