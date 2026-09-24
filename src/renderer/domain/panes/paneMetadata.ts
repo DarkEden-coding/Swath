@@ -80,6 +80,13 @@ const metadata: Record<PaneKind, PaneKindMetadata> = {
       };
     },
   },
+  website: {
+    kind: "website",
+    label: "Website",
+    createPaneMeta() {
+      return { kind: "website", title: "Website", metadata: { title: "Website" } };
+    },
+  },
 };
 
 /** Falls back to the terminal description for a kind this build does not know. */

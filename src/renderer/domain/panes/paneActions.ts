@@ -114,6 +114,25 @@ export function setPaneInitialCwd(
   });
 }
 
+/** Records the website address that an embedded website pane should reopen. */
+export function setWebsiteAddress(
+  config: AppConfig,
+  workspaceId: string,
+  viewId: string,
+  paneId: string,
+  address: string,
+  title: string,
+): AppConfig {
+  return updateView(config, workspaceId, viewId, (view) => {
+    const layout = structuredClone(view.layout);
+    const pane = findPane(layout, paneId);
+    if (!pane || pane.kind !== "website") return view;
+    pane.title = title;
+    pane.metadata = { ...(pane.metadata ?? {}), title, websiteAddress: address };
+    return { ...view, layout, title };
+  });
+}
+
 /** Records the Pi session file that a pane should reopen. */
 export function setPanePiSessionFile(
   config: AppConfig,

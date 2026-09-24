@@ -20,6 +20,8 @@ import {
   type PiAgentStartOptions,
 } from "../features/tabTypes/piAgent/piAgentTabType";
 import { prewarmPiAgent } from "../features/tabTypes/piAgent/usePiAgent";
+import { createWebsiteView } from "../features/tabTypes/website/websiteTabType";
+import { websiteAddressFrom } from "../features/tabTypes/website/websiteAddress";
 import { reportError } from "../lib/errorLog";
 import { toRemotePath } from "../../shared/ipc/remote";
 import type { RemoteConnection } from "../../shared/types";
@@ -350,6 +352,54 @@ export function createPiAgentTab(
     model: start.model,
     reasoningLevel: start.thinkingLevel,
   });
+}
+
+/** Opens and activates an embedded website view in one workspace. Invalid addresses are ignored. */
+export function createWebsiteTab(workspaceId: string, address: string, title?: string): void {
+  const website = websiteAddressFrom(address);
+  if (!website) return;
+  let activePaneId: string | undefined;
+  withConfig((config) => {
+    const workspaces = config.workspaces.map((workspace) => {
+      if (workspace.id !== workspaceId) return workspace;
+      const view = createWebsiteView(
+        title?.trim() || website.title,
+        workspace.path,
+        config.settings,
+        website.url,
+      );
+      activePaneId = view.activePaneId;
+      return {
+        ...workspace,
+        views: [...workspace.views, view],
+        activeViewId: view.id,
+        updatedAt: Date.now(),
+      };
+    });
+    return { config: { ...config, workspaces }, activePaneId };
+  });
+}
+
+/** Persists a validated address for an existing website pane. Invalid addresses are ignored. */
+export function setWebsiteAddress(
+  workspaceId: string,
+  viewId: string,
+  paneId: string,
+  address: string,
+  title?: string,
+): void {
+  const website = websiteAddressFrom(address);
+  if (!website) return;
+  withConfig((config) =>
+    paneActions.setWebsiteAddress(
+      config,
+      workspaceId,
+      viewId,
+      paneId,
+      website.url,
+      title?.trim() || website.title,
+    ),
+  );
 }
 
 /** Closes a view after any required confirmation. */

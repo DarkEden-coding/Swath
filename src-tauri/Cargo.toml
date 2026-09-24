@@ -28,7 +28,7 @@ desktop = ["dep:tauri", "dep:tauri-build", "dep:tauri-plugin-dialog", "dep:tauri
 tauri-build = { version = "2", features = [], optional = true }
 
 [dependencies]
-tauri = { version = "2", features = ["unstable"], optional = true }
+tauri = { version = "2", features = ["unstable", "protocol-asset"], optional = true }
 tauri-plugin-dialog = { version = "2", default-features = false, features = ["xdg-portal"], optional = true }
 tauri-plugin-clipboard-manager = { version = "2", optional = true }
 tauri-plugin-opener = { version = "2", optional = true }

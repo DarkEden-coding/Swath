@@ -1,6 +1,6 @@
 use crate::types::*;
 use crate::{ask_images, config, files, git, pi_agent, platform, AppState};
-use tauri::{AppHandle, Emitter, State, Window};
+use tauri::{AppHandle, Emitter, Manager, State, Window};
 
 pub type CommandResult<T> = Result<T, String>;
 
@@ -76,6 +76,31 @@ pub fn permissions_ensure_terminal_paste() -> TerminalPastePermissionStatus {
 #[tauri::command]
 pub fn browser_open_external(url: String) -> CommandResult<()> {
     platform::open_external(url).map_err(|err| err.to_string())
+}
+
+/// Grants the asset protocol access to a user-selected HTML page and its relative assets.
+#[tauri::command]
+pub fn website_allow_local_file(app: AppHandle, path: String) -> CommandResult<()> {
+    let path =
+        std::fs::canonicalize(&path).map_err(|err| format!("Unable to open HTML file: {err}"))?;
+    if !path.is_file()
+        || !path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("html") || ext.eq_ignore_ascii_case("htm"))
+    {
+        return Err("Website tab requires an existing .html or .htm file".into());
+    }
+    let directory = path.parent().ok_or("HTML file has no parent directory")?;
+    let scope = app.asset_protocol_scope();
+    if directory.parent().is_none()
+        || std::env::var_os("HOME").is_some_and(|home| directory == std::path::Path::new(&home))
+    {
+        scope.allow_file(&path)
+    } else {
+        scope.allow_directory(directory, true)
+    }
+    .map_err(|err| format!("Unable to allow HTML file assets: {err}"))
 }
 
 #[tauri::command]

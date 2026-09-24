@@ -25,6 +25,8 @@ const STDERR_MAX_BYTES: usize = 64 * 1024;
 const PI_SUDO_EXTENSION: &str = include_str!("pi_sudo.ts");
 const PI_SECRETS_EXTENSION: &str = include_str!("pi_secrets.ts");
 const PI_CACHE_EXTENSION: &str = include_str!("pi_cache.ts");
+const PI_WEBSITE_EXTENSION: &str = include_str!("pi_open_website.ts");
+const PI_PUBLISH_EXTENSION: &str = include_str!("pi_publish.ts");
 
 type PiResult = Result<Value, String>;
 
@@ -32,6 +34,20 @@ struct PiProcess {
     child: Child,
     stdin: Option<ChildStdin>,
     stderr: Arc<Mutex<String>>,
+}
+
+/// Closing stdin asks Pi to run session_shutdown, which removes session-owned Serve routes.
+fn stop_pi_child(mut proc: PiProcess) {
+    drop(proc.stdin.take());
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(25);
+    while std::time::Instant::now() < deadline {
+        if proc.child.try_wait().ok().flatten().is_some() {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let _ = proc.child.kill();
+    let _ = proc.child.wait();
 }
 
 /// Owns every live pi child process, keyed by pane id.
@@ -51,9 +67,8 @@ impl PiManager {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
         };
-        for (_, mut proc) in procs.drain() {
-            drop(proc.stdin.take());
-            let _ = proc.child.kill();
+        for (_, proc) in procs.drain() {
+            stop_pi_child(proc);
         }
     }
 
@@ -81,12 +96,18 @@ impl PiManager {
         let sudo_extension = temp_dir.join("swath-pi-sudo.ts");
         let secrets_extension = temp_dir.join("swath-pi-secrets.ts");
         let cache_extension = temp_dir.join("swath-pi-cache.ts");
+        let website_extension = temp_dir.join("swath-pi-open-website.ts");
+        let publish_extension = temp_dir.join("swath-pi-publish.ts");
         fs::write(&sudo_extension, PI_SUDO_EXTENSION)
             .map_err(|err| format!("Unable to prepare Pi sudo integration: {err}"))?;
         fs::write(&secrets_extension, PI_SECRETS_EXTENSION)
             .map_err(|err| format!("Unable to prepare Pi secrets integration: {err}"))?;
         fs::write(&cache_extension, PI_CACHE_EXTENSION)
             .map_err(|err| format!("Unable to prepare Pi cache integration: {err}"))?;
+        fs::write(&website_extension, PI_WEBSITE_EXTENSION)
+            .map_err(|err| format!("Unable to prepare Pi website integration: {err}"))?;
+        fs::write(&publish_extension, PI_PUBLISH_EXTENSION)
+            .map_err(|err| format!("Unable to prepare Pi Tailscale integration: {err}"))?;
 
         let mut command = pi_command();
         command
@@ -98,6 +119,10 @@ impl PiManager {
             .arg(secrets_extension)
             .arg("--extension")
             .arg(cache_extension)
+            .arg("--extension")
+            .arg(website_extension)
+            .arg("--extension")
+            .arg(publish_extension)
             .args(extra_args)
             .current_dir(cwd)
             .stdin(Stdio::piped())
@@ -204,10 +229,8 @@ impl PiManager {
 
     fn kill(&self, pane_id: &str) -> PiResult {
         let mut procs = self.procs.lock().map_err(|_| "pi state poisoned")?;
-        if let Some(mut proc) = procs.remove(pane_id) {
-            drop(proc.stdin.take());
-            let _ = proc.child.kill();
-            let _ = proc.child.wait();
+        if let Some(proc) = procs.remove(pane_id) {
+            std::thread::spawn(move || stop_pi_child(proc));
         }
         Ok(json!({ "ok": true }))
     }

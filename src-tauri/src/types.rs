@@ -147,6 +147,8 @@ pub struct PaneMetadata {
     pub image_path: Option<String>,
     #[serde(default)]
     pub image_title: Option<String>,
+    #[serde(default)]
+    pub website_address: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -300,6 +302,17 @@ pub struct TerminalPastePermissionStatus {
 #[cfg(test)]
 mod tests {
     use super::PaneMetadata;
+
+    #[test]
+    fn pane_metadata_retains_website_address() {
+        let metadata: PaneMetadata = serde_json::from_str(
+            r#"{"websiteAddress":"http://127.0.0.1:39175/"}"#,
+        ).unwrap();
+        assert_eq!(
+            serde_json::to_value(metadata).unwrap()["websiteAddress"],
+            "http://127.0.0.1:39175/"
+        );
+    }
 
     #[test]
     fn pane_metadata_retains_pi_session_file() {

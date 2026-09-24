@@ -110,6 +110,7 @@ pub fn run() {
             commands::clipboard_write_text,
             commands::permissions_ensure_terminal_paste,
             commands::browser_open_external,
+            commands::website_allow_local_file,
             commands::terminal_create,
             commands::terminal_write,
             commands::terminal_resize,

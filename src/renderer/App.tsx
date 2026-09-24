@@ -12,6 +12,9 @@ import { AddProjectModal } from "./features/remote/AddProjectModal";
 import { piPaneIdsOfWorkspace, setViewedPanes } from "./features/tabTypes/piAgent/piActivity";
 import { useConfigStore } from "./state/configStore";
 import { useUiStore } from "./state/uiStore";
+import { parsePiLine } from "../shared/ipc/piRpc";
+import { collectPaneIds } from "./domain/layout/layoutTree";
+import { websiteTabRequestFrom } from "./features/tabTypes/website/websiteRequest";
 
 const TerminalWorkspace = lazy(() =>
   import("./features/shell/components/TerminalWorkspace").then((module) => ({
@@ -51,6 +54,23 @@ export function App(): JSX.Element {
   };
 
   useAppBootstrap();
+
+  useEffect(
+    () =>
+      window.swath.pi.onEvent((paneId, line) => {
+        if (!line) return;
+        const event = parsePiLine(line);
+        const request = event && websiteTabRequestFrom(event);
+        if (!request) return;
+        const workspace = useConfigStore
+          .getState()
+          .config?.workspaces.find((item) =>
+            item.views.some((view) => collectPaneIds(view.layout).includes(paneId)),
+          );
+        if (workspace) appActions.createWebsiteTab(workspace.id, request.url, request.title);
+      }),
+    [],
+  );
 
   const activeWorkspace =
     config?.workspaces.find((workspace) => workspace.id === config.activeWorkspaceId) ?? null;

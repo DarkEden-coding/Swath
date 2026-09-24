@@ -31,6 +31,8 @@ export interface PaneMetadata {
   piModel?: string;
   /** Optional Pi reasoning-level override. */
   piThinkingLevel?: string;
+  /** Persisted address for an embedded website pane. */
+  websiteAddress?: string;
 }
 
 export interface PaneLeaf {

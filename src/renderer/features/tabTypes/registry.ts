@@ -5,6 +5,7 @@ import { terminalTabType } from "./terminal/terminalTabType";
 import { gitManagerTabType } from "./gitManager/gitManagerTabType";
 import { fileBrowserTabType } from "./fileBrowser/fileBrowserTabType";
 import { piAgentTabType } from "./piAgent/piAgentTabType";
+import { websiteTabType } from "./website/websiteTabType";
 import type { TabTypeRegistration } from "./types";
 
 const tabTypes: Record<PaneKind, TabTypeRegistration> = {
@@ -12,6 +13,7 @@ const tabTypes: Record<PaneKind, TabTypeRegistration> = {
   gitManager: gitManagerTabType,
   fileBrowser: fileBrowserTabType,
   piAgent: piAgentTabType,
+  website: websiteTabType,
 };
 
 /** Returns undefined for a kind this build no longer registers, e.g. one left in an old config. */
