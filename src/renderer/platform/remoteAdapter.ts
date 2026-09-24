@@ -29,6 +29,7 @@ class RemoteClient {
   private socket: WebSocket | null = null;
   private nextId = 1;
   private retry: number | null = null;
+  private active = false;
   private pending = new Map<
     number,
     { resolve: (value: unknown) => void; reject: (error: Error) => void }
@@ -56,6 +57,7 @@ class RemoteClient {
   }
 
   async open(): Promise<void> {
+    this.active = true;
     if (this.socket?.readyState === WebSocket.OPEN) return;
     if (this.socket?.readyState === WebSocket.CONNECTING) {
       await new Promise<void>((resolve, reject) => {
@@ -93,6 +95,7 @@ class RemoteClient {
   }
 
   close(): void {
+    this.active = false;
     if (this.retry !== null) window.clearTimeout(this.retry);
     this.retry = null;
     this.socket?.close();
@@ -106,7 +109,7 @@ class RemoteClient {
     for (const pending of this.pending.values())
       pending.reject(new Error("Remote device disconnected"));
     this.pending.clear();
-    if (this.eventListeners.size > 0 && this.retry === null) {
+    if (this.active && this.retry === null) {
       this.retry = window.setTimeout(() => {
         this.retry = null;
         void this.open().catch(() => undefined);

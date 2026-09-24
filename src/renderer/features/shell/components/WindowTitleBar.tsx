@@ -1,6 +1,7 @@
 import { useEffect, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import appIcon from "../../../assets/app-icon-64.png";
+import { DeviceSwitcher } from "../../remote/DeviceSwitcher";
 import { isTauriRuntime } from "../../../platform/runtime";
 
 type WindowAction = "close" | "minimize" | "toggleMaximize";
@@ -125,7 +126,7 @@ export function WindowTitleBar(): JSX.Element {
         }}
       >
         <div
-          className="pointer-events-none flex min-w-0 flex-1 items-center gap-2.5 px-3"
+          className="pointer-events-none flex shrink-0 items-center gap-2.5 px-3"
           data-tauri-drag-region
         >
           <img src={appIcon} alt="" className="size-5 object-contain" draggable={false} />
@@ -133,6 +134,8 @@ export function WindowTitleBar(): JSX.Element {
             Swath
           </span>
         </div>
+        {window.swath.platform !== "web" && <DeviceSwitcher />}
+        <div className="min-w-0 flex-1" data-tauri-drag-region />
         <div className="flex shrink-0 items-stretch [-webkit-app-region:no-drag] [app-region:no-drag]">
           <button
             type="button"

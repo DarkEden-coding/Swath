@@ -128,7 +128,7 @@ export function App(): JSX.Element {
     : `${sidebarWidthPx}px minmax(0,1fr)`;
 
   return (
-    <div className="grid h-full min-h-0 grid-rows-[auto_minmax(0,1fr)] bg-swath-bg">
+    <div className="relative grid h-full min-h-0 grid-rows-[auto_minmax(0,1fr)] bg-swath-bg">
       <WindowTitleBar />
       <main className="grid min-h-0 w-full bg-swath-bg" style={{ gridTemplateColumns }}>
         {sidebarCollapsed ? (
