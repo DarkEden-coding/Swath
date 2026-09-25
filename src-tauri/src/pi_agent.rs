@@ -8,7 +8,7 @@ use crate::events::EventSink;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::fs;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
 use std::path::Path;
@@ -476,6 +476,36 @@ pub fn rpc(events: &EventSink, manager: &PiManager, request: Value) -> PiResult 
     }
 
     match op {
+        "backgroundTerminals" => {
+            let procs = manager.procs.lock().map_err(|_| "pi state poisoned")?;
+            let proc = procs.get(pane_id).ok_or("Pi pane is not running")?;
+            let dir = std::env::temp_dir().join(format!("pi-background-terminals-{}", proc.child.id()));
+            let manifest = fs::read_to_string(dir.join("terminals.json"))
+                .unwrap_or_else(|_| "[]".to_string());
+            let terminals: Value = serde_json::from_str(&manifest)
+                .map_err(|err| format!("Invalid terminal metadata: {err}"))?;
+            let selected = request.get("terminalId").and_then(Value::as_str);
+            let output = if let Some(id) = selected {
+                if !terminals.as_array().is_some_and(|items| items.iter().any(|item| item["id"] == id)) {
+                    return Err("Unknown background terminal".into());
+                }
+                // IDs come from the extension, but still constrain the path to its log directory.
+                if !id.starts_with("term-") || !id[5..].bytes().all(|byte| byte.is_ascii_digit()) {
+                    return Err("Invalid background terminal ID".into());
+                }
+                let mut file = fs::File::open(dir.join(format!("{id}.log")))
+                    .map_err(|err| format!("Unable to open terminal log: {err}"))?;
+                let len = file.metadata().map_err(|err| err.to_string())?.len();
+                file.seek(SeekFrom::Start(len.saturating_sub(256 * 1024)))
+                    .map_err(|err| err.to_string())?;
+                let mut bytes = Vec::new();
+                file.take(256 * 1024).read_to_end(&mut bytes).map_err(|err| err.to_string())?;
+                Some(String::from_utf8_lossy(&bytes).into_owned())
+            } else {
+                None
+            };
+            Ok(json!({ "terminals": terminals, "output": output }))
+        }
         "attach" => manager.attach(pane_id),
         "spawn" => {
             let cwd = request

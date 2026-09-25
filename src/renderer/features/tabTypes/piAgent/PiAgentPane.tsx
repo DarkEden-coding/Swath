@@ -17,6 +17,7 @@ import { PiRootsProvider } from "./PiRootsContext";
 import { PaneFrame } from "../../panes/components/PaneFrame";
 import type { PaneComponentProps } from "../../panes/paneTypes";
 import { Chrome, isEmptyCounterChip } from "./Chrome";
+import { BackgroundTerminalViewer } from "./BackgroundTerminalViewer";
 import { Composer } from "./Composer";
 import { DialogHost } from "./DialogHost";
 import { SessionList, sessionDirOf } from "./SessionList";
@@ -326,6 +327,7 @@ export function PiAgentPane({ workspace, view, pane }: PaneComponentProps): JSX.
     };
   }, [clearUserScrollIntent, scheduleScrollToBottom]);
 
+  const [showTerminals, setShowTerminals] = useState(false);
   const widgetsAbove = Object.values(state.widgets).filter((w) => w.placement === "aboveEditor");
   const widgetsBelow = Object.values(state.widgets).filter((w) => w.placement === "belowEditor");
 
@@ -340,6 +342,15 @@ export function PiAgentPane({ workspace, view, pane }: PaneComponentProps): JSX.
           {widget.lines.map((line, index) => (
             <div key={index}>
               <AnsiText text={line} />
+              {widget.key === "background-terminal-count" ? (
+                <button
+                  type="button"
+                  className="ml-2 underline"
+                  onClick={() => setShowTerminals(true)}
+                >
+                  View
+                </button>
+              ) : null}
             </div>
           ))}
         </div>
@@ -347,6 +358,9 @@ export function PiAgentPane({ workspace, view, pane }: PaneComponentProps): JSX.
 
   return (
     <PiRootsProvider cwd={cwd} groupPaths={groupPaths}>
+      {showTerminals ? (
+        <BackgroundTerminalViewer paneId={paneId} onClose={() => setShowTerminals(false)} />
+      ) : null}
       <PaneFrame
         active={isActive}
         title={state.title ?? state.state?.sessionName ?? "pi"}

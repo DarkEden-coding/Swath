@@ -13,6 +13,7 @@ export type PiRpcRequest =
   | { op: "send"; paneId: string; line: string }
   | { op: "kill"; paneId: string }
   | { op: "stderr"; paneId: string }
+  | { op: "backgroundTerminals"; paneId: string; terminalId?: string }
   /**
    * Bounded file walk for `@file` completion: `cwd` yields relative paths, and the other folders
    * of a project group yield absolute ones, which is what a mention needs to reach outside `cwd`.
