@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import * as appActions from "../../app/appActions";
 import { useConfigStore } from "../../state/configStore";
 import { useUiStore } from "../../state/uiStore";
@@ -16,43 +16,100 @@ export function AddProjectModal(): JSX.Element | null {
   const [listing, setListing] = useState<RemoteFolderListing | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [pathInput, setPathInput] = useState("");
+  const [newFolder, setNewFolder] = useState("");
+  const requestId = useRef(0);
+  const browserId = source === "local" ? "host" : connectionId;
+  const customPicker = source === "remote" || window.swath.platform === "web";
 
   useEffect(() => {
     if (!open) return;
     setSource("local");
     setConnectionId(machines[0]?.id ?? "");
     setListing(null);
+    setPathInput("");
+    setNewFolder("");
     setError("");
   }, [open, machines]);
 
   useEffect(() => {
-    if (!open || source !== "remote" || !connectionId) return;
+    if (!open || !customPicker || !browserId) return;
+    const sequence = requestId;
+    const request = ++sequence.current;
     setLoading(true);
+    setListing(null);
+    setPathInput("");
     setError("");
     void window.swath.remote
-      .listFolders(connectionId)
-      .then(setListing)
-      .catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)))
-      .finally(() => setLoading(false));
-  }, [connectionId, open, source]);
+      .listFolders(browserId)
+      .then((result) => {
+        if (request === requestId.current) {
+          setListing(result);
+          setPathInput(result.path);
+        }
+      })
+      .catch((reason) => {
+        if (request === requestId.current)
+          setError(reason instanceof Error ? reason.message : String(reason));
+      })
+      .finally(() => {
+        if (request === requestId.current) setLoading(false);
+      });
+    return () => {
+      if (sequence.current === request) sequence.current++;
+    };
+  }, [browserId, customPicker, open]);
 
   if (!open) return null;
 
   const browse = async (path: string): Promise<void> => {
+    const request = ++requestId.current;
     setLoading(true);
     setError("");
     try {
-      setListing(await window.swath.remote.listFolders(connectionId, path));
+      const result = await window.swath.remote.listFolders(browserId, path);
+      if (request === requestId.current) {
+        setListing(result);
+        setPathInput(result.path);
+      }
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      if (request === requestId.current)
+        setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
-      setLoading(false);
+      if (request === requestId.current) setLoading(false);
     }
   };
 
   const chooseLocal = async (): Promise<void> => {
-    await appActions.addWorkspaceFromFolder();
-    appActions.closeAddProject();
+    try {
+      await appActions.addWorkspaceFromFolder();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    }
+  };
+
+  const createFolder = async (): Promise<void> => {
+    if (!listing || !newFolder.trim()) return;
+    const request = ++requestId.current;
+    setLoading(true);
+    setError("");
+    try {
+      const result = await window.swath.remote.createFolder(
+        browserId,
+        listing.path,
+        newFolder.trim(),
+      );
+      if (request === requestId.current) {
+        setListing(result);
+        setPathInput(result.path);
+        setNewFolder("");
+      }
+    } catch (reason) {
+      if (request === requestId.current)
+        setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      if (request === requestId.current) setLoading(false);
+    }
   };
 
   const selectedName =
@@ -101,16 +158,16 @@ export function AddProjectModal(): JSX.Element | null {
               className={`rounded-lg px-3 py-2 text-sm font-semibold capitalize ${source === option ? "bg-swath-accent text-white" : "text-swath-muted hover:text-swath-text"}`}
               onClick={() => setSource(option)}
             >
-              {option}
+              {option === "local" ? "Open locally" : "Remote"}
             </button>
           ))}
         </div>
 
-        {source === "local" ? (
+        {!customPicker ? (
           <div className="grid min-h-56 place-items-center rounded-xl border border-dashed border-swath-border p-8 text-center">
             <div>
               <IconFolder width={30} height={30} className="mx-auto mb-3 text-swath-accent" />
-              <h3 className="text-base font-semibold">Folder on this Mac</h3>
+              <h3 className="text-base font-semibold">Open locally</h3>
               <p className="mb-4 mt-1 text-sm text-swath-muted">
                 Choose a local folder using the native file picker.
               </p>
@@ -118,11 +175,16 @@ export function AddProjectModal(): JSX.Element | null {
                 className="rounded-lg bg-swath-accent px-4 py-2 text-sm font-semibold text-white"
                 onClick={() => void chooseLocal()}
               >
-                Choose Local Folder
+                Open locally
               </button>
+              {error && (
+                <p role="alert" className="mt-3 text-xs text-swath-danger">
+                  {error}
+                </p>
+              )}
             </div>
           </div>
-        ) : machines.length === 0 ? (
+        ) : source === "remote" && machines.length === 0 ? (
           <div className="grid min-h-56 place-items-center rounded-xl border border-dashed border-swath-border p-8 text-center">
             <div>
               <h3 className="text-base font-semibold">No remote machines</h3>
@@ -142,23 +204,25 @@ export function AddProjectModal(): JSX.Element | null {
           </div>
         ) : (
           <div className="flex min-h-0 flex-1 flex-col gap-3">
-            <label className="grid gap-1.5 text-xs font-semibold text-swath-muted">
-              Remote machine
-              <select
-                className="rounded-lg border border-swath-border bg-swath-bg px-3 py-2.5 text-swath-text outline-none focus:border-swath-accent"
-                value={connectionId}
-                onChange={(event) => {
-                  setConnectionId(event.target.value);
-                  setListing(null);
-                }}
-              >
-                {machines.map((machine) => (
-                  <option key={machine.id} value={machine.id}>
-                    {machine.name}
-                  </option>
-                ))}
-              </select>
-            </label>
+            {source === "remote" && (
+              <label className="grid gap-1.5 text-xs font-semibold text-swath-muted">
+                Remote machine
+                <select
+                  className="rounded-lg border border-swath-border bg-swath-bg px-3 py-2.5 text-swath-text outline-none focus:border-swath-accent"
+                  value={connectionId}
+                  onChange={(event) => {
+                    setConnectionId(event.target.value);
+                    setListing(null);
+                  }}
+                >
+                  {machines.map((machine) => (
+                    <option key={machine.id} value={machine.id}>
+                      {machine.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
             <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-swath-border bg-swath-bg">
               <div className="flex items-center gap-2 border-b border-swath-border px-3 py-2 font-mono text-xs text-swath-muted">
                 <button
@@ -172,6 +236,42 @@ export function AddProjectModal(): JSX.Element | null {
                   {listing?.path ?? "Loading home folder…"}
                 </span>
               </div>
+              <form
+                className="flex gap-2 border-b border-swath-border p-2"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  void browse(pathInput);
+                }}
+              >
+                <input
+                  aria-label="Folder path"
+                  className="min-w-0 flex-1 rounded border border-swath-border bg-swath-panel px-2 py-1 font-mono text-xs"
+                  value={pathInput}
+                  onChange={(event) => setPathInput(event.target.value)}
+                  placeholder="Absolute folder path"
+                />
+                <button
+                  disabled={loading || !pathInput.trim()}
+                  className="rounded border border-swath-border px-2 py-1 text-xs disabled:opacity-40"
+                >
+                  Go
+                </button>
+              </form>
+              {listing?.locations?.length ? (
+                <div className="flex flex-wrap gap-1 border-b border-swath-border p-2">
+                  {listing.locations.map((location) => (
+                    <button
+                      key={location.path}
+                      title={location.path}
+                      disabled={loading}
+                      className="rounded border border-swath-border px-2 py-1 text-xs disabled:opacity-40"
+                      onClick={() => void browse(location.path)}
+                    >
+                      {location.name}
+                    </button>
+                  ))}
+                </div>
+              ) : null}
               <div className="min-h-48 flex-1 overflow-y-auto p-1.5">
                 {loading ? (
                   <p className="p-3 text-sm text-swath-muted">Loading folders…</p>
@@ -180,7 +280,6 @@ export function AddProjectModal(): JSX.Element | null {
                     <button
                       key={folder.path}
                       className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm hover:bg-swath-panel"
-                      onDoubleClick={() => void browse(folder.path)}
                       onClick={() => void browse(folder.path)}
                     >
                       <IconFolder width={16} className="text-swath-accent" />
@@ -192,6 +291,27 @@ export function AddProjectModal(): JSX.Element | null {
                 )}
               </div>
             </div>
+            <form
+              className="flex gap-2"
+              onSubmit={(event) => {
+                event.preventDefault();
+                void createFolder();
+              }}
+            >
+              <input
+                aria-label="New folder name"
+                className="min-w-0 flex-1 rounded-lg border border-swath-border bg-swath-bg px-3 py-2 text-sm"
+                value={newFolder}
+                onChange={(event) => setNewFolder(event.target.value)}
+                placeholder="New folder name"
+              />
+              <button
+                disabled={!listing || loading || !newFolder.trim()}
+                className="rounded-lg border border-swath-border px-3 py-2 text-sm disabled:opacity-40"
+              >
+                Create folder
+              </button>
+            </form>
             {error ? (
               <p role="alert" className="text-xs text-swath-danger">
                 {error}
@@ -208,7 +328,10 @@ export function AddProjectModal(): JSX.Element | null {
                 disabled={!listing || loading}
                 className="rounded-lg bg-swath-accent px-4 py-2 text-sm font-semibold text-white disabled:opacity-40"
                 onClick={() =>
-                  listing && appActions.addRemoteWorkspace(connectionId, listing.path, selectedName)
+                  listing &&
+                  (source === "remote"
+                    ? appActions.addRemoteWorkspace(connectionId, listing.path, selectedName)
+                    : appActions.addLocalWorkspace(listing.path, selectedName))
                 }
               >
                 Add This Folder

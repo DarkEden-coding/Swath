@@ -18,7 +18,8 @@ export type RemoteMethod =
   | "files.rpc"
   | "askImages.load"
   | "pi.rpc"
-  | "directories.list";
+  | "directories.list"
+  | "directories.create";
 
 export interface RemoteRequest {
   type: "request";
@@ -68,7 +69,7 @@ export function displayWorkspacePath(path: string): string {
 }
 
 function looksAbsolutePath(value: string): boolean {
-  return value.startsWith("/") || /^[A-Za-z]:[\\/]/.test(value);
+  return value.startsWith("/") || /^([A-Za-z]:[\\/]|\\\\[^\\]+\\[^\\]+)/.test(value);
 }
 
 /** Rewrites paths and ids from a remote config into a collision-proof local namespace. */

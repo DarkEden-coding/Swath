@@ -186,13 +186,19 @@ export async function forgetRemote(connectionId: string): Promise<void> {
   });
 }
 
+/** Adds a selected local folder as a workspace. */
+export function addLocalWorkspace(path: string, name: string): void {
+  withConfig((config) => {
+    const next = workspaceActions.addWorkspaceFromFolder(config, { canceled: false, path, name });
+    return { config: next, activePaneId: workspaceActions.getActivePaneIdForConfig(next) };
+  });
+  closeAddProject();
+}
+
 /** Prompts for a folder and adds it as a workspace. */
 export async function addWorkspaceFromFolder(): Promise<void> {
   const result = await dialogClient.selectFolder();
-  withConfig((config) => {
-    const next = workspaceActions.addWorkspaceFromFolder(config, result);
-    return { config: next, activePaneId: workspaceActions.getActivePaneIdForConfig(next) };
-  });
+  if (!result.canceled && result.path) addLocalWorkspace(result.path, result.name ?? result.path);
 }
 
 /**

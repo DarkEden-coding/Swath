@@ -366,6 +366,11 @@ export function createHybridSwath(local: SwathApi): SwathApi {
         if (!remote) throw new Error("Remote device is not configured");
         return remote.call("directories.list", path ? { path } : {});
       },
+      createFolder: async (connectionId, path, name) => {
+        const remote = clients.get(connectionId);
+        if (!remote) throw new Error("Remote device is not configured");
+        return remote.call("directories.create", { path, name });
+      },
       serverStart: (options) => local.remote.serverStart(options),
       serverStop: () => local.remote.serverStop(),
       serverAutoStart: (enabled) => local.remote.serverAutoStart(enabled),
@@ -486,6 +491,8 @@ export function createRemoteWebSwath(): SwathApi {
       status: () => client.status,
       onStatus: (cb) => client.onStatus((s) => cb(id, s)),
       listFolders: (_connectionId, path) => client.call("directories.list", path ? { path } : {}),
+      createFolder: (_connectionId, path, name) =>
+        client.call("directories.create", { path, name }),
       serverStart: noServer,
       serverStop: async () => undefined,
       serverAutoStart: noServer,

@@ -23,7 +23,7 @@ use serde_json::{json, Value};
 use std::{
     collections::HashMap,
     net::IpAddr,
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
     process::{Command, Output},
     sync::Mutex,
 };
@@ -700,37 +700,41 @@ async fn dispatch(ctx: &ServerContext, method: &str, params: Value) -> Result<Va
         "askImages.load" => ask_images::load(params),
         "pi.rpc" => pi_agent::rpc(&ctx.events_sink, &ctx.swath.pi, params),
         "directories.list" => list_directories(params),
+        "directories.create" => create_directory(params),
         _ => Err(format!("unsupported remote method: {method}")),
     }
 }
 
-fn list_directories(params: Value) -> Result<Value, String> {
-    let requested = params
-        .get("path")
-        .and_then(Value::as_str)
-        .filter(|path| !path.trim().is_empty());
-    let fallback = std::env::var_os(if cfg!(target_os = "windows") {
-        "USERPROFILE"
-    } else {
-        "HOME"
-    })
-    .map(std::path::PathBuf::from)
-    .ok_or_else(|| "Unable to resolve the remote home folder".to_string())?;
-    let path = requested.map(std::path::PathBuf::from).unwrap_or(fallback);
+/// Resolves an absolute directory, using home only when no path was requested.
+fn directory_path(params: &Value) -> Result<PathBuf, String> {
+    let path = match params.get("path") {
+        Some(Value::String(path)) if !path.trim().is_empty() => PathBuf::from(path),
+        Some(_) => return Err("Provide an absolute folder path".into()),
+        None => std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
+            .map(PathBuf::from)
+            .ok_or_else(|| {
+                "Unable to resolve the remote home folder; provide an absolute path".to_string()
+            })?,
+    };
+    if !path.is_absolute() {
+        return Err("Provide an absolute folder path".into());
+    }
     let canonical = path
         .canonicalize()
-        .map_err(|err| format!("Unable to open folder: {err}"))?;
+        .map_err(|err| format!("Unable to open folder {}: {err}", path.display()))?;
     if !canonical.is_dir() {
-        return Err("The selected path is not a folder".into());
+        return Err(format!("{} is not a folder", path.display()));
     }
+    Ok(canonical)
+}
+
+fn list_directories(params: Value) -> Result<Value, String> {
+    let canonical = directory_path(&params)?;
     let mut folders = std::fs::read_dir(&canonical)
-        .map_err(|err| format!("Unable to read folder: {err}"))?
+        .map_err(|err| format!("Unable to read folder {}: {err}", canonical.display()))?
         .filter_map(Result::ok)
-        .filter_map(|entry| {
-            let kind = entry.file_type().ok()?;
-            if !kind.is_dir() || kind.is_symlink() { return None; }
-            Some(json!({ "name": entry.file_name().to_string_lossy(), "path": entry.path().to_string_lossy() }))
-        })
+        .filter(|entry| entry.path().is_dir())
+        .map(|entry| json!({ "name": entry.file_name().to_string_lossy(), "path": entry.path().to_string_lossy() }))
         .collect::<Vec<_>>();
     folders.sort_by(|a, b| {
         a["name"]
@@ -739,11 +743,62 @@ fn list_directories(params: Value) -> Result<Value, String> {
             .to_lowercase()
             .cmp(&b["name"].as_str().unwrap_or("").to_lowercase())
     });
+    let mut locations = Vec::new();
+    if let Some(home) = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }) {
+        let home = PathBuf::from(home);
+        if home.is_absolute() && home.is_dir() {
+            locations.push(json!({ "name": "Home", "path": home.to_string_lossy() }));
+        }
+    }
+    #[cfg(unix)]
+    {
+        locations.push(json!({ "name": "Root", "path": "/" }));
+        #[cfg(target_os = "macos")]
+        locations.push(json!({ "name": "Volumes", "path": "/Volumes" }));
+    }
+    #[cfg(windows)]
+    for letter in b'A'..=b'Z' {
+        let root = format!("{}:\\", letter as char);
+        if Path::new(&root).is_dir() {
+            locations.push(json!({ "name": format!("{}:", letter as char), "path": root }));
+        }
+    }
     Ok(json!({
         "path": canonical.to_string_lossy(),
         "parent": canonical.parent().map(|parent| parent.to_string_lossy()),
-        "folders": folders
+        "folders": folders,
+        "locations": locations
     }))
+}
+
+/// Creates one folder beneath a selected directory and returns its updated listing.
+fn create_directory(params: Value) -> Result<Value, String> {
+    let name: String = field(&params, "name")?;
+    if name.is_empty()
+        || name == "."
+        || name == ".."
+        || name.contains(['/', '\\', '\0'])
+        || Path::new(&name).components().count() != 1
+        || !matches!(
+            Path::new(&name).components().next(),
+            Some(Component::Normal(_))
+        )
+        || (cfg!(windows) && (name.ends_with([' ', '.']) || name.contains(':')))
+    {
+        return Err("Folder name must be one valid segment (not '.' or '..')".into());
+    }
+    if params.get("path").is_none() {
+        return Err("Provide an absolute parent folder path".into());
+    }
+    let parent = directory_path(&params)?;
+    std::fs::create_dir(parent.join(&name)).map_err(|err| {
+        format!(
+            "Unable to create folder '{}' in {}: {err}",
+            name,
+            parent.display()
+        )
+    })?;
+    list_directories(json!({ "path": parent }))
 }
 
 async fn asset_root(
@@ -847,7 +902,35 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(names, ["Alpha", "beta"]);
         assert!(result["parent"].is_string());
-
+        assert!(result["locations"].is_array());
+        #[cfg(unix)]
+        assert!(result["locations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v["path"] == "/"));
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(root.join("beta"), root.join("linked")).unwrap();
+            let listed = list_directories(json!({ "path": root })).unwrap();
+            assert!(listed["folders"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|v| v["name"] == "linked"));
+        }
+        assert!(list_directories(json!({ "path": "relative" })).is_err());
+        let created =
+            super::create_directory(json!({ "path": root, "name": "new folder" })).unwrap();
+        assert!(created["folders"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v["name"] == "new folder"));
+        assert!(root.join("new folder").is_dir());
+        for name in ["..", "a/b", "a\\b", ""] {
+            assert!(super::create_directory(json!({ "path": root, "name": name })).is_err());
+        }
         fs::remove_dir_all(root).unwrap();
     }
 

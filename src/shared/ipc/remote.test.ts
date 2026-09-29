@@ -17,5 +17,11 @@ describe("remote path routing", () => {
       cwd: toRemotePath("machine", "/repo"),
       title: "API",
     });
+    expect(
+      importRemoteValue("machine", { cwd: "C:\\Projects\\app", share: "\\\\server\\share\\app" }),
+    ).toEqual({
+      cwd: toRemotePath("machine", "C:\\Projects\\app"),
+      share: toRemotePath("machine", "\\\\server\\share\\app"),
+    });
   });
 });

@@ -79,6 +79,7 @@ export interface RemoteFolderListing {
   path: string;
   parent: string | null;
   folders: Array<{ name: string; path: string }>;
+  locations?: Array<{ name: string; path: string }>;
 }
 
 export interface ConfigSnapshot {
@@ -147,6 +148,7 @@ export interface SwathApi {
       callback: (connectionId: string, status: "connected" | "connecting" | "offline") => void,
     ): () => void;
     listFolders(connectionId: string, path?: string): Promise<RemoteFolderListing>;
+    createFolder(connectionId: string, path: string, name: string): Promise<RemoteFolderListing>;
     serverStart(options: RemoteServerOptions): Promise<RemoteServerStatus>;
     serverStop(): Promise<void>;
     serverAutoStart(enabled: boolean): Promise<RemoteServerStatus>;

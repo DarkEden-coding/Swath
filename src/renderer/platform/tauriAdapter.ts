@@ -166,6 +166,9 @@ export function createTauriSwath(): SwathApi {
       listFolders: async () => {
         throw new Error("Remote transport is not initialized");
       },
+      createFolder: async () => {
+        throw new Error("Remote transport is not initialized");
+      },
       serverStart: (options) => invoke(TauriCommands.remoteServerStart, { options }),
       serverStop: () => invoke(TauriCommands.remoteServerStop),
       serverAutoStart: (enabled) => invoke(TauriCommands.remoteServerAutoStart, { enabled }),
