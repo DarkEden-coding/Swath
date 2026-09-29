@@ -100,6 +100,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::platform,
+            commands::select_remote_view,
             commands::config_load,
             commands::config_save,
             commands::config_snapshot,

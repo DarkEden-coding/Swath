@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { LogicalPosition, LogicalSize } from "@tauri-apps/api/dpi";
 import { Webview } from "@tauri-apps/api/webview";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -33,6 +34,7 @@ export function DeviceSwitcher(): JSX.Element {
   const views = useRef(new Map<string, DeviceView>());
   const selectedRef = useRef(selected);
   const generation = useRef(0);
+  const pasteSelection = useRef(Promise.resolve());
 
   useEffect(() => {
     selectedRef.current = selected;
@@ -104,6 +106,15 @@ export function DeviceSwitcher(): JSX.Element {
       if (!view.created) continue;
       setViewVisible(view, id === selected);
     }
+  }, [selected, connections]);
+
+  // The macOS Paste menu cannot infer selection from the newest Webview: inactive views stay mounted.
+  useEffect(() => {
+    if (window.swath.platform !== "darwin") return;
+    const label = views.current.get(selected)?.browser.label ?? null;
+    pasteSelection.current = pasteSelection.current
+      .then(() => invoke<void>("select_remote_view", { label }))
+      .catch(console.error);
   }, [selected, connections]);
 
   useEffect(() => {

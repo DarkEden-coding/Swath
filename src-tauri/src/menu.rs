@@ -1,21 +1,35 @@
+use std::sync::Mutex;
 use tauri::{
     menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem, SubmenuBuilder},
     AppHandle, Emitter, Manager,
 };
 
-/// Sends menu paste to the selected remote webview rather than the hidden local interface.
+static ACTIVE_REMOTE_VIEW: Mutex<Option<String>> = Mutex::new(None);
+
+/// Records the view selected by the device switcher for native menu paste routing.
+pub fn select_remote_view(label: Option<String>) -> Result<(), String> {
+    if label
+        .as_ref()
+        .is_some_and(|value| !value.starts_with("device-"))
+    {
+        return Err("Invalid remote webview label".into());
+    }
+    *ACTIVE_REMOTE_VIEW
+        .lock()
+        .map_err(|_| "Device selection state poisoned")? = label;
+    Ok(())
+}
+
+/// Sends menu paste only to the selected remote webview, never a hidden one.
 fn paste_into_remote_view(app: &AppHandle) -> bool {
-    let Some(view) = app
-        .webviews()
-        .into_values()
-        .filter(|view| view.label().starts_with("device-"))
-        .max_by_key(|view| {
-            view.label()
-                .strip_prefix("device-")
-                .and_then(|index| index.parse::<usize>().ok())
-                .unwrap_or(0)
-        })
+    let Some(label) = ACTIVE_REMOTE_VIEW
+        .lock()
+        .ok()
+        .and_then(|selected| selected.clone())
     else {
+        return false;
+    };
+    let Some(view) = app.get_webview(&label) else {
         return false;
     };
     let result = crate::platform::read_clipboard_for_terminal(app.clone()).and_then(|payload| {
@@ -29,6 +43,23 @@ fn paste_into_remote_view(app: &AppHandle) -> bool {
         eprintln!("Unable to paste into remote Swath: {error}");
     }
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn device_selection_clears_hidden_remote_paste_target() {
+        select_remote_view(Some("device-1".into())).unwrap();
+        assert_eq!(
+            ACTIVE_REMOTE_VIEW.lock().unwrap().as_deref(),
+            Some("device-1")
+        );
+        select_remote_view(None).unwrap();
+        assert!(ACTIVE_REMOTE_VIEW.lock().unwrap().is_none());
+        assert!(select_remote_view(Some("main".into())).is_err());
+    }
 }
 
 fn command_item(

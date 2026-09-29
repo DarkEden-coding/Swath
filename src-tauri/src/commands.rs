@@ -9,6 +9,18 @@ pub fn platform() -> String {
     platform::platform_string()
 }
 
+/// Updates the macOS Paste menu's target when switching between local and remote views.
+#[tauri::command]
+pub fn select_remote_view(label: Option<String>) -> CommandResult<()> {
+    #[cfg(target_os = "macos")]
+    return crate::menu::select_remote_view(label);
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = label;
+        Ok(())
+    }
+}
+
 #[tauri::command]
 pub fn config_load(app: AppHandle) -> CommandResult<AppConfig> {
     config::load(&app).map_err(|err| err.to_string())
