@@ -270,28 +270,28 @@ export function Composer({
     onPastesChange(pastes.filter((paste) => paste.placeholder !== token));
   };
 
-  /**
-   * Reads the OS clipboard directly. The app menu binds Cmd/Ctrl+V to a custom item (see
-   * `src-tauri/src/menu.rs`), so the webview never receives a native paste event for the
-   * shortcut — this is the only paste path for the keyboard, not just an image fallback.
-   */
-  const pasteFromNativeClipboard = async (): Promise<void> => {
+  /** Inserts a clipboard payload from the native menu or the remote webview's host. */
+  const pastePayload = (payload: TerminalClipboardPayload): void => {
+    const image = clipboardImageToPng(payload);
+    if (image) {
+      attach([image]);
+      return;
+    }
+    if (payload.hasImage) {
+      console.error("Clipboard image could not be decoded", {
+        width: payload.imageWidth,
+        height: payload.imageHeight,
+        bytes: payload.imageData?.length,
+      });
+    }
+    if (payload.text.length >= PASTE_THRESHOLD) attachPastes([payload.text]);
+    else insertText(payload.text);
+  };
+
+  /** Handles native menu paste, using the host's payload for an embedded remote webview. */
+  const pasteFromNativeClipboard = async (payload?: TerminalClipboardPayload): Promise<void> => {
     try {
-      const payload = await window.swath.clipboard.readForTerminal();
-      const image = clipboardImageToPng(payload);
-      if (image) {
-        attach([image]);
-        return;
-      }
-      if (payload.hasImage) {
-        console.error("Clipboard image could not be decoded", {
-          width: payload.imageWidth,
-          height: payload.imageHeight,
-          bytes: payload.imageData?.length,
-        });
-      }
-      if (payload.text.length >= PASTE_THRESHOLD) attachPastes([payload.text]);
-      else insertText(payload.text);
+      pastePayload(payload ?? (await window.swath.clipboard.readForTerminal()));
     } catch (error) {
       console.error("Unable to paste clipboard contents", error);
     }
@@ -307,15 +307,23 @@ export function Composer({
     input?.focus();
   };
 
-  // Cmd/Ctrl+V arrives as an app-menu command, never as a DOM paste event. Only the focused
-  // composer may claim it, so a background pi tab does not steal the terminal's paste.
+  // Cmd/Ctrl+V arrives through the app menu, not a DOM paste event. In a remote child webview
+  // the host forwards the clipboard payload here. Only the focused composer may claim it.
   useEffect(() => {
     const onMenuPaste = (): void => {
       if (document.activeElement !== inputRef.current) return;
       void pasteFromNativeClipboard();
     };
+    const onEmbeddedPaste = (event: Event): void => {
+      if (document.activeElement !== inputRef.current) return;
+      void pasteFromNativeClipboard((event as CustomEvent<TerminalClipboardPayload>).detail);
+    };
     window.addEventListener("swath:terminal-paste", onMenuPaste);
-    return () => window.removeEventListener("swath:terminal-paste", onMenuPaste);
+    window.addEventListener("swath:embedded-paste", onEmbeddedPaste);
+    return () => {
+      window.removeEventListener("swath:terminal-paste", onMenuPaste);
+      window.removeEventListener("swath:embedded-paste", onEmbeddedPaste);
+    };
   }, [pasteFromNativeClipboard]);
 
   // Editing a placeholder out of the prompt detaches its image, so the strip only previews
@@ -424,8 +432,7 @@ export function Composer({
         onKeyDown={(event) => {
           // Image markers and paste blocks are one object: they delete whole and the arrows step
           // over them, the same way mentions do below.
-          const collapsed =
-            event.currentTarget.selectionStart === event.currentTarget.selectionEnd;
+          const collapsed = event.currentTarget.selectionStart === event.currentTarget.selectionEnd;
           if (collapsed && (event.key === "ArrowLeft" || event.key === "ArrowRight")) {
             const caret = event.currentTarget.selectionStart ?? 0;
             const span =
@@ -434,10 +441,7 @@ export function Composer({
                 : tokenSpanAfter(value, caret);
             // One press crosses the whole token: from anywhere at/after its start going left,
             // or anywhere at/before its end going right.
-            if (
-              span &&
-              (event.key === "ArrowLeft" ? caret > span.start : caret < span.end)
-            ) {
+            if (span && (event.key === "ArrowLeft" ? caret > span.start : caret < span.end)) {
               const target = event.key === "ArrowLeft" ? span.start : span.end;
               event.preventDefault();
               setCaret(target);

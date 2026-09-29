@@ -1,7 +1,35 @@
 use tauri::{
     menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem, SubmenuBuilder},
-    AppHandle, Emitter,
+    AppHandle, Emitter, Manager,
 };
+
+/// Sends menu paste to the selected remote webview rather than the hidden local interface.
+fn paste_into_remote_view(app: &AppHandle) -> bool {
+    let Some(view) = app
+        .webviews()
+        .into_values()
+        .filter(|view| view.label().starts_with("device-"))
+        .max_by_key(|view| {
+            view.label()
+                .strip_prefix("device-")
+                .and_then(|index| index.parse::<usize>().ok())
+                .unwrap_or(0)
+        })
+    else {
+        return false;
+    };
+    let result = crate::platform::read_clipboard_for_terminal(app.clone()).and_then(|payload| {
+        let detail = serde_json::to_string(&payload)?;
+        view.eval(format!(
+            "window.dispatchEvent(new CustomEvent('swath:embedded-paste', {{ detail: {detail} }}))"
+        ))?;
+        Ok(())
+    });
+    if let Err(error) = result {
+        eprintln!("Unable to paste into remote Swath: {error}");
+    }
+    true
+}
 
 fn command_item(
     app: &AppHandle,
@@ -70,6 +98,9 @@ pub fn install_menu(app: &AppHandle) -> tauri::Result<()> {
     app.set_menu(menu)?;
     app.on_menu_event(|app, event| {
         let command = event.id().as_ref();
+        if command == "terminal:paste" && paste_into_remote_view(app) {
+            return;
+        }
         match command {
             "workspace:add" | "view:new" | "view:close" | "pane:split-right"
             | "pane:split-down" | "pane:close" | "terminal:paste" => {
