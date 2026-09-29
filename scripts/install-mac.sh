@@ -9,6 +9,17 @@ DEST_APP="${DEST_DIR}/${PRODUCT_APP}"
 
 cd "$ROOT_DIR"
 
+# Ad-hoc signatures identify each build by its changing code hash, so macOS forgets
+# Accessibility and Files & Folders grants after every update.
+if [[ -z "${APPLE_SIGNING_IDENTITY:-}" ]]; then
+  identities="$(security find-identity -v -p codesigning | grep -E '^ +[0-9]+\) [0-9A-F]{40} ' | awk '{print $2}' || true)"
+  if [[ -z "$identities" || "$identities" == *$'\n'* ]]; then
+    echo "Set APPLE_SIGNING_IDENTITY to one valid code-signing identity before installing Swath." >&2
+    exit 1
+  fi
+  export APPLE_SIGNING_IDENTITY="$identities"
+fi
+
 echo "Building ${APP_NAME} Tauri bundle for macOS..."
 npm run tauri:build -- --bundles app
 
@@ -20,6 +31,13 @@ done < <(find "$ROOT_DIR/src-tauri/target/release/bundle" -maxdepth 4 -type d -n
 
 if [[ -z "$APP_PATH" ]]; then
   echo "Could not find built app at src-tauri/target/release/bundle/**/${PRODUCT_APP}" >&2
+  exit 1
+fi
+
+codesign --verify --deep --strict "$APP_PATH"
+team="$(codesign -dv --verbose=4 "$APP_PATH" 2>&1 | awk -F= '/^TeamIdentifier=/{print $2}')"
+if [[ -z "$team" || "$team" == "not set" ]]; then
+  echo "The built app lacks a stable developer signature; refusing to reset macOS permissions." >&2
   exit 1
 fi
 
