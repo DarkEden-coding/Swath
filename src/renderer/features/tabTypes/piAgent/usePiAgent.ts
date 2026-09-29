@@ -9,10 +9,10 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef } from "react";
 
 // The shared IPC union is updated by the host integration; keep this feature scoped to its owner.
-const attachPi = (paneId: string): Promise<{ running: boolean }> =>
+const attachPi = (paneId: string): Promise<{ running: boolean; dialogs?: string[] }> =>
   window.swath.pi.rpc({ op: "attach", paneId } as unknown as Parameters<
     typeof window.swath.pi.rpc
-  >[0]) as Promise<{ running: boolean }>;
+  >[0]) as Promise<{ running: boolean; dialogs?: string[] }>;
 import {
   parsePiLine,
   agentTabRequestFrom,
@@ -159,6 +159,10 @@ export function usePiAgent(
     (id) => piPaneCache.get(id)?.state ?? initialPiPaneState(),
   );
   const needsInitialPromptRef = useRef(Boolean(initialStart));
+  /** Restores blocking prompts that were emitted while the remote UI was disconnected. */
+  const replayDialogs = useCallback((dialogs: string[] = []): void => {
+    for (const line of dialogs) dispatch({ type: "line", line });
+  }, []);
   const restartingRef = useRef(false);
   const startupRef = useRef(0);
 
@@ -215,7 +219,8 @@ export function usePiAgent(
     void attachPi(paneId)
       .then((attached) => {
         if (generation !== startupRef.current) return;
-        if ((attached as { running: boolean }).running) {
+        if (attached.running) {
+          replayDialogs(attached.dialogs);
           requestFullState();
           return;
         }
@@ -254,7 +259,7 @@ export function usePiAgent(
         spawnedPanes.delete(paneId);
         dispatch({ type: "error", message: String(error) });
       });
-  }, [paneId, cwd, initialSessionFile, initialStart, requestFullState, send]);
+  }, [paneId, cwd, initialSessionFile, initialStart, replayDialogs, requestFullState, send]);
 
   /** Explicit user restart: tear the child down first, then spawn a fresh one. */
   const restart = useCallback(() => {
@@ -349,9 +354,14 @@ export function usePiAgent(
   useEffect(() => {
     if (window.swath.platform !== "web") return;
     return window.swath.remote.onStatus((_id, status) => {
-      if (status === "connected") requestFullState();
+      if (status === "connected") {
+        void attachPi(paneId)
+          .then((attached) => replayDialogs(attached.dialogs))
+          .catch(() => undefined);
+        requestFullState();
+      }
     });
-  }, [requestFullState]);
+  }, [paneId, replayDialogs, requestFullState]);
 
   // No teardown on unmount: the pane is unmounted on every tab switch, and killing pi there is
   // what forced the reload. `piAgentTabType.closePane` disposes the pane for real.

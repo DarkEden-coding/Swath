@@ -36,6 +36,50 @@ struct PiProcess {
     stderr: Arc<Mutex<String>>,
 }
 
+/// Remembers only blocking UI requests until pi receives their matching response.
+fn record_dialog(pending: &mut HashMap<String, Vec<String>>, pane_id: &str, line: &str) {
+    let Ok(event) = serde_json::from_str::<Value>(line) else {
+        return;
+    };
+    if event.get("type").and_then(Value::as_str) != Some("extension_ui_request")
+        || !matches!(
+            event.get("method").and_then(Value::as_str),
+            Some("select" | "confirm" | "input" | "editor")
+        )
+    {
+        return;
+    }
+    let Some(id) = event.get("id").and_then(Value::as_str) else {
+        return;
+    };
+    let dialogs = pending.entry(pane_id.to_string()).or_default();
+    if !dialogs
+        .iter()
+        .any(|existing| dialog_id(existing).as_deref() == Some(id))
+    {
+        dialogs.push(line.to_string());
+    }
+}
+
+/// Reads the correlation id from a stored pi event.
+fn dialog_id(line: &str) -> Option<String> {
+    serde_json::from_str::<Value>(line)
+        .ok()?
+        .get("id")?
+        .as_str()
+        .map(str::to_string)
+}
+
+/// Removes a dialog once its answer has reached the pi process.
+fn remove_dialog(pending: &mut HashMap<String, Vec<String>>, pane_id: &str, id: &str) {
+    if let Some(dialogs) = pending.get_mut(pane_id) {
+        dialogs.retain(|line| dialog_id(line).as_deref() != Some(id));
+        if dialogs.is_empty() {
+            pending.remove(pane_id);
+        }
+    }
+}
+
 /// Closing stdin asks Pi to run session_shutdown, which removes session-owned Serve routes.
 fn stop_pi_child(mut proc: PiProcess) {
     drop(proc.stdin.take());
@@ -54,6 +98,7 @@ fn stop_pi_child(mut proc: PiProcess) {
 #[derive(Default)]
 pub struct PiManager {
     procs: Mutex<HashMap<String, PiProcess>>,
+    pending_dialogs: Arc<Mutex<HashMap<String, Vec<String>>>>,
 }
 
 impl PiManager {
@@ -70,6 +115,7 @@ impl PiManager {
         for (_, proc) in procs.drain() {
             stop_pi_child(proc);
         }
+        self.pending_dialogs.lock().unwrap().clear();
     }
 
     fn spawn(
@@ -148,10 +194,12 @@ impl PiManager {
             .ok_or_else(|| "pi stderr was not captured".to_string())?;
         let stderr = Arc::new(Mutex::new(String::new()));
 
+        self.pending_dialogs.lock().map_err(|_| "pi state poisoned")?.remove(pane_id);
         // stdout: one JSON record per line. `BufRead::lines()` splits on `\n` only, which is
         // what the RPC framing rules require (U+2028/U+2029 are legal inside JSON strings).
         {
             let events = events.clone();
+            let pending_dialogs = Arc::clone(&self.pending_dialogs);
             let pane_id = pane_id.to_string();
             std::thread::spawn(move || {
                 let reader = BufReader::new(stdout);
@@ -160,8 +208,12 @@ impl PiManager {
                     if line.is_empty() {
                         continue;
                     }
+                    if let Ok(mut pending) = pending_dialogs.lock() {
+                        record_dialog(&mut pending, &pane_id, &line);
+                    }
                     events.emit(PI_EVENT, json!({ "paneId": &pane_id, "line": line }));
                 }
+                if let Ok(mut pending) = pending_dialogs.lock() { pending.remove(&pane_id); }
                 events.emit(PI_EVENT, json!({ "paneId": &pane_id, "exit": true }));
             });
         }
@@ -206,7 +258,13 @@ impl PiManager {
         if !running {
             procs.remove(pane_id);
         }
-        Ok(json!({ "running": running }))
+        let dialogs = if running {
+            self.pending_dialogs.lock().map_err(|_| "pi state poisoned")?
+                .get(pane_id).cloned().unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        Ok(json!({ "running": running, "dialogs": dialogs }))
     }
 
     /// Writes one newline-terminated JSON command to a pane's pi stdin.
@@ -224,6 +282,14 @@ impl PiManager {
             .and_then(|_| stdin.write_all(b"\n"))
             .and_then(|_| stdin.flush())
             .map_err(|err| format!("Unable to write to pi: {err}"))?;
+        if let Ok(value) = serde_json::from_str::<Value>(line) {
+            if value.get("type").and_then(Value::as_str) == Some("extension_ui_response") {
+                if let Some(id) = value.get("id").and_then(Value::as_str) {
+                    let mut pending = self.pending_dialogs.lock().map_err(|_| "pi state poisoned")?;
+                    remove_dialog(&mut pending, pane_id, id);
+                }
+            }
+        }
         Ok(json!({ "ok": true }))
     }
 
@@ -232,6 +298,7 @@ impl PiManager {
         if let Some(proc) = procs.remove(pane_id) {
             std::thread::spawn(move || stop_pi_child(proc));
         }
+        self.pending_dialogs.lock().map_err(|_| "pi state poisoned")?.remove(pane_id);
         Ok(json!({ "ok": true }))
     }
 
@@ -663,6 +730,18 @@ mod tests {
         // The test executable exits promptly; attach reaps stale children rather than claiming
         // they are still running.
         assert_eq!(manager.attach("pane").unwrap()["running"], false);
+    }
+
+    #[test]
+    fn pending_dialogs_survive_replay_until_answered() {
+        let mut pending = HashMap::new();
+        let question = r#"{"type":"extension_ui_request","method":"select","id":"q1","title":"Choose","options":["yes"]}"#;
+        record_dialog(&mut pending, "pane", question);
+        record_dialog(&mut pending, "pane", question);
+        record_dialog(&mut pending, "pane", r#"{"type":"extension_ui_request","method":"notify","id":"notice"}"#);
+        assert_eq!(pending["pane"], vec![question]);
+        remove_dialog(&mut pending, "pane", "q1");
+        assert!(!pending.contains_key("pane"));
     }
 
     /// Windows must target npm's `.cmd` shim explicitly; CreateProcess does not use PATHEXT.

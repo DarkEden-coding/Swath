@@ -3,17 +3,40 @@ import { LogicalPosition, LogicalSize } from "@tauri-apps/api/dpi";
 import { Webview } from "@tauri-apps/api/webview";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useConfigStore } from "../../state/configStore";
+import type { RemoteConnection } from "../../../shared/types";
+
+const NO_CONNECTIONS: RemoteConnection[] = [];
+
+type DeviceView = {
+  browser: Webview;
+  url: string;
+  token: string;
+  created: boolean;
+  visibility: Promise<void>;
+};
+
+/** Applies visibility changes in switch order, even when native calls finish out of order. */
+function setViewVisible(view: DeviceView, visible: boolean): void {
+  view.visibility = view.visibility
+    .then(() => (visible ? view.browser.show() : view.browser.hide()))
+    .catch(console.error);
+}
 
 /** Switches between the mounted local interface and a connector's native browser view. */
 export function DeviceSwitcher(): JSX.Element {
   const savedConnections = useConfigStore((state) => state.config?.remoteConnections);
-  const connections = savedConnections ?? [];
+  const connections = savedConnections ?? NO_CONNECTIONS;
   const [selected, setSelected] = useState<string>("");
   const [statuses, setStatuses] = useState<Record<string, string>>({});
   const [error, setError] = useState<string>("");
   const area = useRef<HTMLDivElement>(null);
-  const view = useRef<Webview | null>(null);
+  const views = useRef(new Map<string, DeviceView>());
+  const selectedRef = useRef(selected);
   const generation = useRef(0);
+
+  useEffect(() => {
+    selectedRef.current = selected;
+  }, [selected]);
 
   useEffect(() => {
     const update = (id: string, status: string): void => {
@@ -29,52 +52,65 @@ export function DeviceSwitcher(): JSX.Element {
   }, [connections, selected]);
 
   useEffect(() => {
-    const currentGeneration = ++generation.current;
+    for (const [id, view] of views.current) {
+      const connection = connections.find((item) => item.id === id);
+      if (connection && connection.url === view.url && connection.token === view.token) continue;
+      views.current.delete(id);
+      if (view.created) void view.visibility.then(() => view.browser.close()).catch(console.error);
+    }
+
     const connection = connections.find((item) => item.id === selected);
     setError("");
-    if (!connection || !area.current) return;
-
-    const bounds = area.current.getBoundingClientRect();
-    const url = new URL(connection.url);
-    if (url.protocol !== "https:" && !(url.protocol === "http:" && url.hostname === "127.0.0.1")) {
-      setError("Remote UI requires HTTPS (or local loopback HTTP).");
-      return;
+    if (connection && area.current && !views.current.has(selected)) {
+      const bounds = area.current.getBoundingClientRect();
+      const url = new URL(connection.url);
+      if (
+        url.protocol !== "https:" &&
+        !(url.protocol === "http:" && url.hostname === "127.0.0.1")
+      ) {
+        setError("Remote UI requires HTTPS (or local loopback HTTP).");
+        return;
+      }
+      url.pathname = "/";
+      url.search = "";
+      url.hash = "";
+      url.searchParams.set("token", connection.token);
+      url.hash = "swath-embedded";
+      const browser = new Webview(getCurrentWindow(), `device-${++generation.current}`, {
+        url: url.toString(),
+        x: bounds.left,
+        y: bounds.top,
+        width: bounds.width,
+        height: bounds.height,
+      });
+      const view: DeviceView = {
+        browser,
+        url: connection.url,
+        token: connection.token,
+        created: false,
+        visibility: Promise.resolve(),
+      };
+      views.current.set(selected, view);
+      void browser.once("tauri://created", () => {
+        view.created = true;
+        if (views.current.get(connection.id) !== view) void browser.close().catch(console.error);
+        else if (selectedRef.current !== connection.id) setViewVisible(view, false);
+      });
+      void browser.once("tauri://error", () => {
+        if (selectedRef.current === connection.id) setError(`Could not open ${connection.name}.`);
+      });
     }
-    url.pathname = "/";
-    url.search = "";
-    url.hash = "";
-    url.searchParams.set("token", connection.token);
-    url.hash = "swath-embedded";
-    const browser = new Webview(getCurrentWindow(), `device-${currentGeneration}`, {
-      url: url.toString(),
-      x: 0,
-      y: bounds.top,
-      width: bounds.width,
-      height: bounds.height,
-    });
-    view.current = browser;
-    let created = false;
-    let disposed = false;
-    void browser.once("tauri://created", () => {
-      created = true;
-      if (disposed || generation.current !== currentGeneration)
-        void browser.close().catch(console.error);
-    });
-    void browser.once("tauri://error", () => {
-      if (generation.current === currentGeneration) setError(`Could not open ${connection.name}.`);
-    });
-    return () => {
-      disposed = true;
-      if (view.current === browser) view.current = null;
-      if (created) void browser.close().catch(console.error);
-    };
-  }, [selected]);
+    for (const [id, view] of views.current) {
+      if (!view.created) continue;
+      setViewVisible(view, id === selected);
+    }
+  }, [selected, connections]);
 
   useEffect(() => {
     if (!selected || !area.current) return;
     const sync = (): void => {
       const rect = area.current?.getBoundingClientRect();
-      const browser = view.current;
+      const browser = views.current.get(selected)?.browser;
       if (!rect || !browser) return;
       void Promise.all([
         browser.setPosition(new LogicalPosition(rect.left, rect.top)),
@@ -89,6 +125,17 @@ export function DeviceSwitcher(): JSX.Element {
       window.removeEventListener("resize", sync);
     };
   }, [selected]);
+
+  useEffect(
+    () => () => {
+      for (const view of views.current.values()) {
+        if (view.created)
+          void view.visibility.then(() => view.browser.close()).catch(console.error);
+      }
+      views.current.clear();
+    },
+    [],
+  );
 
   return (
     <>

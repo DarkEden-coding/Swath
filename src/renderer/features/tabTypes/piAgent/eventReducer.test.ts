@@ -545,6 +545,19 @@ describe("reducePiEvent", () => {
       },
     ]);
     expect(state.dialogs).toHaveLength(1);
+    state = run(
+      [
+        {
+          type: "extension_ui_request",
+          id: "d1",
+          method: "select",
+          title: "Pick one",
+          options: ["a", "b"],
+        },
+      ],
+      state,
+    );
+    expect(state.dialogs).toHaveLength(1); // Replaying a pending request must not stack it twice.
 
     state = dismissDialog(state, "d1");
     expect(state.dialogs).toHaveLength(0);

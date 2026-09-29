@@ -264,7 +264,9 @@ function applyExtensionUi(state: PiPaneState, event: PiExtensionUiRequest): PiPa
     case "confirm":
     case "input":
     case "editor":
-      return { ...state, dialogs: [...state.dialogs, event] };
+      return state.dialogs.some((dialog) => dialog.id === event.id)
+        ? state
+        : { ...state, dialogs: [...state.dialogs, event] };
 
     case "notify":
       if (event.message.startsWith("Prompt cache miss:")) {
