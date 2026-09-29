@@ -1,7 +1,7 @@
 import { Suspense, lazy, useEffect, type PointerEvent as ReactPointerEvent } from "react";
 import * as appActions from "./app/appActions";
 import { commandFromKeyboardEvent, runAppCommand } from "./app/commandRegistry";
-import { pasteIntoFocusedField } from "./app/clipboardPaste";
+import { copyFocusedSelection, pasteIntoFocusedField } from "./app/clipboardPaste";
 import type { TerminalClipboardPayload } from "../shared/types";
 import { useAppBootstrap } from "./app/useAppBootstrap";
 import { EmptyState } from "./features/shell/components/EmptyState";
@@ -125,6 +125,7 @@ export function App(): JSX.Element {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent): void => {
+      copyFocusedSelection(event);
       const command = commandFromKeyboardEvent(event, window.swath.platform);
       if (!command) return;
       event.preventDefault();

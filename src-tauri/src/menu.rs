@@ -127,6 +127,8 @@ pub fn install_menu(app: &AppHandle) -> tauri::Result<()> {
     let split_down = command_item(app, "pane:split-down", "Split Down", "CmdOrCtrl+Shift+\\")?;
     let close_pane = command_item(app, "pane:close", "Close Pane", "CmdOrCtrl+Shift+W")?;
     let paste = command_item(app, "terminal:paste", "Paste", "CmdOrCtrl+V")?;
+    // macOS does not generate a paste event for Ctrl+V; use the same focused-view route as Cmd+V.
+    let control_paste = command_item(app, "terminal:control-paste", "Paste (Control+V)", "Ctrl+V")?;
 
     let edit = SubmenuBuilder::new(app, "Edit")
         .undo()
@@ -135,6 +137,7 @@ pub fn install_menu(app: &AppHandle) -> tauri::Result<()> {
         .cut()
         .copy()
         .item(&paste)
+        .item(&control_paste)
         .separator()
         .select_all()
         .build()?;
@@ -174,7 +177,10 @@ pub fn install_menu(app: &AppHandle) -> tauri::Result<()> {
 
     app.set_menu(menu)?;
     app.on_menu_event(|app, event| {
-        let command = event.id().as_ref();
+        let command = match event.id().as_ref() {
+            "terminal:control-paste" => "terminal:paste",
+            command => command,
+        };
         if command == "terminal:paste" && paste_into_remote_view(app) {
             return;
         }

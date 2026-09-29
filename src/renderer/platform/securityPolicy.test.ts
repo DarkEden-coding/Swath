@@ -34,7 +34,7 @@ describe("renderer content security policy", () => {
       resolve(import.meta.dirname, "../../../src-tauri/Cargo.toml"),
       "utf8",
     );
-    expect(manifest).toMatch(/tauri = \{[^\n]*features = \["unstable"\]/);
+    expect(manifest).toMatch(/tauri = \{[^\n]*features = \[[^\]]*"unstable"/);
   });
 
   it("limits native webview permissions to the local UI", () => {
@@ -47,5 +47,7 @@ describe("renderer content security policy", () => {
     expect(capability.webviews).toEqual(["main"]);
     expect(capability.windows).toBeUndefined();
     expect(capability.permissions).toContain("core:webview:allow-create-webview");
+    expect(capability.permissions).toContain("core:webview:allow-set-webview-focus");
+    expect(capability.webviews).not.toContain("*");
   });
 });

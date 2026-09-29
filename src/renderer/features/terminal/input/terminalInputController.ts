@@ -234,6 +234,8 @@ export function createTerminalInputController({
     const selection = getCopySelection(allowRecentSelection);
     if (disposed || !selection) return;
     try {
+      // A native copy event can write in embedded webviews without async clipboard permission.
+      if (typeof document !== "undefined" && document.execCommand("copy")) return;
       await writeClipboardText(selection);
     } catch (error) {
       onPasteError(error);

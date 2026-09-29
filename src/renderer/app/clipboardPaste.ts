@@ -2,6 +2,26 @@ import type { TerminalClipboardPayload } from "../../shared/types";
 
 const PASTE_EVENT = "swath:paste";
 
+/** Copy ordinary editor selections for Ctrl+C, which macOS does not map to native Copy. */
+export function copyFocusedSelection(event: KeyboardEvent): void {
+  if (
+    event.defaultPrevented ||
+    !event.ctrlKey ||
+    event.metaKey ||
+    event.altKey ||
+    event.shiftKey ||
+    event.key.toLowerCase() !== "c"
+  )
+    return;
+  const target = document.activeElement;
+  const selection =
+    target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement
+      ? target.value.slice(target.selectionStart ?? 0, target.selectionEnd ?? 0)
+      : window.getSelection()?.toString();
+  // Leave Ctrl+C alone without a selection, especially for terminal interrupts.
+  if (selection && document.execCommand("copy")) event.preventDefault();
+}
+
 /** Register a paste consumer on its actual editor, not every mounted pane in the window. */
 export function listenForPaste(
   target: HTMLElement,

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { listenForPaste, pasteIntoFocusedField } from "./clipboardPaste";
+import { copyFocusedSelection, listenForPaste, pasteIntoFocusedField } from "./clipboardPaste";
 
 class Editor extends EventTarget {
   isConnected = true;
@@ -46,6 +46,43 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("focused clipboard routing", () => {
+  it("copies Ctrl+C selections through native Copy and leaves unselected Ctrl+C alone", () => {
+    const execCommand = vi.fn().mockReturnValue(true);
+    Object.assign(documentStub, { execCommand });
+    const field = documentStub.activeElement;
+    field.value = "selected text";
+    field.setSelectionRange(0, 8);
+    const event = {
+      key: "c",
+      ctrlKey: true,
+      preventDefault: vi.fn(),
+    } as unknown as KeyboardEvent;
+    copyFocusedSelection(event);
+    expect(execCommand).toHaveBeenCalledWith("copy");
+    expect(event.preventDefault).toHaveBeenCalledOnce();
+    execCommand.mockClear();
+    field.setSelectionRange(0, 0);
+    copyFocusedSelection(event);
+    copyFocusedSelection({ ...event, defaultPrevented: true });
+    copyFocusedSelection({ ...event, metaKey: true });
+    expect(execCommand).not.toHaveBeenCalled();
+  });
+
+  it("copies content selections without requiring async browser clipboard permission", () => {
+    const execCommand = vi.fn().mockReturnValue(true);
+    Object.assign(documentStub, { execCommand });
+    documentStub.activeElement = documentStub.body;
+    vi.stubGlobal("HTMLTextAreaElement", Input);
+    Object.assign(window, { getSelection: () => ({ toString: () => "remote output" }) });
+    const event = {
+      key: "c",
+      ctrlKey: true,
+      preventDefault: vi.fn(),
+    } as unknown as KeyboardEvent;
+    copyFocusedSelection(event);
+    expect(execCommand).toHaveBeenCalledWith("copy");
+    expect(event.preventDefault).toHaveBeenCalledOnce();
+  });
   it("uses the same focused terminal/composer handler for local and host payloads", async () => {
     const target = documentStub.activeElement;
     const paste = vi.fn();

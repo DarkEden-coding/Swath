@@ -190,6 +190,39 @@ describe("createTerminalInputController", () => {
     expect(writeClipboardText).not.toHaveBeenCalled();
   });
 
+  it("uses the native copy event for keyboard copy in an embedded webview", () => {
+    const terminal = createFakeTerminal();
+    terminal.setSelection("remote terminal selection");
+    const writeClipboardText = vi.fn().mockRejectedValue(new Error("permission denied"));
+    const setData = vi.fn();
+    const controller = createTerminalInputController({
+      terminal,
+      shellProfile: null,
+      writeClipboardText,
+      openSearch: vi.fn(),
+    });
+    const execCommand = vi.fn(() => {
+      controller.handleCopyEvent({
+        clipboardData: { getData: () => "", setData },
+        preventDefault: vi.fn(),
+      });
+      return true;
+    });
+    vi.stubGlobal("document", { execCommand });
+    try {
+      const handler = terminal.attachCustomKeyEventHandler.mock.calls[0][0];
+      expect(handler({ type: "keydown", key: "c", ctrlKey: true, preventDefault: vi.fn() })).toBe(
+        false,
+      );
+      expect(execCommand).toHaveBeenCalledWith("copy");
+      expect(setData).toHaveBeenCalledWith("text/plain", "remote terminal selection");
+      expect(writeClipboardText).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+      controller.dispose();
+    }
+  });
+
   it("copies current and recent terminal selections through the injected clipboard writer", async () => {
     let now = 1000;
     const terminal = createFakeTerminal();
