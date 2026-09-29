@@ -13,6 +13,7 @@ import { SearchAddon } from "@xterm/addon-search";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { Terminal } from "@xterm/xterm";
 import type { AppSettings, ShellProfile } from "../../../../shared/types";
+import { parseRemotePath } from "../../../../shared/ipc/remote";
 import * as appActions from "../../../app/appActions";
 import { findPane } from "../../../domain/layout/layoutTree";
 import { useUiStore } from "../../../state/uiStore";
@@ -269,9 +270,11 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
       writeTerminalData: writeToSession,
       openSearch: () => setSearchOpen(true),
       platform: window.swath.platform,
+      isLocalSession: window.swath.platform !== "web" && !parseRemotePath(currentCwd),
       onPasteError: (error) => {
-        console.error("Unable to read the clipboard", error);
-        writeOutput("\r\n\x1b[31m[clipboard paste failed]\x1b[0m\r\n");
+        console.error("Clipboard operation failed", error);
+        const message = JSON.stringify(error instanceof Error ? error.message : String(error));
+        writeOutput(`\r\n\x1b[31m[clipboard operation failed: ${message}]\x1b[0m\r\n`);
       },
     });
 
@@ -474,15 +477,6 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
     await inputControllerRef.current?.pasteFromClipboard();
   };
 
-  useEffect(() => {
-    if (!isActive) return;
-    const onMenuPaste = (): void => {
-      void paste();
-    };
-    window.addEventListener("swath:terminal-paste", onMenuPaste);
-    return () => window.removeEventListener("swath:terminal-paste", onMenuPaste);
-  }, [isActive, paneId]);
-
   const restart = (): void => {
     startedSessions.add(paneId);
     setRunning(true);
@@ -610,7 +604,7 @@ export function TerminalPane({ workspace, view, pane, settings }: PaneComponentP
         setContextMenu({ x: event.clientX, y: event.clientY });
       }}
     >
-      <TerminalViewport hostRef={hostRef} suspended={!isActive} />
+      <TerminalViewport paneId={paneId} hostRef={hostRef} suspended={!isActive} />
       <button
         type="button"
         className={`absolute bottom-3 left-1/2 z-10 grid h-8 w-8 -translate-x-1/2 place-items-center rounded-full border border-[#30363d] bg-[#161b22]/95 text-[#8b949e] shadow-[0_4px_14px_rgba(0,0,0,0.4)] backdrop-blur-sm transition-[opacity,transform,background-color,border-color,color] duration-200 ease-out hover:border-[#484f58] hover:bg-[#21262d] hover:text-[#f0f6fc] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#2f81f7] ${showScrollToBottom && isActive ? "translate-y-0 opacity-100" : "pointer-events-none translate-y-2 opacity-0"}`}

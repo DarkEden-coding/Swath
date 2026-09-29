@@ -103,12 +103,13 @@ export function createTauriSwath(): SwathApi {
       onCommand: (callback) => {
         let disposed = false;
         let unsubscribe: (() => void) | undefined;
-        void listen<string>(IpcChannels.appCommand, (event) => callback(event.payload)).then(
-          (unlisten) => {
-            unsubscribe = unlisten;
-            if (disposed) unlisten();
-          },
-        );
+        void listen<string>(IpcChannels.appCommand, (event) => {
+          // Listener registration is asynchronous; a replaced command context must not also paste.
+          if (!disposed) callback(event.payload);
+        }).then((unlisten) => {
+          unsubscribe = unlisten;
+          if (disposed) unlisten();
+        });
         return () => {
           disposed = true;
           unsubscribe?.();

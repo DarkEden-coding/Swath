@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { LogicalPosition, LogicalSize } from "@tauri-apps/api/dpi";
-import { Webview } from "@tauri-apps/api/webview";
+import { getCurrentWebview, Webview } from "@tauri-apps/api/webview";
+import { DeviceLifecycle } from "./deviceLifecycle";
+import { isTauriRuntime } from "../../platform/runtime";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useConfigStore } from "../../state/configStore";
 import type { RemoteConnection } from "../../../shared/types";
@@ -12,16 +14,7 @@ type DeviceView = {
   browser: Webview;
   url: string;
   token: string;
-  created: boolean;
-  visibility: Promise<void>;
 };
-
-/** Applies visibility changes in switch order, even when native calls finish out of order. */
-function setViewVisible(view: DeviceView, visible: boolean): void {
-  view.visibility = view.visibility
-    .then(() => (visible ? view.browser.show() : view.browser.hide()))
-    .catch(console.error);
-}
 
 /** Switches between the mounted local interface and a connector's native browser view. */
 export function DeviceSwitcher(): JSX.Element {
@@ -30,14 +23,51 @@ export function DeviceSwitcher(): JSX.Element {
   const [selected, setSelected] = useState<string>("");
   const [statuses, setStatuses] = useState<Record<string, string>>({});
   const [error, setError] = useState<string>("");
+  const [retry, setRetry] = useState(0);
   const area = useRef<HTMLDivElement>(null);
   const views = useRef(new Map<string, DeviceView>());
   const selectedRef = useRef(selected);
-  const generation = useRef(0);
-  const pasteSelection = useRef(Promise.resolve());
+  const localEditor = useRef<HTMLElement | null>(null);
+  const lifecycle = useRef<DeviceLifecycle<Webview> | null>(null);
+  useEffect(() => {
+    const mountedViews = views.current;
+    const controller: DeviceLifecycle<Webview> = new DeviceLifecycle(
+      (label) =>
+        isTauriRuntime() ? invoke<void>("select_remote_view", { label }) : Promise.resolve(),
+      async () => {
+        if (isTauriRuntime()) await getCurrentWebview().setFocus();
+        const editor = localEditor.current;
+        if (editor?.isConnected && controller.mounted && !controller.desired) editor.focus();
+      },
+      (cause) => {
+        if (controller.mounted)
+          setError(`Device switch failed: ${String(cause)}. Use Retry to try again.`);
+        else console.error("Device cleanup failed", cause);
+      },
+    );
+    lifecycle.current = controller;
+    return () => {
+      controller.unmount();
+      mountedViews.clear();
+    };
+  }, []);
+
+  useEffect(() => {
+    const remember = (event: FocusEvent): void => {
+      const target = event.target;
+      if (
+        target instanceof HTMLElement &&
+        (target.matches("input, textarea") || target.isContentEditable)
+      )
+        localEditor.current = target;
+    };
+    document.addEventListener("focusin", remember);
+    return () => document.removeEventListener("focusin", remember);
+  }, []);
 
   useEffect(() => {
     selectedRef.current = selected;
+    lifecycle.current!.select(selected);
   }, [selected]);
 
   useEffect(() => {
@@ -54,18 +84,25 @@ export function DeviceSwitcher(): JSX.Element {
   }, [connections, selected]);
 
   useEffect(() => {
+    const manager = lifecycle.current!;
     for (const [id, view] of views.current) {
       const connection = connections.find((item) => item.id === id);
       if (connection && connection.url === view.url && connection.token === view.token) continue;
       views.current.delete(id);
-      if (view.created) void view.visibility.then(() => view.browser.close()).catch(console.error);
+      manager.remove(id);
     }
 
     const connection = connections.find((item) => item.id === selected);
     setError("");
     if (connection && area.current && !views.current.has(selected)) {
       const bounds = area.current.getBoundingClientRect();
-      const url = new URL(connection.url);
+      let url: URL;
+      try {
+        url = new URL(connection.url);
+      } catch {
+        setError(`Invalid URL for ${connection.name}. Check the connection settings.`);
+        return;
+      }
       if (
         url.protocol !== "https:" &&
         !(url.protocol === "http:" && url.hostname === "127.0.0.1")
@@ -78,7 +115,7 @@ export function DeviceSwitcher(): JSX.Element {
       url.hash = "";
       url.searchParams.set("token", connection.token);
       url.hash = "swath-embedded";
-      const browser = new Webview(getCurrentWindow(), `device-${++generation.current}`, {
+      const browser = new Webview(getCurrentWindow(), `device-${crypto.randomUUID()}`, {
         url: url.toString(),
         x: bounds.left,
         y: bounds.top,
@@ -89,33 +126,31 @@ export function DeviceSwitcher(): JSX.Element {
         browser,
         url: connection.url,
         token: connection.token,
-        created: false,
-        visibility: Promise.resolve(),
       };
       views.current.set(selected, view);
-      void browser.once("tauri://created", () => {
-        view.created = true;
-        if (views.current.get(connection.id) !== view) void browser.close().catch(console.error);
-        else if (selectedRef.current !== connection.id) setViewVisible(view, false);
-      });
-      void browser.once("tauri://error", () => {
-        if (selectedRef.current === connection.id) setError(`Could not open ${connection.name}.`);
-      });
+      manager.add(selected, browser);
+      void browser
+        .once("tauri://created", () => {
+          manager.created(connection.id, browser);
+        })
+        .catch((cause: unknown) =>
+          setError(`Could not watch ${connection.name}: ${String(cause)}`),
+        );
+      void browser
+        .once("tauri://error", (event) => {
+          if (views.current.get(connection.id) !== view) return;
+          views.current.delete(connection.id);
+          manager.error(connection.id, browser);
+          if (selectedRef.current === connection.id)
+            setError(
+              `Could not open ${connection.name}: ${JSON.stringify(event.payload)}. Check its URL and connection.`,
+            );
+        })
+        .catch((cause: unknown) =>
+          setError(`Could not watch ${connection.name}: ${String(cause)}`),
+        );
     }
-    for (const [id, view] of views.current) {
-      if (!view.created) continue;
-      setViewVisible(view, id === selected);
-    }
-  }, [selected, connections]);
-
-  // The macOS Paste menu cannot infer selection from the newest Webview: inactive views stay mounted.
-  useEffect(() => {
-    if (window.swath.platform !== "darwin") return;
-    const label = views.current.get(selected)?.browser.label ?? null;
-    pasteSelection.current = pasteSelection.current
-      .then(() => invoke<void>("select_remote_view", { label }))
-      .catch(console.error);
-  }, [selected, connections]);
+  }, [selected, connections, retry]);
 
   useEffect(() => {
     if (!selected || !area.current) return;
@@ -137,16 +172,26 @@ export function DeviceSwitcher(): JSX.Element {
     };
   }, [selected]);
 
-  useEffect(
-    () => () => {
-      for (const view of views.current.values()) {
-        if (view.created)
-          void view.visibility.then(() => view.browser.close()).catch(console.error);
-      }
-      views.current.clear();
-    },
-    [],
-  );
+  /** Keep the last editor available while keyboard users navigate the device toolbar. */
+  const rememberEditor = (event: React.MouseEvent<HTMLButtonElement>): void => {
+    // Pointer activation must not replace the editor with a toolbar button; keyboard focus stays native.
+    if (
+      event.detail &&
+      document.activeElement instanceof HTMLElement &&
+      !event.currentTarget.contains(document.activeElement)
+    ) {
+      const focused = document.activeElement;
+      if (focused.matches("input, textarea") || focused.isContentEditable)
+        localEditor.current = focused;
+    }
+  };
+  /** Pointer switching must not move DOM focus from the editor onto a toolbar button. */
+  const keepPointerFocus = (event: React.MouseEvent<HTMLButtonElement>): void => {
+    if (event.detail) {
+      rememberEditor(event);
+      event.preventDefault();
+    }
+  };
 
   return (
     <>
@@ -157,7 +202,12 @@ export function DeviceSwitcher(): JSX.Element {
         <button
           type="button"
           aria-current={!selected ? "page" : undefined}
-          onClick={() => setSelected("")}
+          onMouseDown={keepPointerFocus}
+          onClick={(event) => {
+            rememberEditor(event);
+            lifecycle.current!.select("");
+            setSelected("");
+          }}
           className={`flex h-7 shrink-0 items-center gap-2 rounded-md border px-3 text-xs transition-colors ${!selected ? "border-swath-accent bg-swath-bg text-swath-text" : "border-swath-border text-swath-muted hover:bg-swath-panel-2 hover:text-swath-text"}`}
         >
           <span className="size-2 rounded-full bg-swath-good" aria-hidden="true" />
@@ -172,7 +222,12 @@ export function DeviceSwitcher(): JSX.Element {
               disabled={!online}
               aria-current={selected === connection.id ? "page" : undefined}
               title={`${connection.name} (${online ? "online" : "offline"})`}
-              onClick={() => setSelected(connection.id)}
+              onMouseDown={keepPointerFocus}
+              onClick={(event) => {
+                rememberEditor(event);
+                lifecycle.current!.select(connection.id);
+                setSelected(connection.id);
+              }}
               className={`flex h-7 max-w-48 shrink-0 items-center gap-2 rounded-md border px-3 text-xs transition-colors ${selected === connection.id ? "border-swath-accent bg-swath-bg text-swath-text" : online ? "border-swath-border text-swath-text hover:bg-swath-panel-2" : "cursor-not-allowed border-swath-border text-swath-muted opacity-60"}`}
             >
               <span
@@ -185,7 +240,17 @@ export function DeviceSwitcher(): JSX.Element {
         })}
         {error && (
           <span role="alert" className="shrink-0 text-xs text-swath-danger">
-            {error}
+            {error}{" "}
+            <button
+              type="button"
+              onClick={() => {
+                lifecycle.current!.reconcile();
+                setRetry((value) => value + 1);
+              }}
+              className="underline"
+            >
+              Retry
+            </button>
           </span>
         )}
       </nav>

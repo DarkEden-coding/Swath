@@ -1,4 +1,5 @@
 import type { ShellProfile } from "../../../../shared/types";
+import { listenForPaste } from "../../../app/clipboardPaste";
 import {
   formatPathPaste,
   getClipboardEventFilePaths,
@@ -18,6 +19,7 @@ interface Disposable {
 
 export interface TerminalInputKeyboardEvent {
   key: string;
+  defaultPrevented?: boolean;
   ctrlKey?: boolean;
   metaKey?: boolean;
   altKey?: boolean;
@@ -30,6 +32,7 @@ export interface TerminalInputClipboardEvent {
   target?: EventTarget | null;
   clipboardData?: {
     getData: (type: string) => string;
+    setData?: (type: string, data: string) => void;
     files?: ArrayLike<File | { path?: string }>;
   } | null;
   preventDefault: () => void;
@@ -60,6 +63,8 @@ export interface TerminalInputControllerOptions {
   writeTerminalData?: (data: string) => void;
   openSearch: () => void;
   platform?: string;
+  /** Whether filesystem paths and image clipboard shortcuts belong to the terminal's device. */
+  isLocalSession?: boolean;
   onPasteError?: (error: unknown) => void;
   now?: () => number;
 }
@@ -73,6 +78,7 @@ export interface TerminalInputController {
   handlePasteEvent: (event: TerminalInputClipboardEvent) => boolean;
   pasteFromClipboard: () => Promise<void>;
   pastePaths: (paths: string[]) => void;
+  pastePayload: (payload: TerminalPastePayload) => void;
   pasteText: (data: string) => void;
 }
 
@@ -84,7 +90,10 @@ export function isEditableTarget(target: EventTarget | null | undefined): boolea
     (typeof HTMLInputElement !== "undefined" && target instanceof HTMLInputElement) ||
     (typeof HTMLTextAreaElement !== "undefined" &&
       target instanceof HTMLTextAreaElement &&
-      !target.classList.contains("xterm-helper-textarea"))
+      !target.classList.contains("xterm-helper-textarea")) ||
+    (typeof HTMLElement !== "undefined" &&
+      target instanceof HTMLElement &&
+      target.isContentEditable)
   );
 }
 
@@ -115,9 +124,12 @@ export function createTerminalInputController({
   writeTerminalData,
   openSearch,
   platform = "",
+  isLocalSession = true,
   onPasteError = (error) => console.error("Unable to paste from clipboard", error),
   now = () => Date.now(),
 }: TerminalInputControllerOptions): TerminalInputController {
+  let disposed = false;
+  let focusVersion = 0;
   let lastSelection = terminal.getSelection();
   let lastSelectionAt = lastSelection ? now() : 0;
   const disposables: Array<() => void> = [];
@@ -163,12 +175,21 @@ export function createTerminalInputController({
   disposables.push(() => terminal.attachCustomKeyEventHandler(() => true));
 
   const pasteText = (data: string): void => {
-    if (!data) return;
+    if (disposed || !data) return;
     terminal.focus();
     terminal.paste(data);
   };
 
   const forwardPasteShortcutToTerminal = (): void => {
+    if (disposed) return;
+    if (!isLocalSession) {
+      onPasteError(
+        new Error(
+          "Remote terminal image paste is not supported. Upload the image on the remote device or use a Pi composer.",
+        ),
+      );
+      return;
+    }
     terminal.focus();
     const sequence = platform === "win32" ? "\x1bv" : "\x16";
     if (writeTerminalData) {
@@ -179,6 +200,15 @@ export function createTerminalInputController({
   };
 
   const pastePaths = (paths: string[]): void => {
+    if (disposed || paths.length === 0) return;
+    if (!isLocalSession) {
+      onPasteError(
+        new Error(
+          "Local files cannot be pasted as remote paths. Upload them to the remote device first.",
+        ),
+      );
+      return;
+    }
     const imagePaths = paths.filter((path) => /\.(?:png|jpe?g|gif|webp)$/i.test(path));
     const otherPaths = paths.filter((path) => !imagePaths.includes(path));
     for (const path of imagePaths) {
@@ -202,27 +232,35 @@ export function createTerminalInputController({
 
   const copy = async (allowRecentSelection = false): Promise<void> => {
     const selection = getCopySelection(allowRecentSelection);
-    if (!selection) return;
-    await writeClipboardText(selection);
+    if (disposed || !selection) return;
+    try {
+      await writeClipboardText(selection);
+    } catch (error) {
+      onPasteError(error);
+    }
+  };
+
+  const pastePayload = (payload: TerminalPastePayload): void => {
+    if (disposed) return;
+    if (payload.text) pasteText(payload.text);
+    else if (payload.hasImage) forwardPasteShortcutToTerminal();
   };
 
   const pasteFromClipboard = async (): Promise<void> => {
+    if (disposed) return;
+    const requestedFocus = focusVersion;
     try {
       const payload = readClipboard
         ? await readClipboard()
         : { text: (await readClipboardText?.()) ?? "", hasImage: false };
-      if (payload.text) {
-        pasteText(payload.text);
-      } else if (payload.hasImage) {
-        forwardPasteShortcutToTerminal();
-      }
+      if (!disposed && requestedFocus === focusVersion) pastePayload(payload);
     } catch (error) {
       onPasteError(error);
     }
   };
 
   const handlePasteEvent = (event: TerminalInputClipboardEvent): boolean => {
-    if (isEditableTarget(event.target)) return false;
+    if (disposed || isEditableTarget(event.target)) return false;
 
     const text = getClipboardEventText(event);
     const filePaths = text ? [] : getClipboardEventFilePaths(event);
@@ -232,22 +270,24 @@ export function createTerminalInputController({
     } else if (filePaths.length > 0) {
       pastePaths(filePaths);
     } else {
-      // Image-only clipboard paste events do not expose text/files to the webview.
-      // Forward Ctrl+V to the terminal app so tools such as Pi extensions can read
-      // the native OS clipboard themselves.
-      forwardPasteShortcutToTerminal();
+      // Empty events are not evidence of an image. Confirm with the clipboard owner.
+      void pasteFromClipboard();
     }
     return true;
   };
 
   const handleCopyEvent = (event: TerminalInputClipboardEvent): void => {
-    if (isEditableTarget(event.target) || !getCopySelection(true)) return;
-    event.preventDefault();
-    void copy(true);
+    if (disposed || isEditableTarget(event.target)) return;
+    const selection = getCopySelection(true);
+    if (!selection) return;
+    stopClipboardEvent(event);
+    // The native copy event has clipboard write permission even when the async browser API does not.
+    if (event.clipboardData?.setData) event.clipboardData.setData("text/plain", selection);
+    else void copy(true);
   };
 
   const handleKeyDown = (event: TerminalInputKeyboardEvent): void => {
-    if (isEditableTarget(event.target)) return;
+    if (disposed || event.defaultPrevented || isEditableTarget(event.target)) return;
 
     const action = getTerminalKeyAction(event, Boolean(getCopySelection(true)));
     if (action === "copy") {
@@ -273,10 +313,22 @@ export function createTerminalInputController({
 
   addPasteListener(terminal.textarea);
   addPasteListener(terminal.element);
+  const invalidatePendingPaste = (): void => {
+    focusVersion += 1;
+  };
+  terminal.textarea?.addEventListener("blur", invalidatePendingPaste);
+  disposables.push(() => terminal.textarea?.removeEventListener("blur", invalidatePendingPaste));
+  if (typeof window !== "undefined") {
+    window.addEventListener("blur", invalidatePendingPaste);
+    disposables.push(() => window.removeEventListener("blur", invalidatePendingPaste));
+  }
+  if (terminal.element)
+    disposables.push(listenForPaste(terminal.element, pastePayload, onPasteError));
 
   return {
     copy,
     dispose: () => {
+      disposed = true;
       for (const dispose of disposables.splice(0).reverse()) dispose();
     },
     getCopySelection,
@@ -285,6 +337,7 @@ export function createTerminalInputController({
     handlePasteEvent,
     pasteFromClipboard,
     pastePaths,
+    pastePayload,
     pasteText,
   };
 }

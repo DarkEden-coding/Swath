@@ -99,7 +99,7 @@ describe("createTerminalInputController", () => {
     expect(terminal.paste).toHaveBeenCalledWith("current clipboard");
   });
 
-  it("forwards empty paste events as Ctrl+V so terminal apps can read image clipboards", () => {
+  it("forwards confirmed image paste as Ctrl+V so local terminal apps can read the clipboard", async () => {
     const terminal = createFakeTerminal();
     const writeTerminalData = vi.fn();
     const controller = createTerminalInputController({
@@ -111,10 +111,7 @@ describe("createTerminalInputController", () => {
       openSearch: vi.fn(),
     });
 
-    const event = createPasteEvent("");
-    expect(controller.handlePasteEvent(event)).toBe(true);
-
-    expect(event.preventDefault).toHaveBeenCalled();
+    controller.pastePayload({ text: "", hasImage: true });
     expect(writeTerminalData).toHaveBeenCalledWith("\x16");
   });
 
@@ -131,7 +128,7 @@ describe("createTerminalInputController", () => {
       platform: "win32",
     });
 
-    controller.handlePasteEvent(createPasteEvent(""));
+    controller.pastePayload({ text: "", hasImage: true });
 
     expect(writeTerminalData).toHaveBeenCalledWith("\x1bv");
   });
@@ -172,6 +169,25 @@ describe("createTerminalInputController", () => {
     await controller.pasteFromClipboard();
 
     expect(writeTerminalData).not.toHaveBeenCalled();
+  });
+
+  it("uses native copy event data without requiring browser clipboard permission", () => {
+    const terminal = createFakeTerminal();
+    terminal.setSelection("copied remotely");
+    const writeClipboardText = vi.fn();
+    const setData = vi.fn();
+    const controller = createTerminalInputController({
+      terminal,
+      shellProfile: null,
+      writeClipboardText,
+      openSearch: vi.fn(),
+    });
+    controller.handleCopyEvent({
+      clipboardData: { getData: () => "", setData },
+      preventDefault: vi.fn(),
+    });
+    expect(setData).toHaveBeenCalledWith("text/plain", "copied remotely");
+    expect(writeClipboardText).not.toHaveBeenCalled();
   });
 
   it("copies current and recent terminal selections through the injected clipboard writer", async () => {
@@ -216,6 +232,8 @@ describe("createTerminalInputController", () => {
     expect(xtermKeyHandler(copyEvent)).toBe(false);
     expect(copyEvent.preventDefault).toHaveBeenCalled();
     expect(writeClipboardText).toHaveBeenCalledWith("selected terminal text");
+    controller.handleKeyDown({ ...copyEvent, defaultPrevented: true });
+    expect(writeClipboardText).toHaveBeenCalledTimes(1);
 
     const terminalWithoutSelection = createFakeTerminal();
     createTerminalInputController({
@@ -241,6 +259,68 @@ describe("createTerminalInputController", () => {
 
     expect(preventDefault).toHaveBeenCalled();
     expect(openSearch).toHaveBeenCalled();
+  });
+
+  it.each(["dispose", "blur"])("drops a pending clipboard read after %s", async (change) => {
+    const terminal = createFakeTerminal();
+    let resolve!: (text: string) => void;
+    const controller = createTerminalInputController({
+      terminal,
+      shellProfile: null,
+      readClipboardText: () =>
+        new Promise((done) => {
+          resolve = done;
+        }),
+      writeClipboardText: async () => {},
+      openSearch: vi.fn(),
+    });
+    const pending = controller.pasteFromClipboard();
+    if (change === "dispose") controller.dispose();
+    else terminal.textarea.dispatchEvent(new Event("blur"));
+    resolve("stale clipboard");
+    await pending;
+    expect(terminal.paste).not.toHaveBeenCalled();
+    expect(terminal.focus).not.toHaveBeenCalled();
+  });
+
+  it("does not send image shortcuts to a remote machine's unrelated clipboard", () => {
+    const terminal = createFakeTerminal();
+    const writeTerminalData = vi.fn();
+    const onPasteError = vi.fn();
+    const controller = createTerminalInputController({
+      terminal,
+      shellProfile: null,
+      writeClipboardText: async () => {},
+      openSearch: vi.fn(),
+      writeTerminalData,
+      onPasteError,
+      isLocalSession: false,
+    });
+    controller.pastePayload({ text: "", hasImage: true });
+    controller.pastePaths(["/local-only/file.png"]);
+    expect(terminal.paste).not.toHaveBeenCalled();
+    expect(writeTerminalData).not.toHaveBeenCalled();
+    expect(onPasteError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: expect.stringContaining("Remote terminal image paste") }),
+    );
+  });
+
+  it("confirms empty DOM events before injecting any terminal shortcut", async () => {
+    const terminal = createFakeTerminal();
+    const writeTerminalData = vi.fn();
+    const readClipboard = vi.fn().mockResolvedValue({ text: "", hasImage: false });
+    const controller = createTerminalInputController({
+      terminal,
+      shellProfile: null,
+      readClipboard,
+      writeClipboardText: async () => {},
+      openSearch: vi.fn(),
+      writeTerminalData,
+    });
+    controller.handlePasteEvent(createPasteEvent(""));
+    await Promise.resolve();
+    expect(readClipboard).toHaveBeenCalledTimes(1);
+    expect(writeTerminalData).not.toHaveBeenCalled();
   });
 
   it("removes paste listeners and restores xterm key handling on dispose", () => {

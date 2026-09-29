@@ -1,6 +1,8 @@
 import { Suspense, lazy, useEffect, type PointerEvent as ReactPointerEvent } from "react";
 import * as appActions from "./app/appActions";
 import { commandFromKeyboardEvent, runAppCommand } from "./app/commandRegistry";
+import { pasteIntoFocusedField } from "./app/clipboardPaste";
+import type { TerminalClipboardPayload } from "../shared/types";
 import { useAppBootstrap } from "./app/useAppBootstrap";
 import { EmptyState } from "./features/shell/components/EmptyState";
 import { Sidebar } from "./features/shell/components/Sidebar";
@@ -85,7 +87,15 @@ export function App(): JSX.Element {
 
   useEffect(() => {
     document.documentElement.classList.add(`platform-${window.swath.platform}`);
-  }, []);
+    const onEmbeddedPaste = (event: Event): void => {
+      void pasteIntoFocusedField(
+        (event as CustomEvent<TerminalClipboardPayload>).detail,
+        activePaneId ?? activeView?.activePaneId,
+      );
+    };
+    window.addEventListener("swath:embedded-paste", onEmbeddedPaste);
+    return () => window.removeEventListener("swath:embedded-paste", onEmbeddedPaste);
+  }, [activePaneId, activeView?.activePaneId]);
 
   useEffect(() => {
     const onResize = (): void => {

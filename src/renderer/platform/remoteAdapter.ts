@@ -2,6 +2,7 @@ import type { SwathApi, RemoteHandshake, RemoteServerStatus } from "../../shared
 import type { RemoteConnection } from "../../shared/types";
 import type { RemoteEvent, RemoteMethod, RemoteResponse } from "../../shared/ipc/remote";
 import { parseRemotePath } from "../../shared/ipc/remote";
+import { readBrowserClipboard } from "./browserClipboard";
 
 type Status = "connected" | "connecting" | "offline";
 type EventChannel = RemoteEvent["channel"];
@@ -30,6 +31,7 @@ class RemoteClient {
   private nextId = 1;
   private retry: number | null = null;
   private active = false;
+  private disposed = false;
   private pending = new Map<
     number,
     { resolve: (value: unknown) => void; reject: (error: Error) => void }
@@ -57,50 +59,60 @@ class RemoteClient {
   }
 
   async open(): Promise<void> {
+    if (this.disposed) throw new Error("Remote device is not configured");
     this.active = true;
     if (this.socket?.readyState === WebSocket.OPEN) return;
-    if (this.socket?.readyState === WebSocket.CONNECTING) {
-      await new Promise<void>((resolve, reject) => {
-        const socket = this.socket!;
-        socket.addEventListener("open", () => resolve(), { once: true });
-        socket.addEventListener("error", () => reject(new Error("Remote connection failed")), {
-          once: true,
-        });
-      });
-      return;
-    }
+    if (this.socket?.readyState === WebSocket.CONNECTING) return this.waitForOpen(this.socket);
     this.setStatus("connecting");
     const protocols = this.connection.token
       ? ["swath-v1", authProtocol(this.connection.token)]
       : ["swath-v1"];
     const socket = new WebSocket(socketUrl(this.connection.url), protocols);
     this.socket = socket;
-    socket.addEventListener("message", (event) => this.receive(String(event.data)));
-    socket.addEventListener("close", () => this.closed());
-    await new Promise<void>((resolve, reject) => {
-      socket.addEventListener(
-        "open",
-        () => {
-          this.setStatus("connected");
-          resolve();
-        },
-        { once: true },
-      );
-      socket.addEventListener(
-        "error",
-        () => reject(new Error(`Could not connect to ${this.connection.url}`)),
-        { once: true },
-      );
+    socket.addEventListener("message", (event) => {
+      if (!this.disposed && this.socket === socket) this.receive(String(event.data));
+    });
+    socket.addEventListener("close", () => {
+      if (this.socket === socket) this.closed();
+    });
+    await this.waitForOpen(socket);
+  }
+
+  /** Reject interrupted connection attempts and remove all losing event listeners. */
+  private waitForOpen(socket: WebSocket): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const cleanup = (): void => {
+        socket.removeEventListener("open", connected);
+        socket.removeEventListener("error", failed);
+        socket.removeEventListener("close", failed);
+      };
+      const failed = (): void => {
+        cleanup();
+        reject(new Error(`Could not connect to ${this.connection.url}`));
+      };
+      const connected = (): void => {
+        if (this.disposed || this.socket !== socket) {
+          failed();
+          return;
+        }
+        cleanup();
+        this.setStatus("connected");
+        resolve();
+      };
+      socket.addEventListener("open", connected, { once: true });
+      socket.addEventListener("error", failed, { once: true });
+      socket.addEventListener("close", failed, { once: true });
     });
   }
 
   close(): void {
+    this.disposed = true;
     this.active = false;
     if (this.retry !== null) window.clearTimeout(this.retry);
     this.retry = null;
-    this.socket?.close();
-    this.socket = null;
-    this.setStatus("offline");
+    const socket = this.socket;
+    this.closed();
+    socket?.close();
   }
 
   private closed(): void {
@@ -147,7 +159,17 @@ class RemoteClient {
     const id = this.nextId++;
     return await new Promise<T>((resolve, reject) => {
       this.pending.set(id, { resolve: (value) => resolve(value as T), reject });
-      this.socket!.send(JSON.stringify({ type: "request", id, method, params }));
+      if (this.disposed || this.socket?.readyState !== WebSocket.OPEN) {
+        this.pending.delete(id);
+        reject(new Error("Remote device is not connected"));
+        return;
+      }
+      try {
+        this.socket.send(JSON.stringify({ type: "request", id, method, params }));
+      } catch (error) {
+        this.pending.delete(id);
+        reject(error);
+      }
     });
   }
 }
@@ -208,6 +230,30 @@ export function createHybridSwath(local: SwathApi): SwathApi {
     return id ? (clients.get(id) ?? null) : null;
   }
 
+  /** Resolve a pinned terminal owner without ever falling back to this device. */
+  function terminalClient(sessionId: string): RemoteClient | null {
+    const id = terminalOwners.get(sessionId);
+    if (!id) return null;
+    const remote = clients.get(id);
+    if (!remote) throw new Error(`Remote device ${id} is not configured`);
+    return remote;
+  }
+
+  /** Pin remote ownership before I/O so failed or concurrent attaches remain remote. */
+  function terminalDestination(request: { cwd: string; sessionId: string }): RemoteClient | null {
+    if (!request.cwd.startsWith("swath-remote://")) {
+      if (terminalOwners.has(request.sessionId))
+        throw new Error("Terminal session belongs to a remote device");
+      return null;
+    }
+    const id = parseRemotePath(request.cwd)?.connectionId;
+    if (!id) throw new Error("Invalid remote terminal path");
+    if (terminalOwners.has(request.sessionId) && terminalOwners.get(request.sessionId) !== id)
+      throw new Error("Terminal session belongs to another remote device");
+    terminalOwners.set(request.sessionId, id);
+    return terminalClient(request.sessionId);
+  }
+
   function event<T>(
     channel: EventChannel,
     localSubscribe: (callback: T) => () => void,
@@ -251,37 +297,34 @@ export function createHybridSwath(local: SwathApi): SwathApi {
     config: local.config,
     terminal: {
       create: async (request) => {
-        const remote = remoteFor(request.cwd);
+        const remote = terminalDestination(request);
         if (!remote) return local.terminal.create(request);
-        terminalOwners.set(request.sessionId, remote.connection.id);
         await remote.call("terminal.create", unroute(request));
       },
       write: async (sessionId, data) => {
-        const remote = clients.get(terminalOwners.get(sessionId) ?? "");
+        const remote = terminalClient(sessionId);
         return remote
           ? void (await remote.call("terminal.write", { sessionId, data }))
           : local.terminal.write(sessionId, data);
       },
       resize: (request) => {
-        const remote = clients.get(terminalOwners.get(request.sessionId) ?? "");
+        const remote = terminalClient(request.sessionId);
         remote ? void remote.call("terminal.resize", request) : local.terminal.resize(request);
       },
       kill: (sessionId) => {
-        const remote = clients.get(terminalOwners.get(sessionId) ?? "");
+        const remote = terminalClient(sessionId);
         remote ? void remote.call("terminal.kill", { sessionId }) : local.terminal.kill(sessionId);
-        terminalOwners.delete(sessionId);
       },
       attach: async (request) => {
-        const remote = remoteFor(request.cwd);
+        const remote = terminalDestination(request);
         if (!remote) return local.terminal.attach(request);
-        terminalOwners.set(request.sessionId, remote.connection.id);
         return remote.call("terminal.attach", unroute(request));
       },
       restart: async (sessionId) =>
-        clients.get(terminalOwners.get(sessionId) ?? "")?.call("terminal.restart", { sessionId }) ??
+        terminalClient(sessionId)?.call("terminal.restart", { sessionId }) ??
         local.terminal.restart(sessionId),
       replay: async (sessionId) => {
-        const remote = clients.get(terminalOwners.get(sessionId) ?? "");
+        const remote = terminalClient(sessionId);
         if (!remote) return local.terminal.replay(sessionId);
         const { data, ...status } = await remote.call<{
           data: string;
@@ -292,13 +335,13 @@ export function createHybridSwath(local: SwathApi): SwathApi {
         return status;
       },
       setStreaming: (sessionId, enabled) => {
-        const remote = clients.get(terminalOwners.get(sessionId) ?? "");
+        const remote = terminalClient(sessionId);
         remote
           ? void remote.call("terminal.setStreaming", { sessionId, enabled })
           : local.terminal.setStreaming(sessionId, enabled);
       },
       isBusy: async (sessionId) =>
-        clients.get(terminalOwners.get(sessionId) ?? "")?.call("terminal.isBusy", { sessionId }) ??
+        terminalClient(sessionId)?.call("terminal.isBusy", { sessionId }) ??
         local.terminal.isBusy(sessionId),
       onData: event("terminal:data", local.terminal.onData, (p) => [p.sessionId, p.data]),
       onExit: event("terminal:exit", local.terminal.onExit, (p) => [
@@ -414,10 +457,7 @@ export function createRemoteWebSwath(): SwathApi {
       confirm: async (r) => window.confirm(r.detail ? `${r.message}\n\n${r.detail}` : r.message),
     },
     clipboard: {
-      readForTerminal: async () => ({
-        text: await navigator.clipboard.readText(),
-        hasImage: false,
-      }),
+      readForTerminal: readBrowserClipboard,
       writeText: (text) => navigator.clipboard.writeText(text),
     },
     browser: {

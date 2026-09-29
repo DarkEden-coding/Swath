@@ -318,25 +318,6 @@ function QuestionPage({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const attached = question.images ?? [];
 
-  useEffect(() => {
-    const onMenuPaste = (): void => {
-      const textarea = textareaRef.current;
-      if (!textarea || document.activeElement !== textarea) return;
-      void window.swath.clipboard.readForTerminal().then((payload) => {
-        if (!payload.text) return;
-        const value = customDraft ?? (answer?.type === "custom" ? answer.answer : "");
-        const start = textarea.selectionStart;
-        const end = textarea.selectionEnd;
-        onCustomDraft(value.slice(0, start) + payload.text + value.slice(end));
-        requestAnimationFrame(() => {
-          textarea.selectionStart = textarea.selectionEnd = start + payload.text.length;
-        });
-      });
-    };
-    window.addEventListener("swath:terminal-paste", onMenuPaste);
-    return () => window.removeEventListener("swath:terminal-paste", onMenuPaste);
-  }, [answer, customDraft, onCustomDraft]);
-
   return (
     <div className="flex flex-col gap-4">
       <div className="text-[13px] leading-relaxed text-[var(--pi-text)]">{question.question}</div>

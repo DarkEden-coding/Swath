@@ -1,4 +1,5 @@
 import type { SplitDirection, Workspace, WorkspaceView } from "../../shared/types";
+import { pasteIntoFocusedField } from "./clipboardPaste";
 
 export type AppCommand =
   | "workspace:add"
@@ -51,8 +52,7 @@ export function runAppCommand(command: string, context: CommandContext): void {
   const workspace = context.activeWorkspace;
   const view = context.activeView;
   if (command === "terminal:paste") {
-    if (pasteIntoFocusedField()) return;
-    window.dispatchEvent(new Event("swath:terminal-paste"));
+    void pasteIntoFocusedField(undefined, context.activePaneId ?? view?.activePaneId);
   }
   if (command === "workspace:add") void context.addWorkspaceFromFolder();
   if (command === "view:new" || command === "tab:new") context.createView();
@@ -60,28 +60,6 @@ export function runAppCommand(command: string, context: CommandContext): void {
     context.closeView(workspace.id, view.id);
   runPaneCommand(command, context, workspace, view);
   if (command === "settings:open") context.openSettings();
-}
-
-/** Native macOS menu accelerators bypass the WebView's ordinary paste command. */
-export function pasteIntoFocusedField(): boolean {
-  const target = document.activeElement;
-  if (!(target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement)) return false;
-  if (target.classList.contains("xterm-helper-textarea") || target.dataset.swathPasteHandler)
-    return false;
-  if (target.disabled || target.readOnly) return false;
-  void window.swath.clipboard.readForTerminal().then(({ text }) => {
-    const start = target.selectionStart ?? target.value.length;
-    const end = target.selectionEnd ?? start;
-    const next = `${target.value.slice(0, start)}${text}${target.value.slice(end)}`;
-    const prototype =
-      target instanceof HTMLTextAreaElement
-        ? HTMLTextAreaElement.prototype
-        : HTMLInputElement.prototype;
-    Object.getOwnPropertyDescriptor(prototype, "value")?.set?.call(target, next);
-    target.dispatchEvent(new Event("input", { bubbles: true }));
-    target.setSelectionRange(start + text.length, start + text.length);
-  });
-  return true;
 }
 
 function runPaneCommand(

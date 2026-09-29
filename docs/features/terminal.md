@@ -32,6 +32,8 @@ This is the PTY-backed terminal feature.
 
 ## Input handling
 
+See [Clipboard ownership and device switching](clipboard.md) for routing rules, remote limitations and regression checks.
+
 `terminalInputController.ts` owns:
 
 - paste interception

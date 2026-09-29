@@ -1,17 +1,21 @@
 import type { RefObject } from "react";
 
 interface TerminalViewportProps {
+  paneId: string;
   hostRef: RefObject<HTMLDivElement | null>;
   suspended?: boolean;
 }
 
+/** Keep a pane-scoped DOM address for focus restoration without querying hidden terminals. */
 export function TerminalViewport({
+  paneId,
   hostRef,
   suspended = false,
 }: TerminalViewportProps): JSX.Element {
   return (
     <div
       ref={hostRef}
+      data-terminal-pane-id={paneId}
       className={`terminal-host relative h-full min-h-0 min-w-0 overflow-hidden px-2 pb-1.5 pt-2 [&_.xterm]:h-full ${suspended ? "bg-[#0d1117]" : ""}`}
     >
       {suspended ? (

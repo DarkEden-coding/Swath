@@ -6,6 +6,7 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { listenForPaste, pasteIntoFocusedField } from "../../../app/clipboardPaste";
 import type { PiCommand, PiImageContent, PiThinkingLevel } from "../../../../shared/ipc/piRpc";
 import type { TerminalClipboardPayload } from "../../../../shared/types";
 import type { AttachedImage } from "./piPaneCache";
@@ -288,15 +289,6 @@ export function Composer({
     else insertText(payload.text);
   };
 
-  /** Handles native menu paste, using the host's payload for an embedded remote webview. */
-  const pasteFromNativeClipboard = async (payload?: TerminalClipboardPayload): Promise<void> => {
-    try {
-      pastePayload(payload ?? (await window.swath.clipboard.readForTerminal()));
-    } catch (error) {
-      console.error("Unable to paste clipboard contents", error);
-    }
-  };
-
   const insertText = (text: string): void => {
     const input = inputRef.current;
     const current = value;
@@ -307,24 +299,10 @@ export function Composer({
     input?.focus();
   };
 
-  // Cmd/Ctrl+V arrives through the app menu, not a DOM paste event. In a remote child webview
-  // the host forwards the clipboard payload here. Only the focused composer may claim it.
   useEffect(() => {
-    const onMenuPaste = (): void => {
-      if (document.activeElement !== inputRef.current) return;
-      void pasteFromNativeClipboard();
-    };
-    const onEmbeddedPaste = (event: Event): void => {
-      if (document.activeElement !== inputRef.current) return;
-      void pasteFromNativeClipboard((event as CustomEvent<TerminalClipboardPayload>).detail);
-    };
-    window.addEventListener("swath:terminal-paste", onMenuPaste);
-    window.addEventListener("swath:embedded-paste", onEmbeddedPaste);
-    return () => {
-      window.removeEventListener("swath:terminal-paste", onMenuPaste);
-      window.removeEventListener("swath:embedded-paste", onEmbeddedPaste);
-    };
-  }, [pasteFromNativeClipboard]);
+    const input = inputRef.current;
+    if (input) return listenForPaste(input, pastePayload);
+  });
 
   // Editing a placeholder out of the prompt detaches its image, so the strip only previews
   // what the next message will actually carry.
@@ -426,7 +404,7 @@ export function Composer({
           );
           if (hasImageItem || !text) {
             event.preventDefault();
-            void pasteFromNativeClipboard();
+            void pasteIntoFocusedField();
           }
         }}
         onKeyDown={(event) => {
