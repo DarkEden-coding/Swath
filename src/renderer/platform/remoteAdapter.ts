@@ -389,7 +389,7 @@ export function createRemoteWebSwath(): SwathApi {
     machineId: id,
     platform: "web",
   });
-  const api = createHybridSwath({
+  return {
     platform: "web",
     config: {
       load: () => client.call("config.load"),
@@ -498,8 +498,5 @@ export function createRemoteWebSwath(): SwathApi {
       serverAutoStart: noServer,
       serverStatus: noServer,
     },
-  });
-  // The hybrid wrapper needs a profile when routing virtual paths, but direct web calls are local
-  // to its remote host, so returning the base implementation is both simpler and faster.
-  return api;
+  };
 }
