@@ -41,6 +41,10 @@ fn record_dialog(pending: &mut HashMap<String, Vec<String>>, pane_id: &str, line
     let Ok(event) = serde_json::from_str::<Value>(line) else {
         return;
     };
+    if event.get("type").and_then(Value::as_str) == Some("agent_settled") {
+        pending.remove(pane_id);
+        return;
+    }
     if event.get("type").and_then(Value::as_str) != Some("extension_ui_request")
         || !matches!(
             event.get("method").and_then(Value::as_str),
@@ -78,6 +82,24 @@ fn remove_dialog(pending: &mut HashMap<String, Vec<String>>, pane_id: &str, id: 
             pending.remove(pane_id);
         }
     }
+}
+
+/// Sends abort before resolving blocking dialogs so tools that ignore their abort signal can settle.
+fn write_pi_command(
+    writer: &mut impl Write,
+    line: &str,
+    cancel_dialogs: &[String],
+) -> std::io::Result<()> {
+    writer.write_all(line.as_bytes())?;
+    writer.write_all(b"\n")?;
+    for dialog in cancel_dialogs {
+        if let Some(id) = dialog_id(dialog) {
+            let response = json!({ "type": "extension_ui_response", "id": id, "cancelled": true });
+            writer.write_all(response.to_string().as_bytes())?;
+            writer.write_all(b"\n")?;
+        }
+    }
+    writer.flush()
 }
 
 /// Closing stdin asks Pi to run session_shutdown, which removes session-owned Serve routes.
@@ -277,15 +299,29 @@ impl PiManager {
             .stdin
             .as_mut()
             .ok_or_else(|| "pi stdin is closed".to_string())?;
-        stdin
-            .write_all(line.as_bytes())
-            .and_then(|_| stdin.write_all(b"\n"))
-            .and_then(|_| stdin.flush())
+        let value = serde_json::from_str::<Value>(line).ok();
+        let aborting = value
+            .as_ref()
+            .and_then(|value| value.get("type"))
+            .and_then(Value::as_str)
+            == Some("abort");
+        let mut pending = self
+            .pending_dialogs
+            .lock()
+            .map_err(|_| "pi state poisoned")?;
+        let dialogs = if aborting {
+            pending.get(pane_id).cloned().unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        write_pi_command(stdin, line, &dialogs)
             .map_err(|err| format!("Unable to write to pi: {err}"))?;
-        if let Ok(value) = serde_json::from_str::<Value>(line) {
+        if aborting {
+            pending.remove(pane_id);
+        }
+        if let Some(value) = value {
             if value.get("type").and_then(Value::as_str) == Some("extension_ui_response") {
                 if let Some(id) = value.get("id").and_then(Value::as_str) {
-                    let mut pending = self.pending_dialogs.lock().map_err(|_| "pi state poisoned")?;
                     remove_dialog(&mut pending, pane_id, id);
                 }
             }
@@ -741,6 +777,31 @@ mod tests {
         record_dialog(&mut pending, "pane", r#"{"type":"extension_ui_request","method":"notify","id":"notice"}"#);
         assert_eq!(pending["pane"], vec![question]);
         remove_dialog(&mut pending, "pane", "q1");
+        assert!(!pending.contains_key("pane"));
+    }
+
+    #[test]
+    fn abort_cancels_blocking_questions_after_signalling_agent() {
+        let question = r#"{"type":"extension_ui_request","method":"select","id":"q1"}"#;
+        let mut bytes = Vec::new();
+        write_pi_command(&mut bytes, r#"{"type":"abort"}"#, &[question.into()]).unwrap();
+        let commands: Vec<Value> = String::from_utf8(bytes)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(
+            commands,
+            vec![
+                json!({"type": "abort"}),
+                json!({
+                    "type": "extension_ui_response", "id": "q1", "cancelled": true
+                })
+            ]
+        );
+        let mut pending = HashMap::new();
+        record_dialog(&mut pending, "pane", question);
+        record_dialog(&mut pending, "pane", r#"{"type":"agent_settled"}"#);
         assert!(!pending.contains_key("pane"));
     }
 

@@ -37,6 +37,7 @@ type Action =
   | { type: "exit" }
   | { type: "error"; message: string }
   | { type: "dismissDialog"; id: string }
+  | { type: "syncDialogs"; lines: string[] }
   | { type: "dismissNotice"; id: string }
   | { type: "reset" };
 
@@ -52,6 +53,14 @@ function reducer(state: PiPaneState, action: Action): PiPaneState {
       return { ...state, error: action.message };
     case "dismissDialog":
       return dismissDialog(state, action.id);
+    case "syncDialogs":
+      return action.lines.reduce<PiPaneState>(
+        (current, line) => {
+          const event = parsePiLine(line);
+          return event ? reducePiEvent(current, event) : current;
+        },
+        { ...state, dialogs: [] },
+      );
     case "dismissNotice":
       return dismissNotice(state, action.id);
     case "reset":
@@ -161,7 +170,7 @@ export function usePiAgent(
   const needsInitialPromptRef = useRef(Boolean(initialStart));
   /** Restores blocking prompts that were emitted while the remote UI was disconnected. */
   const replayDialogs = useCallback((dialogs: string[] = []): void => {
-    for (const line of dialogs) dispatch({ type: "line", line });
+    dispatch({ type: "syncDialogs", lines: dialogs });
   }, []);
   const restartingRef = useRef(false);
   const startupRef = useRef(0);
@@ -174,13 +183,18 @@ export function usePiAgent(
     reportQuestioning(paneId, state.dialogs.length > 0);
   }, [paneId, state]);
 
+  const answeringRef = useRef(new Set<string>());
+
+  /** Reports transport failures and lets dialog callers retain answers until delivery succeeds. */
   const send = useCallback(
-    (command: PiCommandMessage) => {
-      void window.swath.pi
-        .rpc({ op: "send", paneId, line: JSON.stringify(command) })
-        .catch((error: unknown) => {
-          dispatch({ type: "error", message: String(error) });
-        });
+    async (command: PiCommandMessage): Promise<boolean> => {
+      try {
+        await window.swath.pi.rpc({ op: "send", paneId, line: JSON.stringify(command) });
+        return true;
+      } catch (error: unknown) {
+        dispatch({ type: "error", message: String(error) });
+        return false;
+      }
     },
     [paneId],
   );
@@ -341,7 +355,10 @@ export function usePiAgent(
       ) {
         sendRef.current({ id: "stats", type: "get_session_stats" });
       }
-      if (event.type === "agent_settled") {
+      if (
+        event.type === "agent_settled" ||
+        (event.type === "response" && event.success && event.command === "abort")
+      ) {
         sendRef.current({ id: "state", type: "get_state" });
       }
     }
@@ -352,7 +369,6 @@ export function usePiAgent(
   // A browser may miss streamed events while its socket is disconnected. Pi supplies a fresh
   // transcript and state after reconnect; the live subscription remains mounted.
   useEffect(() => {
-    if (window.swath.platform !== "web") return;
     return window.swath.remote.onStatus((_id, status) => {
       if (status === "connected") {
         void attachPi(paneId)
@@ -383,7 +399,12 @@ export function usePiAgent(
           ...(state.isStreaming ? { streamingBehavior: "followUp" as const } : {}),
         });
       },
-      abort: () => send({ type: "abort" }),
+      abort: () => {
+        void send({ type: "abort" }).then((delivered) => {
+          // An already-idle agent may emit no settlement event for Stop.
+          if (delivered) void send({ id: "state-after-abort", type: "get_state" });
+        });
+      },
       restart,
       newSession: () => send({ id: "new-session", type: "new_session" }),
       compact: () => send({ type: "compact" }),
@@ -419,8 +440,17 @@ export function usePiAgent(
         send({ id: "switch-session", type: "switch_session", sessionPath });
       },
       answerDialog: (id, response) => {
-        send({ type: "extension_ui_response", id, ...response });
-        dispatch({ type: "dismissDialog", id });
+        if (answeringRef.current.has(id)) return;
+        answeringRef.current.add(id);
+        void send({ type: "extension_ui_response", id, ...response })
+          .then((delivered) => {
+            if (delivered) {
+              dispatch({ type: "dismissDialog", id });
+              // Expired or already-answered Pi dialog IDs are silently ignored by RPC.
+              void send({ id: "state-after-answer", type: "get_state" });
+            }
+          })
+          .finally(() => answeringRef.current.delete(id));
       },
       dismissNotice: (id) => dispatch({ type: "dismissNotice", id }),
     }),

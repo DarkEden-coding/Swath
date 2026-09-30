@@ -568,7 +568,12 @@ async fn serve_socket(socket: WebSocket, ctx: ServerContext) {
     let mut events = ctx.events.subscribe();
     loop {
         tokio::select! {
-            event = events.recv() => if let Ok(event) = event { if output.send(Message::Text(event.into())).await.is_err() { break; } },
+            // A lagged subscriber missed events that may change agent state. Disconnect so the
+            // UI reconnects and hydrates instead of retaining a stale "working" indicator.
+            event = events.recv() => match event {
+                Ok(event) => if output.send(Message::Text(event.into())).await.is_err() { break; },
+                Err(_) => break,
+            },
             incoming = input.next() => {
                 let Some(Ok(Message::Text(text))) = incoming else { break };
                 let response = handle_request(&ctx, &text).await;
@@ -612,6 +617,7 @@ async fn dispatch(ctx: &ServerContext, method: &str, params: Value) -> Result<Va
             ctx.commit_config(&value, revision)
                 .map_err(|e| e.to_string())
         }
+        "connection.ping" => Ok(json!({"ok": true})),
         "config.load" => {
             let mut value = ctx.load_config().map_err(|e| e.to_string())?;
             value.remote_connections = None;
@@ -970,6 +976,10 @@ mod tests {
             machine_id: "test-machine".into(),
             events: remote.events.clone(),
         };
+        assert_eq!(
+            dispatch(&context, "connection.ping", json!({})).await.unwrap(),
+            json!({"ok": true})
+        );
         let config = dispatch(&context, "config.load", json!({})).await.unwrap();
         assert_eq!(config["version"], 2);
         assert!(dispatch(&context, "config.save", json!({"config":config}))

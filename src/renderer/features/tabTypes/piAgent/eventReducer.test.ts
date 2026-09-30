@@ -161,11 +161,31 @@ describe("history hydration from get_messages", () => {
 describe("reducePiEvent", () => {
   it("places cache misses inline while keeping expiry and ordinary notifications as notices", () => {
     const state = run([
-      { type: "extension_ui_request", id: "miss", method: "notify", message: "Prompt cache miss: not read", notifyType: "warning" },
-      { type: "extension_ui_request", id: "expiry", method: "notify", message: "Prompt cache may have expired", notifyType: "info" },
-      { type: "extension_ui_request", id: "ordinary", method: "notify", message: "Other notice", notifyType: "info" },
+      {
+        type: "extension_ui_request",
+        id: "miss",
+        method: "notify",
+        message: "Prompt cache miss: not read",
+        notifyType: "warning",
+      },
+      {
+        type: "extension_ui_request",
+        id: "expiry",
+        method: "notify",
+        message: "Prompt cache may have expired",
+        notifyType: "info",
+      },
+      {
+        type: "extension_ui_request",
+        id: "ordinary",
+        method: "notify",
+        message: "Other notice",
+        notifyType: "info",
+      },
     ]);
-    expect(state.entries).toMatchObject([{ kind: "inlineNotice", text: "Prompt cache miss: not read", level: "warning" }]);
+    expect(state.entries).toMatchObject([
+      { kind: "inlineNotice", text: "Prompt cache miss: not read", level: "warning" },
+    ]);
     expect(state.notices.map(({ message }) => message)).toEqual([
       "Prompt cache may have expired",
       "Other notice",
@@ -563,6 +583,33 @@ describe("reducePiEvent", () => {
     expect(state.dialogs).toHaveLength(0);
   });
 
+  it("clears cancelled questions on settlement or a confirmed Stop", () => {
+    const waiting = run([
+      { type: "agent_start" },
+      {
+        type: "extension_ui_request",
+        id: "q1",
+        method: "select",
+        title: "Choose",
+        options: ["yes"],
+      },
+    ]);
+    for (const event of [
+      { type: "agent_settled" } as const,
+      { type: "response", command: "abort", success: true } as const,
+    ]) {
+      const stopped = run([event], waiting);
+      expect(stopped.isStreaming).toBe(false);
+      expect(stopped.dialogs).toEqual([]);
+    }
+    const failed = run(
+      [{ type: "response", command: "abort", success: false, error: "offline" }],
+      waiting,
+    );
+    expect(failed.isStreaming).toBe(true);
+    expect(failed.dialogs).toHaveLength(1);
+  });
+
   it("tracks streaming and compaction lifecycle", () => {
     let state = run([{ type: "agent_start" }]);
     expect(state.isStreaming).toBe(true);
@@ -613,10 +660,7 @@ describe("reducePiEvent", () => {
     expect(state.operationStatus).toBeUndefined();
     expect(state.entries.at(-1)).toMatchObject({ kind: "inlineNotice", level: "warning" });
 
-    state = run(
-        [{ type: "auto_retry_end", success: false, finalError: "quota exhausted" }],
-      state,
-    );
+    state = run([{ type: "auto_retry_end", success: false, finalError: "quota exhausted" }], state);
     expect(state.operationStatus).toBeUndefined();
     expect(state.entries.at(-1)).toMatchObject({
       kind: "inlineNotice",
@@ -641,10 +685,7 @@ describe("reducePiEvent", () => {
     expect(state.notices).toHaveLength(1);
     expect(state.error).toBe("nope");
 
-    state = run(
-      [{ type: "response", command: "new_session", success: true, data: {} }],
-      state,
-    );
+    state = run([{ type: "response", command: "new_session", success: true, data: {} }], state);
     expect(state.operationStatus).toBeUndefined();
     expect(state.notices).toHaveLength(0);
     expect(state.error).toBeUndefined();

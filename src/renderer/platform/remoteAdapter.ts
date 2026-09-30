@@ -30,11 +30,22 @@ class RemoteClient {
   private socket: WebSocket | null = null;
   private nextId = 1;
   private retry: number | null = null;
+  private heartbeat: number | null = null;
+  private probing = false;
+  private lastProbe = 0;
+  private readonly wake = (): void => {
+    if (document.visibilityState === "hidden" || !this.active) return;
+    if (this.status === "connected") {
+      // A suspended browser cannot trust the old socket after a long clock gap.
+      if (Date.now() - this.lastProbe > 30_000) this.disconnect();
+      else void this.probe();
+    } else void this.open().catch(() => undefined);
+  };
   private active = false;
   private disposed = false;
   private pending = new Map<
     number,
-    { resolve: (value: unknown) => void; reject: (error: Error) => void }
+    { resolve: (value: unknown) => void; reject: (error: Error) => void; timer: number }
   >();
   private eventListeners = new Set<(event: RemoteEvent) => void>();
   private statusListeners = new Set<(status: Status) => void>();
@@ -60,6 +71,11 @@ class RemoteClient {
 
   async open(): Promise<void> {
     if (this.disposed) throw new Error("Remote device is not configured");
+    if (!this.active) {
+      window.addEventListener("online", this.wake);
+      window.addEventListener("pageshow", this.wake);
+      document.addEventListener("visibilitychange", this.wake);
+    }
     this.active = true;
     if (this.socket?.readyState === WebSocket.OPEN) return;
     if (this.socket?.readyState === WebSocket.CONNECTING) return this.waitForOpen(this.socket);
@@ -67,7 +83,13 @@ class RemoteClient {
     const protocols = this.connection.token
       ? ["swath-v1", authProtocol(this.connection.token)]
       : ["swath-v1"];
-    const socket = new WebSocket(socketUrl(this.connection.url), protocols);
+    let socket: WebSocket;
+    try {
+      socket = new WebSocket(socketUrl(this.connection.url), protocols);
+    } catch (error) {
+      this.closed();
+      throw error;
+    }
     this.socket = socket;
     socket.addEventListener("message", (event) => {
       if (!this.disposed && this.socket === socket) this.receive(String(event.data));
@@ -81,14 +103,19 @@ class RemoteClient {
   /** Reject interrupted connection attempts and remove all losing event listeners. */
   private waitForOpen(socket: WebSocket): Promise<void> {
     return new Promise((resolve, reject) => {
+      const timer = window.setTimeout(() => {
+        failed();
+      }, 10_000);
       const cleanup = (): void => {
+        window.clearTimeout(timer);
         socket.removeEventListener("open", connected);
         socket.removeEventListener("error", failed);
         socket.removeEventListener("close", failed);
       };
       const failed = (): void => {
         cleanup();
-        reject(new Error(`Could not connect to ${this.connection.url}`));
+        reject(new Error(`Could not connect to ${this.connection.url}. Retrying automatically.`));
+        if (this.socket === socket) this.disconnect();
       };
       const connected = (): void => {
         if (this.disposed || this.socket !== socket) {
@@ -96,6 +123,11 @@ class RemoteClient {
           return;
         }
         cleanup();
+        if (this.retry !== null) window.clearTimeout(this.retry);
+        this.retry = null;
+        this.lastProbe = Date.now();
+        if (this.heartbeat === null)
+          this.heartbeat = window.setInterval(() => void this.probe(), 10_000);
         this.setStatus("connected");
         resolve();
       };
@@ -108,6 +140,9 @@ class RemoteClient {
   close(): void {
     this.disposed = true;
     this.active = false;
+    window.removeEventListener("online", this.wake);
+    window.removeEventListener("pageshow", this.wake);
+    document.removeEventListener("visibilitychange", this.wake);
     if (this.retry !== null) window.clearTimeout(this.retry);
     this.retry = null;
     const socket = this.socket;
@@ -115,11 +150,41 @@ class RemoteClient {
     socket?.close();
   }
 
+  /** Invalidates the socket and rejects interrupted calls before scheduling reconnection. */
+  private disconnect(): void {
+    const socket = this.socket;
+    this.closed();
+    socket?.close();
+  }
+
+  /** Checks idle connection liveness without queueing behind an existing host request. */
+  private async probe(): Promise<void> {
+    if (this.probing || this.status !== "connected" || this.pending.size > 0) return;
+    this.probing = true;
+    const socket = this.socket;
+    this.lastProbe = Date.now();
+    try {
+      await this.call("connection.ping", undefined, 5_000);
+    } catch {
+      if (this.socket === socket) this.disconnect();
+    } finally {
+      this.probing = false;
+    }
+  }
+
   private closed(): void {
+    if (this.heartbeat !== null) window.clearInterval(this.heartbeat);
+    this.heartbeat = null;
     this.socket = null;
     this.setStatus("offline");
-    for (const pending of this.pending.values())
-      pending.reject(new Error("Remote device disconnected"));
+    for (const pending of this.pending.values()) {
+      window.clearTimeout(pending.timer);
+      pending.reject(
+        new Error(
+          "Remote device disconnected. Reconnecting automatically; the operation was not retried. Check its outcome before trying again.",
+        ),
+      );
+    }
     this.pending.clear();
     if (this.active && this.retry === null) {
       this.retry = window.setTimeout(() => {
@@ -142,6 +207,7 @@ class RemoteClient {
     }
     const pending = this.pending.get(message.id);
     if (!pending) return;
+    window.clearTimeout(pending.timer);
     this.pending.delete(message.id);
     if (message.error) pending.reject(new Error(message.error));
     else pending.resolve(message.result);
@@ -154,12 +220,22 @@ class RemoteClient {
       );
   }
 
-  async call<T>(method: RemoteMethod, params?: unknown): Promise<T> {
+  async call<T>(method: RemoteMethod, params?: unknown, timeout = 30_000): Promise<T> {
     await this.open();
     const id = this.nextId++;
     return await new Promise<T>((resolve, reject) => {
-      this.pending.set(id, { resolve: (value) => resolve(value as T), reject });
+      const timer = window.setTimeout(() => {
+        this.pending.delete(id);
+        reject(
+          new Error(
+            `Remote request ${method} timed out. The operation was not retried; check its outcome before trying again.`,
+          ),
+        );
+        this.disconnect();
+      }, timeout);
+      this.pending.set(id, { resolve: (value) => resolve(value as T), reject, timer });
       if (this.disposed || this.socket?.readyState !== WebSocket.OPEN) {
+        window.clearTimeout(timer);
         this.pending.delete(id);
         reject(new Error("Remote device is not connected"));
         return;
@@ -167,8 +243,10 @@ class RemoteClient {
       try {
         this.socket.send(JSON.stringify({ type: "request", id, method, params }));
       } catch (error) {
+        window.clearTimeout(timer);
         this.pending.delete(id);
         reject(error);
+        this.disconnect();
       }
     });
   }
@@ -309,11 +387,15 @@ export function createHybridSwath(local: SwathApi): SwathApi {
       },
       resize: (request) => {
         const remote = terminalClient(request.sessionId);
-        remote ? void remote.call("terminal.resize", request) : local.terminal.resize(request);
+        remote
+          ? void remote.call("terminal.resize", request).catch(() => undefined)
+          : local.terminal.resize(request);
       },
       kill: (sessionId) => {
         const remote = terminalClient(sessionId);
-        remote ? void remote.call("terminal.kill", { sessionId }) : local.terminal.kill(sessionId);
+        remote
+          ? void remote.call("terminal.kill", { sessionId }).catch(() => undefined)
+          : local.terminal.kill(sessionId);
       },
       attach: async (request) => {
         const remote = terminalDestination(request);
@@ -337,7 +419,7 @@ export function createHybridSwath(local: SwathApi): SwathApi {
       setStreaming: (sessionId, enabled) => {
         const remote = terminalClient(sessionId);
         remote
-          ? void remote.call("terminal.setStreaming", { sessionId, enabled })
+          ? void remote.call("terminal.setStreaming", { sessionId, enabled }).catch(() => undefined)
           : local.terminal.setStreaming(sessionId, enabled);
       },
       isBusy: async (sessionId) =>
@@ -381,6 +463,7 @@ export function createHybridSwath(local: SwathApi): SwathApi {
         const normalized = normalizeUrl(url);
         const response = await fetch(new URL("/api/handshake", normalized), {
           headers: token ? { Authorization: `Bearer ${token}` } : {},
+          signal: AbortSignal.timeout(10_000),
         });
         if (!response.ok)
           throw new Error(
@@ -469,8 +552,8 @@ export function createRemoteWebSwath(): SwathApi {
     terminal: {
       create: (r) => client.call("terminal.create", r),
       write: (sessionId, data) => client.call("terminal.write", { sessionId, data }),
-      resize: (r) => void client.call("terminal.resize", r),
-      kill: (sessionId) => void client.call("terminal.kill", { sessionId }),
+      resize: (r) => void client.call("terminal.resize", r).catch(() => undefined),
+      kill: (sessionId) => void client.call("terminal.kill", { sessionId }).catch(() => undefined),
       attach: (r) => client.call("terminal.attach", r),
       restart: (sessionId) => client.call("terminal.restart", { sessionId }),
       replay: async (sessionId) => {
@@ -483,7 +566,7 @@ export function createRemoteWebSwath(): SwathApi {
         return status;
       },
       setStreaming: (sessionId, enabled) =>
-        void client.call("terminal.setStreaming", { sessionId, enabled }),
+        void client.call("terminal.setStreaming", { sessionId, enabled }).catch(() => undefined),
       isBusy: (sessionId) => client.call("terminal.isBusy", { sessionId }),
       onData: (cb) =>
         client.onEvent((e) => {

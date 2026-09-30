@@ -1,6 +1,7 @@
 export const REMOTE_PROTOCOL_VERSION = 1 as const;
 
 export type RemoteMethod =
+  | "connection.ping"
   | "config.load"
   | "config.save"
   | "config.snapshot"

@@ -534,7 +534,7 @@ export function reducePiEvent(state: PiPaneState, event: PiIncoming): PiPaneStat
       return { ...state, isStreaming: true };
 
     case "agent_settled":
-      return { ...state, isStreaming: false };
+      return { ...state, isStreaming: false, dialogs: [] };
 
     case "queue_update":
       return {
@@ -627,6 +627,9 @@ export function reducePiEvent(state: PiPaneState, event: PiIncoming): PiPaneStat
       }
       if (!event.success) {
         return { ...state, error: event.error ?? `${event.command} failed` };
+      }
+      if (event.command === "abort") {
+        return { ...state, isStreaming: false, dialogs: [] };
       }
       if (event.command === "get_state") {
         const piState = event.data as PiState;

@@ -9,6 +9,7 @@ import { Sidebar } from "./features/shell/components/Sidebar";
 import { StatusBar } from "./features/shell/components/StatusBar";
 import { WindowTitleBar } from "./features/shell/components/WindowTitleBar";
 import { SettingsModal } from "./features/settings/components/SettingsModal";
+import { RemoteReconnectModal } from "./features/remote/RemoteReconnectModal";
 import { RemoteConnectModal } from "./features/remote/RemoteConnectModal";
 import { AddProjectModal } from "./features/remote/AddProjectModal";
 import { piPaneIdsOfWorkspace, setViewedPanes } from "./features/tabTypes/piAgent/piActivity";
@@ -153,6 +154,7 @@ export function App(): JSX.Element {
       >
         {!embeddedRemote && <WindowTitleBar />}
         <div className={bootScreenClass}>Loading…</div>
+        <RemoteReconnectModal />
       </div>
     );
   }
@@ -223,6 +225,7 @@ export function App(): JSX.Element {
         </div>
         <SettingsModal />
         <RemoteConnectModal />
+        <RemoteReconnectModal />
         <AddProjectModal />
       </main>
     </div>

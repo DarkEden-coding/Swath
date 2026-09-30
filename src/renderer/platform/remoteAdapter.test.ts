@@ -1,9 +1,27 @@
-import { afterEach, expect, it, vi } from "vitest";
+import { beforeEach, afterEach, expect, it, vi } from "vitest";
 import { createHybridSwath, createRemoteWebSwath } from "./remoteAdapter";
 import { createBrowserStubSwath } from "./browserFixture";
 import { toRemotePath } from "../../shared/ipc/remote";
 
-afterEach(() => vi.unstubAllGlobals());
+beforeEach(() => {
+  vi.useFakeTimers();
+  const windowTarget = new EventTarget();
+  vi.stubGlobal(
+    "window",
+    Object.assign(windowTarget, {
+      setTimeout,
+      clearTimeout,
+      setInterval,
+      clearInterval,
+    }),
+  );
+  vi.stubGlobal("document", Object.assign(new EventTarget(), { visibilityState: "visible" }));
+});
+afterEach(() => {
+  vi.clearAllTimers();
+  vi.useRealTimers();
+  vi.unstubAllGlobals();
+});
 
 it("rejects in-flight connection attempts when their device is forgotten", async () => {
   class Socket extends EventTarget {
@@ -209,4 +227,120 @@ it("never routes remote terminal sessions to local after failure, forget, or con
     } as Parameters<typeof api.terminal.create>[0]),
   ).rejects.toThrow("Invalid remote");
   expect(localCalls).not.toHaveBeenCalled();
+});
+
+function hostedSocket(options: { open?: boolean; respond?: boolean } = {}) {
+  const sockets: Socket[] = [];
+  const requests: Array<{ id: number; method: string }> = [];
+  class Socket extends EventTarget {
+    static OPEN = 1;
+    static CONNECTING = 0;
+    readyState = 0;
+    constructor() {
+      super();
+      sockets.push(this);
+      if (options.open !== false)
+        queueMicrotask(() => {
+          this.readyState = 1;
+          this.dispatchEvent(new Event("open"));
+        });
+    }
+    send(raw: string): void {
+      const request = JSON.parse(raw) as { id: number; method: string };
+      requests.push(request);
+      if (options.respond)
+        queueMicrotask(() =>
+          this.dispatchEvent(
+            new MessageEvent("message", {
+              data: JSON.stringify({ type: "response", id: request.id, result: { ok: true } }),
+            }),
+          ),
+        );
+    }
+    close(): void {
+      this.readyState = 3;
+      this.dispatchEvent(new Event("close"));
+    }
+  }
+  vi.stubGlobal("WebSocket", Socket);
+  vi.stubGlobal("location", { origin: "https://host.test" });
+  return { api: createRemoteWebSwath(), sockets, requests, options };
+}
+
+it("times out stalled socket opens, closes them, and keeps reconnecting", async () => {
+  const { api, sockets } = hostedSocket({ open: false });
+  const result = expect(api.config.load()).rejects.toThrow("Could not connect");
+  await vi.advanceTimersByTimeAsync(10_000);
+  await result;
+  expect(sockets[0].readyState).toBe(3);
+  expect(api.remote.status("host")).toBe("offline");
+  await vi.advanceTimersByTimeAsync(2_000);
+  expect(sockets).toHaveLength(2);
+  expect(api.remote.status("host")).toBe("connecting");
+});
+
+it("detects a silent dead socket via ping and reconnects without user activity", async () => {
+  const { api, sockets, requests, options } = hostedSocket({ respond: true });
+  await api.config.load();
+  options.respond = false;
+  await vi.advanceTimersByTimeAsync(15_000);
+  expect(requests.map((r) => r.method)).toEqual(["config.load", "connection.ping"]);
+  expect(sockets[0].readyState).toBe(3);
+  expect(api.remote.status("host")).toBe("offline");
+  options.respond = true;
+  await vi.advanceTimersByTimeAsync(2_000);
+  expect(api.remote.status("host")).toBe("connected");
+});
+
+it("bounds unanswered mutations, rejects other pending calls, and never replays them", async () => {
+  const { api, sockets, requests, options } = hostedSocket({ respond: true });
+  await api.config.load();
+  options.respond = false;
+  const mutation = expect(api.terminal.write("session", "run-command\n")).rejects.toThrow(
+    "not retried",
+  );
+  await vi.advanceTimersByTimeAsync(1_000);
+  const other = expect(api.config.snapshot()).rejects.toThrow("disconnected");
+  await vi.advanceTimersByTimeAsync(29_000);
+  await Promise.all([mutation, other]);
+  expect(sockets[0].readyState).toBe(3);
+  options.respond = true;
+  await vi.advanceTimersByTimeAsync(2_000);
+  expect(requests.filter((r) => r.method === "terminal.write")).toHaveLength(1);
+  expect(requests.filter((r) => r.method === "config.snapshot")).toHaveLength(1);
+});
+
+it("replaces a stale socket after browser sleep and removes timers/listeners on forget", async () => {
+  const { api, sockets } = hostedSocket({ respond: true });
+  await api.config.load();
+  vi.setSystemTime(Date.now() + 60_000);
+  document.dispatchEvent(new Event("visibilitychange"));
+  expect(sockets[0].readyState).toBe(3);
+  await vi.advanceTimersByTimeAsync(2_000);
+  expect(api.remote.status("host")).toBe("connected");
+
+  const local = createBrowserStubSwath();
+  const config = await local.config.load();
+  config.remoteConnections = [
+    {
+      id: "device",
+      name: "Device",
+      url: "https://device.test",
+      token: "",
+      machineId: "device",
+      platform: "linux",
+      lastConnectedAt: 0,
+    },
+  ];
+  await local.config.save(config);
+  const hybrid = createHybridSwath(local);
+  await hybrid.config.load();
+  await Promise.resolve();
+  const socket = sockets.at(-1)!;
+  hybrid.remote.forget("device");
+  const count = sockets.length;
+  window.dispatchEvent(new Event("online"));
+  await vi.advanceTimersByTimeAsync(20_000);
+  expect(socket.readyState).toBe(3);
+  expect(sockets).toHaveLength(count);
 });
