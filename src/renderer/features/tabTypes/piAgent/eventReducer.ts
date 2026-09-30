@@ -6,6 +6,12 @@
  */
 
 import { agentTabRequestFrom } from "../../../../shared/ipc/piRpc";
+import {
+  PROGRESS_KEY,
+  progressMessagesFromWidget,
+  restoreProgressMessages,
+  type PiProgressMessage,
+} from "./progressMessages";
 import type {
   PiCommand,
   PiContentBlock,
@@ -81,6 +87,16 @@ export interface PiNotice {
   level: "info" | "warning" | "error";
 }
 
+/** Identifies the idle cache estimate separately from actual cache-miss reports. */
+export function isCacheExpiryNotice(notice: PiNotice): boolean {
+  return notice.message.startsWith("Prompt cache may have expired");
+}
+
+/** Clears idle estimates when Pi accepts new input, including queued follow-ups. */
+function clearCacheExpiryNotices(state: PiPaneState): PiPaneState {
+  return { ...state, notices: state.notices.filter((notice) => !isCacheExpiryNotice(notice)) };
+}
+
 /** A blocking dialog awaiting an `extension_ui_response`. */
 export type PiDialog = Extract<
   PiExtensionUiRequest,
@@ -92,6 +108,7 @@ export interface PiPaneState {
   /** Extension status chips, keyed by `statusKey`; ANSI-colored strings. */
   status: Record<string, string>;
   widgets: Record<string, PiWidget>;
+  progressMessages: PiProgressMessage[];
   notices: PiNotice[];
   dialogs: PiDialog[];
   commands: PiCommand[];
@@ -125,6 +142,7 @@ export function initialPiPaneState(): PiPaneState {
     entries: [],
     status: {},
     widgets: {},
+    progressMessages: [],
     notices: [],
     dialogs: [],
     commands: [],
@@ -304,6 +322,9 @@ function applyExtensionUi(state: PiPaneState, event: PiExtensionUiRequest): PiPa
     }
 
     case "setWidget": {
+      if (event.widgetKey === PROGRESS_KEY) {
+        return { ...state, progressMessages: progressMessagesFromWidget(event.widgetLines) };
+      }
       const widgets = { ...state.widgets };
       if (event.widgetLines === undefined) {
         delete widgets[event.widgetKey];
@@ -433,6 +454,7 @@ export function reducePiEvent(state: PiPaneState, event: PiIncoming): PiPaneStat
       // toolResult and bashExecution messages duplicate the tool_execution_* cards.
       const role = event.message?.role;
       if (role !== "user" && role !== "assistant") return state;
+      if (role === "user") state = clearCacheExpiryNotices(state);
       const { text, thinking } = readMessage(event.message);
       const entry: PiMessageEntry = {
         kind: "message",
@@ -628,6 +650,9 @@ export function reducePiEvent(state: PiPaneState, event: PiIncoming): PiPaneStat
       if (!event.success) {
         return { ...state, error: event.error ?? `${event.command} failed` };
       }
+      if (["prompt", "follow_up", "steer"].includes(event.command)) {
+        return clearCacheExpiryNotices(state);
+      }
       if (event.command === "abort") {
         return { ...state, isStreaming: false, dialogs: [] };
       }
@@ -671,6 +696,12 @@ export function reducePiEvent(state: PiPaneState, event: PiIncoming): PiPaneStat
       if (event.command === "get_commands") {
         const data = event.data as { commands?: PiCommand[] } | undefined;
         return { ...state, commands: data?.commands ?? [] };
+      }
+      if (event.command === "get_entries") {
+        return {
+          ...state,
+          progressMessages: restoreProgressMessages(event.data, state.progressMessages),
+        };
       }
       if (event.command === "get_messages") {
         const data = event.data as { messages?: PiMessage[] } | undefined;

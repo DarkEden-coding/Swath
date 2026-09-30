@@ -25,6 +25,7 @@ const STDERR_MAX_BYTES: usize = 64 * 1024;
 const PI_SUDO_EXTENSION: &str = include_str!("pi_sudo.ts");
 const PI_SECRETS_EXTENSION: &str = include_str!("pi_secrets.ts");
 const PI_CACHE_EXTENSION: &str = include_str!("pi_cache.ts");
+const PI_PROGRESS_EXTENSION: &str = include_str!("pi_progress.ts");
 const PI_WEBSITE_EXTENSION: &str = include_str!("pi_open_website.ts");
 const PI_PUBLISH_EXTENSION: &str = include_str!("pi_publish.ts");
 
@@ -164,6 +165,7 @@ impl PiManager {
         let sudo_extension = temp_dir.join("swath-pi-sudo.ts");
         let secrets_extension = temp_dir.join("swath-pi-secrets.ts");
         let cache_extension = temp_dir.join("swath-pi-cache.ts");
+        let progress_extension = temp_dir.join("swath-pi-progress.ts");
         let website_extension = temp_dir.join("swath-pi-open-website.ts");
         let publish_extension = temp_dir.join("swath-pi-publish.ts");
         fs::write(&sudo_extension, PI_SUDO_EXTENSION)
@@ -172,6 +174,8 @@ impl PiManager {
             .map_err(|err| format!("Unable to prepare Pi secrets integration: {err}"))?;
         fs::write(&cache_extension, PI_CACHE_EXTENSION)
             .map_err(|err| format!("Unable to prepare Pi cache integration: {err}"))?;
+        fs::write(&progress_extension, PI_PROGRESS_EXTENSION)
+            .map_err(|err| format!("Unable to prepare Pi progress integration: {err}"))?;
         fs::write(&website_extension, PI_WEBSITE_EXTENSION)
             .map_err(|err| format!("Unable to prepare Pi website integration: {err}"))?;
         fs::write(&publish_extension, PI_PUBLISH_EXTENSION)
@@ -187,6 +191,8 @@ impl PiManager {
             .arg(secrets_extension)
             .arg("--extension")
             .arg(cache_extension)
+            .arg("--extension")
+            .arg(progress_extension)
             .arg("--extension")
             .arg(website_extension)
             .arg("--extension")

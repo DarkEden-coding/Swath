@@ -523,6 +523,53 @@ describe("reducePiEvent", () => {
     expect(state.status["parallel-agents"]).toBeUndefined();
   });
 
+  it("clears idle cache warnings on accepted input but preserves unrelated notices and misses", () => {
+    const waiting = run([
+      {
+        type: "extension_ui_request",
+        id: "cache",
+        method: "notify",
+        message: "Prompt cache may have expired while idle; it may still be available.",
+        notifyType: "info",
+      },
+      {
+        type: "extension_ui_request",
+        id: "other",
+        method: "notify",
+        message: "Other warning",
+        notifyType: "warning",
+      },
+      {
+        type: "extension_ui_request",
+        id: "miss",
+        method: "notify",
+        message: "Prompt cache miss: previously sent input was not read from cache.",
+        notifyType: "warning",
+      },
+    ]);
+    expect(waiting.notices).toHaveLength(2);
+    for (const event of [
+      { type: "message_start", message: { role: "user", content: "Continue", timestamp: 1 } },
+      { type: "response", command: "prompt", success: true },
+      { type: "response", command: "follow_up", success: true },
+      { type: "response", command: "steer", success: true },
+    ] satisfies PiIncoming[]) {
+      const sent = run([event], waiting);
+      expect(sent.notices.map((notice) => notice.message)).toEqual(["Other warning"]);
+      expect(sent.entries).toContainEqual(
+        expect.objectContaining({
+          kind: "inlineNotice",
+          text: expect.stringContaining("Prompt cache miss:"),
+        }),
+      );
+    }
+    const rejected = run(
+      [{ type: "response", command: "prompt", success: false, error: "offline" }],
+      waiting,
+    );
+    expect(rejected.notices).toEqual(waiting.notices);
+  });
+
   it("sets and clears widgets with their placement", () => {
     let state = run([
       {

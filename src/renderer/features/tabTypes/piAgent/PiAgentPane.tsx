@@ -32,8 +32,9 @@ import {
 import { piPaneCache, type AttachedImage } from "./piPaneCache";
 import type { AttachedPaste } from "./placeholders";
 import { Transcript } from "./Transcript";
+import { ProgressWindow } from "./ProgressWindow";
 import { usePiAgent } from "./usePiAgent";
-import type { PiNotice } from "./eventReducer";
+import { isCacheExpiryNotice, type PiNotice } from "./eventReducer";
 
 const BOTTOM_TOLERANCE_PX = 2;
 const USER_SCROLL_INTENT_MS = 250;
@@ -139,10 +140,13 @@ export function PiAgentPane({ workspace, view, pane }: PaneComponentProps): JSX.
   const [pastes, setPastes] = useState<AttachedPaste[]>(
     () => piPaneCache.get(paneId)?.pastes ?? [],
   );
+  const [progressHidden, setProgressHidden] = useState(
+    () => piPaneCache.get(paneId)?.progressHidden ?? true,
+  );
   useEffect(() => {
     const entry = piPaneCache.get(paneId);
-    if (entry) piPaneCache.set(paneId, { ...entry, draft, images, pastes });
-  }, [paneId, draft, images, pastes]);
+    if (entry) piPaneCache.set(paneId, { ...entry, draft, images, pastes, progressHidden });
+  }, [paneId, draft, images, pastes, progressHidden]);
   const [appliedEditorText, setAppliedEditorText] = useState<string | undefined>(undefined);
   const [treeOpen, setTreeOpen] = useState(false);
   const [resumeOpen, setResumeOpen] = useState(false);
@@ -330,6 +334,7 @@ export function PiAgentPane({ workspace, view, pane }: PaneComponentProps): JSX.
   const [showTerminals, setShowTerminals] = useState(false);
   const widgetsAbove = Object.values(state.widgets).filter((w) => w.placement === "aboveEditor");
   const widgetsBelow = Object.values(state.widgets).filter((w) => w.placement === "belowEditor");
+  const cacheExpiryNotice = state.notices.filter(isCacheExpiryNotice).at(-1);
 
   // Counter widgets ("background terminals: 0") are noise while at zero, exactly as the footer
   // chips are; a widget whose every line is an empty counter is dropped entirely.
@@ -376,12 +381,10 @@ export function PiAgentPane({ workspace, view, pane }: PaneComponentProps): JSX.
       >
         <div className="pi-agent relative flex h-full min-h-0 overflow-hidden">
           <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-            {state.notices.some(
-              (notice) => !notice.message.startsWith("Prompt cache may have expired"),
-            ) ? (
+            {state.notices.some((notice) => !isCacheExpiryNotice(notice)) ? (
               <div className="shrink-0 border-b border-[var(--pi-border-muted)]">
                 {state.notices
-                  .filter((notice) => !notice.message.startsWith("Prompt cache may have expired"))
+                  .filter((notice) => !isCacheExpiryNotice(notice))
                   .slice(-3)
                   .map((notice) => (
                     <NoticeRow key={notice.id} notice={notice} onDismiss={agent.dismissNotice} />
@@ -452,6 +455,31 @@ export function PiAgentPane({ workspace, view, pane }: PaneComponentProps): JSX.
                   )}
                 </div>
               </div>
+              <ProgressWindow
+                messages={state.progressMessages}
+                hidden={progressHidden}
+                onHiddenChange={setProgressHidden}
+              />
+              {cacheExpiryNotice ? (
+                <div
+                  role="status"
+                  className="absolute bottom-3 right-3 z-10 max-w-[min(22rem,calc(100%-5rem))]"
+                >
+                  <button
+                    type="button"
+                    className="rounded-lg border border-[var(--pi-border-muted)] bg-[var(--pi-surface)] px-3 py-2 text-left text-xs leading-relaxed text-[var(--pi-muted)] shadow-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--pi-purple)]"
+                    aria-label="Dismiss prompt cache expiry warning"
+                    title="Dismiss warning"
+                    onClick={() => {
+                      state.notices
+                        .filter(isCacheExpiryNotice)
+                        .forEach((notice) => agent.dismissNotice(notice.id));
+                    }}
+                  >
+                    {cacheExpiryNotice.message}
+                  </button>
+                </div>
+              ) : null}
               <button
                 type="button"
                 className={`absolute bottom-3 left-1/2 z-10 grid h-8 w-8 -translate-x-1/2 place-items-center rounded-full border border-[#30363d] bg-[#161b22]/95 text-[#8b949e] shadow-[0_4px_14px_rgba(0,0,0,0.4)] backdrop-blur-sm transition-[opacity,transform,background-color,border-color,color] duration-200 ease-out hover:border-[#484f58] hover:bg-[#21262d] hover:text-[#f0f6fc] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#2f81f7] ${!isFollowing && isActive ? "translate-y-0 opacity-100" : "pointer-events-none translate-y-2 opacity-0"}`}
@@ -475,12 +503,6 @@ export function PiAgentPane({ workspace, view, pane }: PaneComponentProps): JSX.
             </div>
 
             {renderWidgets(widgetsAbove)}
-
-            {state.notices
-              .filter((notice) => notice.message.startsWith("Prompt cache may have expired"))
-              .map((notice) => (
-                <NoticeRow key={notice.id} notice={notice} onDismiss={agent.dismissNotice} />
-              ))}
 
             <Composer
               paneId={paneId}

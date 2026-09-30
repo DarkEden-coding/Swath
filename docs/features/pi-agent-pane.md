@@ -209,7 +209,7 @@ Only the active view is mounted, so a tab switch unmounts the pane. The pi child
 killed only from `piAgentTabType.closePane`, never on unmount; `piPaneCache.ts` keeps the last
 rendered state, draft and attachments, and a remount reattaches (`spawnedPanes`).
 
-The cache keeps *reducing events* while the pane is unmounted, so the restored transcript is
+The cache keeps _reducing events_ while the pane is unmounted, so the restored transcript is
 already current: a reattach only refreshes `get_state`/`get_session_stats`. `get_messages` is
 reserved for a fresh spawn, or for a pane whose cache was dropped — on a long conversation it would
 otherwise hand React a rebuilt copy of history on every tab switch. Should it run anyway,
@@ -499,3 +499,35 @@ token of every other card.
   outright: the plumbing spanned four layers to display a file, and nothing else depended on it.
   Image display now exists only where it is used — inside `ask_user_questions` prompts, via the
   batch `ask_images_load` command.
+
+## 11. Agent progress updates
+
+Swath injects `src-tauri/src/pi_progress.ts` into each managed Pi process. It registers
+`report_progress({ message })` and directs the agent to report initial intent for substantial work,
+meaningful milestones, findings, blockers, and verification without narrating every tool call.
+
+Agent reports are limited to 500 characters. The extension retains the latest 50 timeline entries
+for the active session branch, interleaving user messages with agent reports. User text is shown in
+full, with image attachments represented by placeholders. User entries are read from Pi's existing
+conversation history rather than persisted again. Each agent update is persisted as a
+`swath:progress` custom session entry outside model context. The tool explicitly permits parallel
+execution and performs its append and widget publish without yielding, so concurrent sibling calls
+do not overwrite each other.
+
+In RPC mode the extension publishes a full `swath:progress` widget snapshot with JSON message lines.
+`ProgressWindow.tsx` renders it at the top right of the message area, oldest first, with Hide and
+Show controls. It starts hidden behind the Progress button; the user's choice is retained across
+tab switches. The list follows the bottom until the user scrolls up; updates preserve the visible
+item, including when older entries leave the bounded list. Scrolling back to the bottom resumes
+following. Entries are labelled You or Agent. Hidden windows keep receiving updates and stay hidden
+across tab switches. Progress tool calls also remain in the main transcript, including parallel
+batches. Terminal Pi can load the same
+extension and receives a plain-text widget instead of a floating window.
+
+Startup, reattachment, reconnect, and session replacement request `get_entries` to restore progress
+from the active branch, including pre-compaction entries. Restoration preserves live updates that
+arrived after the history snapshot. New sessions publish an empty list; new messages in an existing
+session keep its recent progress history. User messages appear when delivered to the conversation,
+before the model request; queued follow-ups appear when consumed. Provider-request and settlement
+hooks refresh the combined timeline after Pi persists user messages. No Pi core changes or additional
+dependencies are required.

@@ -204,6 +204,7 @@ export function usePiAgent(
     send({ id: "init-state", type: "get_state" });
     send({ id: "init-commands", type: "get_commands" });
     send({ id: "init-messages", type: "get_messages" });
+    send({ id: "init-progress", type: "get_entries" });
     send({ id: "init-models", type: "get_available_models" });
     send({ id: "init-thinking", type: "get_available_thinking_levels" });
     send({ id: "init-stats", type: "get_session_stats" });
@@ -336,6 +337,7 @@ export function usePiAgent(
         !(event.data as { cancelled?: boolean } | undefined)?.cancelled
       ) {
         sendRef.current({ id: "messages", type: "get_messages" });
+        sendRef.current({ id: "progress", type: "get_entries" });
         sendRef.current({ id: "state", type: "get_state" });
         sendRef.current({ id: "commands", type: "get_commands" });
         sendRef.current({ id: "models", type: "get_available_models" });

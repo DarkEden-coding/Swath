@@ -22,6 +22,8 @@ export interface PiPaneCacheEntry {
   draft: string;
   images: AttachedImage[];
   pastes: AttachedPaste[];
+  /** The user's hidden-window preference survives tab switches; updates keep accumulating. */
+  progressHidden?: boolean;
 }
 
 export const piPaneCache = new Map<string, PiPaneCacheEntry>();
