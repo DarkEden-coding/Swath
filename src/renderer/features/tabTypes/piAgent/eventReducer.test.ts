@@ -570,6 +570,26 @@ describe("reducePiEvent", () => {
     expect(rejected.notices).toEqual(waiting.notices);
   });
 
+  it("ignores retired custom widgets and session entries", () => {
+    const state = initialPiPaneState();
+    expect(
+      reducePiEvent(state, {
+        type: "extension_ui_request",
+        id: "legacy-widget",
+        method: "setWidget",
+        widgetKey: "swath:progress",
+        widgetLines: ['{"id":"old","message":"Legacy update","timestamp":1}'],
+      }),
+    ).toBe(state);
+    expect(
+      reducePiEvent(state, {
+        type: "response",
+        command: "get_entries",
+        success: true,
+        data: { entries: [{ type: "custom", customType: "swath:progress" }] },
+      }),
+    ).toBe(state);
+  });
   it("sets and clears widgets with their placement", () => {
     let state = run([
       {

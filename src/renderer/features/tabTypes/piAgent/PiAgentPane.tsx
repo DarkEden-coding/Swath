@@ -32,7 +32,6 @@ import {
 import { piPaneCache, type AttachedImage } from "./piPaneCache";
 import type { AttachedPaste } from "./placeholders";
 import { Transcript } from "./Transcript";
-import { ProgressWindow } from "./ProgressWindow";
 import { usePiAgent } from "./usePiAgent";
 import { isCacheExpiryNotice, type PiNotice } from "./eventReducer";
 
@@ -140,13 +139,10 @@ export function PiAgentPane({ workspace, view, pane }: PaneComponentProps): JSX.
   const [pastes, setPastes] = useState<AttachedPaste[]>(
     () => piPaneCache.get(paneId)?.pastes ?? [],
   );
-  const [progressHidden, setProgressHidden] = useState(
-    () => piPaneCache.get(paneId)?.progressHidden ?? true,
-  );
   useEffect(() => {
     const entry = piPaneCache.get(paneId);
-    if (entry) piPaneCache.set(paneId, { ...entry, draft, images, pastes, progressHidden });
-  }, [paneId, draft, images, pastes, progressHidden]);
+    if (entry) piPaneCache.set(paneId, { ...entry, draft, images, pastes });
+  }, [paneId, draft, images, pastes]);
   const [appliedEditorText, setAppliedEditorText] = useState<string | undefined>(undefined);
   const [treeOpen, setTreeOpen] = useState(false);
   const [resumeOpen, setResumeOpen] = useState(false);
@@ -455,11 +451,6 @@ export function PiAgentPane({ workspace, view, pane }: PaneComponentProps): JSX.
                   )}
                 </div>
               </div>
-              <ProgressWindow
-                messages={state.progressMessages}
-                hidden={progressHidden}
-                onHiddenChange={setProgressHidden}
-              />
               {cacheExpiryNotice ? (
                 <div
                   role="status"

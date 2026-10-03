@@ -130,17 +130,6 @@ export interface PiSessionStats {
   contextUsage?: { tokens: number | null; contextWindow: number; percent: number | null };
 }
 
-/** Session entry fields needed to restore branch-aware extension state. */
-export interface PiSessionEntry {
-  id: string;
-  parentId: string | null;
-  type: string;
-  customType?: string;
-  data?: unknown;
-  message?: PiMessage;
-  timestamp?: string;
-}
-
 /** One node of the `get_tree` reply. */
 export interface PiTreeNode {
   entry: {
@@ -174,7 +163,6 @@ export type PiCommandMessage =
   | { id?: string; type: "new_session" }
   | { id?: string; type: "get_state" }
   | { id?: string; type: "get_messages" }
-  | { id?: string; type: "get_entries" }
   | { id?: string; type: "get_commands" }
   | { id?: string; type: "get_session_stats" }
   | { id?: string; type: "get_tree" }

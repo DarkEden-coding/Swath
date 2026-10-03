@@ -6,12 +6,6 @@
  */
 
 import { agentTabRequestFrom } from "../../../../shared/ipc/piRpc";
-import {
-  PROGRESS_KEY,
-  progressMessagesFromWidget,
-  restoreProgressMessages,
-  type PiProgressMessage,
-} from "./progressMessages";
 import type {
   PiCommand,
   PiContentBlock,
@@ -108,7 +102,6 @@ export interface PiPaneState {
   /** Extension status chips, keyed by `statusKey`; ANSI-colored strings. */
   status: Record<string, string>;
   widgets: Record<string, PiWidget>;
-  progressMessages: PiProgressMessage[];
   notices: PiNotice[];
   dialogs: PiDialog[];
   commands: PiCommand[];
@@ -142,7 +135,6 @@ export function initialPiPaneState(): PiPaneState {
     entries: [],
     status: {},
     widgets: {},
-    progressMessages: [],
     notices: [],
     dialogs: [],
     commands: [],
@@ -322,9 +314,8 @@ function applyExtensionUi(state: PiPaneState, event: PiExtensionUiRequest): PiPa
     }
 
     case "setWidget": {
-      if (event.widgetKey === PROGRESS_KEY) {
-        return { ...state, progressMessages: progressMessagesFromWidget(event.widgetLines) };
-      }
+      // Ignore snapshots emitted by older extensions; do not recreate the removed UI.
+      if (event.widgetKey === "swath:progress") return state;
       const widgets = { ...state.widgets };
       if (event.widgetLines === undefined) {
         delete widgets[event.widgetKey];
@@ -696,12 +687,6 @@ export function reducePiEvent(state: PiPaneState, event: PiIncoming): PiPaneStat
       if (event.command === "get_commands") {
         const data = event.data as { commands?: PiCommand[] } | undefined;
         return { ...state, commands: data?.commands ?? [] };
-      }
-      if (event.command === "get_entries") {
-        return {
-          ...state,
-          progressMessages: restoreProgressMessages(event.data, state.progressMessages),
-        };
       }
       if (event.command === "get_messages") {
         const data = event.data as { messages?: PiMessage[] } | undefined;
