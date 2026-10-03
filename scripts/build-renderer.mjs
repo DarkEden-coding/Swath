@@ -12,7 +12,8 @@ const distIndexPath = join(root, "dist", "index.html");
 const inputPaths = [
   "index.html",
   "package.json",
-  "package-lock.json",
+  "pnpm-lock.yaml",
+  ...(existsSync(join(root, "package-lock.json")) ? ["package-lock.json"] : []),
   "postcss.config.js",
   "tailwind.config.js",
   "tsconfig.json",
